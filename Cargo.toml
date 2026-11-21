@@ -1,0 +1,17 @@
+[package]
+name = "toppingctl"
+version = "0.1.0"
+edition = "2021"
+description = "Control the TOPPING E2x2 USB audio interface over HID"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+ctrlc = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hidapi = { version = "2", default-features = false, features = ["linux-native"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+hidapi = "2"
