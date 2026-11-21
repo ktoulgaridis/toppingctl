@@ -17,7 +17,7 @@ use anyhow::{anyhow, Context, Result};
 use hidapi::{HidApi, HidDevice};
 use toppingctl::capture::format_line;
 use toppingctl::device::{self, HidEntry};
-use toppingctl::error::{classify, message, OpenFailure, Platform};
+use toppingctl::error::{classify, is_interrupted, message, OpenFailure, Platform};
 
 const USAGE: &str = "\
 Usage: hidsniff [--out <file>]
@@ -142,6 +142,8 @@ fn sniff(device: &HidDevice, mut out: Option<LineWriter<File>>, stop: &AtomicBoo
         let len = match device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
             Ok(0) => continue,
             Ok(len) => len,
+            // Ctrl-C can interrupt the read before the handler sets `stop`; re-check it.
+            Err(e) if is_interrupted(&e) => continue,
             Err(e) => break Err(anyhow!("reading from the TOPPING E2x2 failed: {e}")),
         };
         let line = format_line(start.elapsed(), &buf[..len]);

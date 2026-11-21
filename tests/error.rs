@@ -128,3 +128,18 @@ fn ambiguous_and_other_messages_carry_their_details() {
     );
     assert!(msg.contains("Broken pipe"), "{msg}");
 }
+
+#[test]
+fn interrupted_reads_are_recognised() {
+    // Ctrl-C interrupts hidraw's poll() with EINTR; that must not end the capture as a failure.
+    let err = HidError::IoError {
+        error: io::Error::from(io::ErrorKind::Interrupted),
+    };
+    assert!(is_interrupted(&err));
+    assert!(!is_interrupted(&HidError::IoError {
+        error: io::Error::from(io::ErrorKind::BrokenPipe),
+    }));
+    assert!(!is_interrupted(&api_error(
+        "unexpected poll error (device disconnected)"
+    )));
+}

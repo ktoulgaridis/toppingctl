@@ -74,6 +74,11 @@ pub fn classify(err: &HidError) -> OpenFailure {
     }
 }
 
+/// Whether a read failed only because a signal (such as Ctrl-C) interrupted it.
+pub fn is_interrupted(err: &HidError) -> bool {
+    matches!(err, HidError::IoError { error } if error.kind() == io::ErrorKind::Interrupted)
+}
+
 /// The message to show the user for `failure` on `platform`.
 pub fn message(failure: &OpenFailure, platform: Platform) -> String {
     match failure {
