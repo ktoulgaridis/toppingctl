@@ -35,25 +35,22 @@ pub enum SelectError {
 /// exists and the platform does not report interface numbers, falls back to
 /// the E2x2 entry when exactly one exists.
 pub fn select(entries: &[HidEntry]) -> Result<usize, SelectError> {
-    let is_e2x2 = |e: &HidEntry| e.vendor_id == VENDOR_ID && e.product_id == PRODUCT_ID;
-    let matches: Vec<usize> = (0..entries.len())
-        .filter(|&i| is_e2x2(&entries[i]))
-        .collect();
-    if let Some(&i) = matches
-        .iter()
-        .find(|&&i| entries[i].interface_number == HID_INTERFACE)
-    {
+    let on = |interface: i32| {
+        entries.iter().enumerate().filter(move |(_, e)| {
+            e.vendor_id == VENDOR_ID
+                && e.product_id == PRODUCT_ID
+                && e.interface_number == interface
+        })
+    };
+    if let Some((i, _)) = on(HID_INTERFACE).next() {
         return Ok(i);
     }
-    let unknown: Vec<usize> = matches
-        .into_iter()
-        .filter(|&i| entries[i].interface_number == INTERFACE_UNKNOWN)
-        .collect();
-    match unknown.as_slice() {
+    let unknown: Vec<usize> = on(INTERFACE_UNKNOWN).map(|(i, _)| i).collect();
+    match unknown[..] {
         [] => Err(SelectError::NotFound),
-        [i] => Ok(*i),
-        many => Err(SelectError::Ambiguous {
-            matches: many.len(),
+        [i] => Ok(i),
+        _ => Err(SelectError::Ambiguous {
+            matches: unknown.len(),
         }),
     }
 }
