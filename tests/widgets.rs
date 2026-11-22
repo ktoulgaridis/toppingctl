@@ -8,8 +8,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Widget;
 
+use toppingctl::tui::pixel::{knob_image, KNOB_ACCENT_RGB, KNOB_DIM_RGB, KNOB_POINTER_RGB};
 use toppingctl::tui::theme::Theme;
-use toppingctl::tui::widgets::dial::{Dial, DialStyle, DIAL_HEIGHT};
+use toppingctl::tui::widgets::dial::{knob_rect, Dial};
 use toppingctl::tui::widgets::fader::{fader_frac, fmt_db, Fader};
 use toppingctl::tui::widgets::meter::{
     peak_text, ClipHold, Meter, Scale, CLIP_HOLD, INPUT_SCALE_DB, PEAK_HOT_DB,
@@ -34,7 +35,8 @@ fn rows(buf: &Buffer) -> Vec<String> {
 
 // ------------------------------------------------------------------- dial
 
-/// The lit Braille dots of a dial, as (x, y) in dot units, y down.
+/// The lit Braille dots of a render, as (x, y) in dot units (y down) with
+/// their cell's colour.
 fn dots(buf: &Buffer) -> Vec<(f64, f64, Color)> {
     // Unicode Braille: bit n of (ch - U+2800) is this dot (column, row).
     const BITS: [(usize, usize); 8] = [
@@ -71,57 +73,36 @@ fn dots(buf: &Buffer) -> Vec<(f64, f64, Color)> {
     out
 }
 
-/// The dial's centre and ring radius in dot units.
-fn geometry(buf: &Buffer) -> (f64, f64, f64) {
-    let (w, h) = (
-        f64::from(buf.area.width) * 2.0,
-        f64::from(buf.area.height) * 4.0,
+/// The mean angle (degrees, 0 = right, 90 = up) of the dots drawn in
+/// `colour`, around the centre of a `w`×`h`-cell knob at the origin.
+fn mean_angle(buf: &Buffer, w: u16, h: u16, colour: Color) -> Option<f64> {
+    let (cx, cy) = (
+        (f64::from(w) * 2.0 - 1.0) / 2.0,
+        (f64::from(h) * 4.0 - 1.0) / 2.0,
     );
-    ((w - 1.0) / 2.0, (h - 1.0) / 2.0, (w.min(h) - 1.0) / 2.0)
-}
-
-/// The pointer: the accent dots well inside the knob. Returns their mean
-/// angle in degrees (0 = right, 90 = up), or `None` when there are none.
-fn pointer_angle(buf: &Buffer) -> Option<f64> {
-    let (cx, cy, r) = geometry(buf);
-    let inner: Vec<(f64, f64)> = dots(buf)
+    let pts: Vec<(f64, f64)> = dots(buf)
         .into_iter()
-        .filter(|(_, _, c)| *c == Theme::ACCENT)
+        .filter(|d| d.2 == colour)
         .map(|(x, y, _)| (x - cx, cy - y))
-        .filter(|(x, y)| (x * x + y * y).sqrt() < r * 0.4)
         .collect();
-    if inner.is_empty() {
+    if pts.is_empty() {
         return None;
     }
-    let n = inner.len() as f64;
-    let (sx, sy) = inner
-        .iter()
-        .fold((0.0, 0.0), |(a, b), (x, y)| (a + x, b + y));
+    let n = pts.len() as f64;
+    let (sx, sy) = pts.iter().fold((0.0, 0.0), |(a, b), (x, y)| (a + x, b + y));
     Some((sy / n).atan2(sx / n).to_degrees().rem_euclid(360.0))
 }
 
-/// Dots on the ring (ticks and the lit arc).
-fn ring_dots(buf: &Buffer) -> usize {
-    let (cx, cy, r) = geometry(buf);
-    dots(buf)
-        .into_iter()
-        .filter(|(x, y, _)| ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() >= r - 1.6)
-        .count()
-}
-
-fn accent_cells(buf: &Buffer) -> usize {
+fn count(buf: &Buffer, colour: Color) -> usize {
     buf.content()
         .iter()
-        .filter(|c| c.fg == Theme::ACCENT)
+        .filter(|c| c.fg == colour && c.symbol() != " ")
         .count()
 }
 
-fn dial(value: Option<f64>, bipolar: bool) -> Buffer {
-    let d = Dial::new(Theme::color())
-        .value(value)
-        .bipolar(bipolar)
-        .style(DialStyle::Braille);
-    render(d, 13, 7)
+fn braille(value: Option<f64>, dimmed: bool, w: u16, h: u16) -> Buffer {
+    let d = Dial::new(Theme::color()).value(value).dimmed(dimmed);
+    render(d, w, h)
 }
 
 fn close(a: f64, b: f64, tol: f64) -> bool {
@@ -129,139 +110,170 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
     d.min(360.0 - d) <= tol
 }
 
-/// A 270° dial: min points down-left, centre up, max down-right; the lit
-/// arc grows with the value.
+/// The Braille knob (prototype style G): a thick ring lit in the accent up
+/// to the value, a rim, and a pointer line from the centre. Min points
+/// down-left, centre up, max down-right.
 #[test]
-fn dial_min_centre_max() {
-    let min = dial(Some(0.0), false);
-    let mid = dial(Some(0.5), false);
-    let max = dial(Some(1.0), false);
-
-    let a = pointer_angle(&min).expect("a pointer at min");
-    assert!(close(a, 225.0, 30.0), "min points down-left: {a}°");
-    let a = pointer_angle(&mid).expect("a pointer at centre");
-    assert!(close(a, 90.0, 30.0), "centre points up: {a}°");
-    let a = pointer_angle(&max).expect("a pointer at max");
-    assert!(close(a, 315.0, 30.0), "max points down-right: {a}°");
-
-    let (r0, r5, r1) = (ring_dots(&min), ring_dots(&mid), ring_dots(&max));
-    assert!(r0 > 0, "scale ticks are drawn at min");
-    assert!(r0 < r5 && r5 < r1, "the lit arc grows: {r0} {r5} {r1}");
-    assert!(accent_cells(&max) > accent_cells(&min));
-    assert!(rows(&min) != rows(&max));
-
-    // A pan dial lights from the centre: nothing lit at centre, the two
-    // extremes are mirror images.
-    let c = dial(Some(0.5), true);
-    let l = dial(Some(0.0), true);
-    let r = dial(Some(1.0), true);
-    assert!(ring_dots(&c) < ring_dots(&l));
-    let (nl, nr) = (ring_dots(&l) as i64, ring_dots(&r) as i64);
-    assert!(
-        (nl - nr).abs() <= 3,
-        "about the same arc each way: {nl} {nr}"
-    );
-    if std::env::var_os("SHOW_DIALS").is_some() {
-        for b in [&min, &mid, &max, &c, &l, &r] {
-            eprintln!("{}\n", rows(b).join("\n"));
+fn braille_knob_min_centre_max() {
+    for (w, h) in [(6, 3), (8, 4), (12, 6)] {
+        let min = braille(Some(0.0), false, w, h);
+        let mid = braille(Some(0.5), false, w, h);
+        let max = braille(Some(1.0), false, w, h);
+        for (b, want, what) in [
+            (&min, 225.0, "min"),
+            (&mid, 90.0, "centre"),
+            (&max, 315.0, "max"),
+        ] {
+            let a = mean_angle(b, w, h, Theme::KNOB_POINTER)
+                .unwrap_or_else(|| panic!("{w}x{h} {what}: no pointer"));
+            assert!(close(a, want, 30.0), "{w}x{h} {what} points at {a}°");
         }
-    }
-    assert!(close(pointer_angle(&c).unwrap(), 90.0, 30.0));
-}
-
-/// The glyph dial (the default): `●` ticks lit up to the value, `·` unlit
-/// ones, a round knob, and an arrow in its middle pointing at the value.
-#[test]
-fn glyph_dial() {
-    let g = |v: Option<f64>, bi: bool, w: u16, h: u16| {
-        render(Dial::new(Theme::color()).value(v).bipolar(bi), w, h)
-    };
-    let lit = |b: &Buffer| {
-        b.content()
-            .iter()
-            .filter(|c| c.fg == Theme::ACCENT && c.symbol() != " ")
-            .count()
-    };
-    let hub = |b: &Buffer| {
-        let (w, h) = (b.area.width, b.area.height);
-        b[(w / 2, (h - 1) / 2)].clone()
-    };
-    for (w, h) in [(9, 5), (13, 7), (7, 3), (7, 4)] {
-        let min = g(Some(0.0), false, w, h);
-        let mid = g(Some(0.5), false, w, h);
-        let max = g(Some(1.0), false, w, h);
-        let at = |b: &Buffer| hub(b).symbol().to_string();
-        assert_eq!(at(&min), "↙", "{w}x{h} min: {:?}", rows(&min));
-        assert_eq!(at(&mid), "↑", "{w}x{h} centre: {:?}", rows(&mid));
-        assert_eq!(at(&max), "↘", "{w}x{h} max: {:?}", rows(&max));
-        assert_eq!(hub(&min).fg, Theme::ACCENT, "the pointer is the accent");
+        let lit = |b: &Buffer| count(b, Theme::KNOB_ACCENT);
         assert!(
             lit(&min) < lit(&mid) && lit(&mid) < lit(&max),
-            "{w}x{h}: the lit arc grows"
+            "{w}x{h}: the arc grows"
         );
-        // Pan lights from the centre: no lit ticks at centre.
-        let arc = |b: &Buffer| {
-            b.content()
-                .iter()
-                .filter(|c| c.fg == Theme::ACCENT && "●┏━┓┃┗┛".contains(c.symbol()))
-                .count()
-        };
-        assert_eq!(arc(&g(Some(0.5), true, w, h)), 0, "{w}x{h}");
-        assert!(arc(&g(Some(0.0), true, w, h)) > 0);
-        // Unknown: still a dial, nothing lit, a dim dot for a hub.
-        let u = g(None, false, w, h);
-        assert!(u.content().iter().all(|c| c.fg != Theme::ACCENT));
-        assert!(u.content().iter().filter(|c| c.symbol() != " ").count() >= 6);
+        assert!(
+            count(&min, Theme::KNOB_DIM) > 0,
+            "{w}x{h}: the unlit arc is drawn"
+        );
+        assert!(
+            count(&mid, Theme::KNOB_RIM) > 0,
+            "{w}x{h}: the rim is drawn"
+        );
+        // The lit arc runs from min: at 0.5 its dots lean to the left.
+        let a = mean_angle(&mid, w, h, Theme::KNOB_ACCENT).unwrap();
+        assert!(close(a, 135.0, 50.0), "{w}x{h}: lit arc centre at {a}°");
     }
-    // The ring form: unlit ticks are dim dots, lit ones accent `●`.
-    let r = g(Some(0.5), false, 13, 7);
-    assert!(r
-        .content()
-        .iter()
-        .any(|c| c.symbol() == "·" && c.fg == Theme::DIM));
-    assert!(r
-        .content()
-        .iter()
-        .any(|c| c.symbol() == "●" && c.fg == Theme::ACCENT));
-    // The small form: the box border is the scale, heavy where lit.
-    let b = rows(&g(Some(1.0), false, 7, 3));
-    assert_eq!(b[0], "┏━━━━━┓");
 }
 
-/// Monitor Mix: the device never reports it, so the dial is dim with no
-/// pointer and no lit arc, only the scale.
+/// Monitor Mix (style L): dimmed, no pointer, nothing lit, still a knob.
 #[test]
-fn dial_unknown_is_dimmed() {
-    let unknown = dial(None, false);
-    assert_eq!(pointer_angle(&unknown), None, "no pointer");
-    assert!(ring_dots(&unknown) > 0, "the scale is still drawn");
-    assert_eq!(accent_cells(&unknown), 0, "nothing lit");
+fn braille_knob_dimmed() {
+    for v in [None, Some(0.5)] {
+        let b = braille(v, true, 12, 6);
+        assert_eq!(count(&b, Theme::KNOB_POINTER), 0, "no pointer");
+        assert_eq!(count(&b, Theme::KNOB_ACCENT), 0, "nothing lit");
+        assert!(count(&b, Theme::KNOB_DIM) > 6, "the ring is drawn");
+    }
+    // An unknown value without dimming draws no pointer either.
+    let b = braille(None, false, 12, 6);
+    assert_eq!(count(&b, Theme::KNOB_POINTER), 0);
 }
 
-/// The value is printed under the dial when there is room.
+/// The knob is centred in its area at most `max_cells`, with the value
+/// under it; under NO_COLOR nothing is coloured.
 #[test]
-fn dial_shows_value() {
+fn braille_knob_size_and_value() {
     let d = Dial::new(Theme::color())
         .value(Some(0.6))
+        .max_cells(8, 4)
         .label(Some("+12 dB".into()));
-    let buf = render(d, 9, DIAL_HEIGHT + 1);
-    assert_eq!(rows(&buf)[3].trim(), "+12 dB");
+    let buf = render(d, 14, 7);
+    let r = rows(&buf);
+    assert_eq!(r[6].trim(), "+12 dB");
+    // Drawn only in the 8×4 knob rect, centred: columns 3..11, rows 1..5.
+    let k = knob_rect(Rect::new(0, 0, 14, 7), true, (8, 4));
+    assert_eq!(k, Rect::new(3, 1, 8, 4));
+    for (y, l) in r.iter().enumerate().take(6) {
+        for (x, ch) in l.chars().enumerate() {
+            if ch != ' ' {
+                assert!(k.contains((x as u16, y as u16).into()), "{x},{y} {ch:?}");
+            }
+        }
+    }
+    // A small area: the knob shrinks to fit, keeping its round shape.
+    assert_eq!(
+        knob_rect(Rect::new(0, 0, 9, 6), true, (12, 6)),
+        Rect::new(0, 0, 8, 4)
+    );
+    assert_eq!(
+        knob_rect(Rect::new(0, 0, 20, 4), false, (12, 6)),
+        Rect::new(6, 0, 8, 4)
+    );
+    assert_eq!(
+        knob_rect(Rect::new(0, 0, 20, 9), true, (12, 6)),
+        Rect::new(4, 1, 12, 6)
+    );
 
-    // No colour under NO_COLOR, but the dial and value are still there.
     let d = Dial::new(Theme::plain())
         .value(Some(0.6))
         .label(Some("L40".into()));
-    let buf = render(d, 9, DIAL_HEIGHT + 1);
+    let buf = render(d, 8, 5);
     assert!(buf
         .content()
         .iter()
         .all(|c| c.fg == Color::Reset && c.bg == Color::Reset));
-    let drawn = (0..3u16)
-        .flat_map(|y| (0..9u16).map(move |x| (x, y)))
-        .filter(|&p| buf[p].symbol() != " ")
-        .count();
-    assert!(drawn > 4, "the knob is drawn");
-    assert_eq!(rows(&buf)[3].trim(), "L40");
+    assert!(dots(&buf).len() > 10, "the knob is drawn without colour");
+    assert_eq!(rows(&buf)[4].trim(), "L40");
+}
+
+// ------------------------------------------------------------ pixel knob
+
+/// The colour of the pixel on the arc at `rel` degrees from the start
+/// (clockwise), at the arc's mid radius.
+fn arc_pixel(img: &image::RgbaImage, rel: f64) -> [u8; 4] {
+    let (w, h) = (img.width() as f64, img.height() as f64);
+    let r = w.min(h) / 2.0;
+    let a = (225.0 - rel).to_radians();
+    let x = w / 2.0 + 0.87 * r * a.cos();
+    let y = h / 2.0 - 0.87 * r * a.sin();
+    img.get_pixel(x as u32, y as u32).0
+}
+
+fn near(p: [u8; 4], c: (u8, u8, u8)) -> bool {
+    p[3] > 200
+        && (i32::from(p[0]) - i32::from(c.0)).abs() < 24
+        && (i32::from(p[1]) - i32::from(c.1)).abs() < 24
+        && (i32::from(p[2]) - i32::from(c.2)).abs() < 24
+}
+
+/// The pixel knob (prototype style J): the image has the requested size,
+/// and the ticked arc is lit in the accent up to the value, dim after it.
+#[test]
+fn pixel_knob_lights_the_arc() {
+    let ticks = 21;
+    let period = 270.0 / f64::from(ticks);
+    // The middle of tick 2 (early on the arc) and of tick 18 (late).
+    let early = 2.3 * period;
+    let late = 18.3 * period;
+
+    let img = knob_image(120, 60, Some(0.5), ticks, false);
+    assert_eq!((img.width(), img.height()), (120, 60));
+    assert!(
+        near(arc_pixel(&img, early), KNOB_ACCENT_RGB),
+        "{:?}",
+        arc_pixel(&img, early)
+    );
+    assert!(
+        near(arc_pixel(&img, late), KNOB_DIM_RGB),
+        "{:?}",
+        arc_pixel(&img, late)
+    );
+    // Between two ticks: see-through.
+    assert!(
+        arc_pixel(&img, 3.0 * period - 1.0)[3] < 60,
+        "a gap between ticks"
+    );
+
+    // Turned up past the late tick, it lights.
+    let img = knob_image(120, 60, Some(0.95), ticks, false);
+    assert!(near(arc_pixel(&img, late), KNOB_ACCENT_RGB));
+
+    // The pointer is white, from the centre toward the value (up at 0.5).
+    let img = knob_image(120, 120, Some(0.5), ticks, false);
+    let p = img.get_pixel(60, 60 - 18).0;
+    assert!(near(p, KNOB_POINTER_RGB), "pointer {p:?}");
+    // Corners are transparent (round knob on a see-through square).
+    assert_eq!(img.get_pixel(0, 0).0[3], 0);
+
+    // Dimmed (Monitor Mix): nothing lit, no pointer.
+    let img = knob_image(120, 120, Some(0.95), ticks, true);
+    assert!(near(arc_pixel(&img, late), KNOB_DIM_RGB));
+    assert!(!near(img.get_pixel(60, 60 - 18).0, KNOB_POINTER_RGB));
+    // A solid arc (pan, style K) has no gaps.
+    let img = knob_image(80, 80, Some(1.0), 0, false);
+    assert!(near(arc_pixel(&img, 3.0 * period - 1.0), KNOB_ACCENT_RGB));
 }
 
 // ------------------------------------------------------------------ fader

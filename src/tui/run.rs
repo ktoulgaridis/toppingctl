@@ -24,6 +24,7 @@ use crate::open::open_e2x2;
 use crate::state::Meters;
 use crate::sync::{connect, Store, SyncError};
 use crate::tui::app::{Action, App};
+use crate::tui::pixel::PixelLayer;
 use crate::tui::theme::Theme;
 use crate::tui::ui::{self, HitMap};
 
@@ -72,6 +73,19 @@ impl Drop for Guard {
     }
 }
 
+/// Frees every kitty image the TUI sent, when dropped (on every way out).
+struct FreeImages(bool);
+
+impl Drop for FreeImages {
+    fn drop(&mut self) {
+        if self.0 {
+            let mut out = io::stdout();
+            let _ = write!(out, "{}", PixelLayer::FREE_ALL);
+            let _ = out.flush();
+        }
+    }
+}
+
 /// Runs the TUI until the user quits. Errors (no device, no permission, a
 /// disconnect) come back after the terminal is restored, for the caller to
 /// print.
@@ -79,6 +93,9 @@ pub fn run() -> Result<()> {
     let store = Store::from_env()?;
     let mut app = App::new(Theme::from_env());
     let _guard = Guard::enter()?;
+    // Before any event is read: does the terminal take kitty images?
+    let mut pixels = PixelLayer::detect();
+    let _free = FreeImages(pixels.is_some());
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut meters = Meters::default();
     terminal.draw(|f| {
@@ -96,7 +113,13 @@ pub fn run() -> Result<()> {
     let mut hits = HitMap::default();
     loop {
         app.tick(&meters, Instant::now());
-        terminal.draw(|f| hits = ui::draw(f, &app, &meters))?;
+        terminal.draw(|f| hits = ui::draw_with(f, &app, &meters, pixels.as_mut()))?;
+        if pixels.as_mut().is_some_and(PixelLayer::take_cleanup) {
+            // The cache was dropped: free the terminal's copies too. What
+            // is on screen now is re-sent on the next frame.
+            write!(io::stdout(), "{}", PixelLayer::FREE_ALL)?;
+            terminal.clear()?;
+        }
         let mut actions = Vec::new();
         if event::poll(TICK)? {
             // Everything already queued, without waiting again.

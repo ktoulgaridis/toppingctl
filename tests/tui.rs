@@ -1206,3 +1206,117 @@ fn zero_db_reads_minus_zero() {
     assert!(t.contains("−0.0 dB"), "a 0 dB fader:\n{t}");
     assert!(!t.contains(" 0.0 dB"), "{t}");
 }
+
+// ------------------------------------------------------------- pixel knobs
+
+fn kitty_layer() -> toppingctl::tui::pixel::PixelLayer {
+    use ratatui_image::picker::{Picker, ProtocolType};
+    // A kitty picker with a fixed cell size, without asking a terminal.
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Kitty);
+    toppingctl::tui::pixel::PixelLayer::new(picker)
+}
+
+fn draw_pixels(
+    app: &App,
+    w: u16,
+    h: u16,
+    layer: &mut toppingctl::tui::pixel::PixelLayer,
+) -> (Buffer, HitMap) {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let mut hits = HitMap::default();
+    // The frame's own buffer: TestBackend drops the escape sequences.
+    let frame = terminal
+        .draw(|f| hits = ui::draw_with(f, app, &fake_meters(), Some(&mut *layer)))
+        .unwrap();
+    (frame.buffer.clone(), hits)
+}
+
+/// In a kitty terminal every knob is a kitty image in the cells the
+/// Braille knob uses; images are cached by size and value, and a modal
+/// keeps the text on top.
+#[test]
+fn pixel_knobs_in_kitty() {
+    use toppingctl::tui::pixel::PixelWidget;
+    let mut app = synced_app(Theme::color());
+    let mut layer = kitty_layer();
+    let (buf, hits) = draw_pixels(&app, 120, 40, &mut layer);
+
+    // Two gain knobs, eight pan knobs, Monitor Mix (dimmed).
+    let knobs: Vec<_> = hits.pixels().iter().collect();
+    assert_eq!(knobs.len(), 11);
+    let dimmed = knobs
+        .iter()
+        .filter(|s| matches!(s.widget, PixelWidget::Knob { dimmed: true, .. }))
+        .count();
+    assert_eq!(dimmed, 1);
+    // About 12×6 for the gain knob, 8×4 for pans at this size.
+    let gain = hits.pixels()[0].rect;
+    assert_eq!((gain.width, gain.height), (12, 6));
+    let pan = hits.pixels()[2].rect;
+    assert_eq!((pan.width, pan.height), (8, 4));
+    // Each knob's first cell carries the kitty image (transmit + placeholder).
+    for s in hits.pixels() {
+        let sym = buf[(s.rect.x, s.rect.y)].symbol();
+        assert!(
+            sym.contains("\u{10EEEE}"),
+            "kitty placeholder at {:?}",
+            s.rect
+        );
+    }
+    assert!(
+        buf[(gain.x, gain.y)].symbol().contains("\x1b_G"),
+        "transmitted"
+    );
+    // The gain knob's click target still covers its cells.
+    let g = hits
+        .rect(Hit::Control(input(0, InputControl::Gain)))
+        .unwrap();
+    assert!(g.contains(gain.as_position()));
+
+    // Same values: nothing new is drawn. Equal knobs share an image.
+    let built = layer.built();
+    assert!(
+        layer.cached() < 11,
+        "PB pans at the same value share images"
+    );
+    draw_pixels(&app, 120, 40, &mut layer);
+    assert_eq!(layer.built(), built, "a redraw reuses the cache");
+
+    // A new gain draws one new image.
+    app.handle_key(ch('1'));
+    for _ in 0..6 {
+        app.handle_key(key(KeyCode::Down));
+    }
+    app.handle_key(key(KeyCode::Right));
+    draw_pixels(&app, 120, 40, &mut layer);
+    assert_eq!(layer.built(), built + 1);
+
+    // A smaller terminal: new sizes, new images, inside the new cells.
+    let (_, hits) = draw_pixels(&app, 100, 34, &mut layer);
+    assert!(layer.built() > built + 1);
+    assert!(hits
+        .pixels()
+        .iter()
+        .all(|s| s.rect.right() <= 100 && s.rect.bottom() <= 34));
+
+    // Too small: no knobs at all.
+    let (_, hits) = draw_pixels(&app, 90, 30, &mut layer);
+    assert!(hits.pixels().is_empty());
+
+    // A modal open: no images, so its text stays on top.
+    app.handle_key(ch('?'));
+    let (buf, _) = draw_pixels(&app, 120, 40, &mut layer);
+    assert!(buf
+        .content()
+        .iter()
+        .all(|c| !c.symbol().contains("\x1b_G") && !c.symbol().contains("\u{10EEEE}")));
+
+    // The text path (and the golden snapshots) never draw images.
+    app.handle_key(key(KeyCode::Esc));
+    let (buf, _) = render(&app, &fake_meters(), 120, 40);
+    assert!(buf
+        .content()
+        .iter()
+        .all(|c| !c.symbol().contains("\u{10EEEE}")));
+}

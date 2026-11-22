@@ -35,6 +35,12 @@ impl Theme {
     pub const WARN: Color = Color::Rgb(236, 110, 96);
     /// The sync dot.
     pub const OK: Color = Color::Rgb(80, 200, 120);
+    /// The knobs' palette (docs/design/knobs): lit arc, unlit arc, rim,
+    /// pointer.
+    pub const KNOB_ACCENT: Color = Color::Rgb(122, 162, 247);
+    pub const KNOB_DIM: Color = Color::Rgb(59, 66, 97);
+    pub const KNOB_RIM: Color = Color::Rgb(120, 126, 150);
+    pub const KNOB_POINTER: Color = Color::Rgb(235, 235, 245);
     /// Mix A, B, C tab colours.
     pub const MIX: [Color; 3] = [
         Color::Rgb(80, 200, 120),

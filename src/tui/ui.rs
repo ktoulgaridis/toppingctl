@@ -17,8 +17,9 @@ use ratatui::Frame;
 
 use crate::state::{Meters, Mix, PbStrip, Source};
 use crate::tui::app::{App, Control, InputControl, MeterId, Modal, Panel, Phase, MAX_GAIN_DB};
+use crate::tui::pixel::{PixelLayer, PixelSpot, PixelWidget, GAIN_TICKS};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::dial::Dial;
+use crate::tui::widgets::dial::{knob_rect, Dial};
 use crate::tui::widgets::fader::{fmt_db, Fader};
 use crate::tui::widgets::meter::{peak_text, Meter, Scale, INPUT_SCALE_DB};
 use crate::tui::widgets::pill::{pill, PillKind};
@@ -48,9 +49,11 @@ pub enum Hit {
 
 /// Where clickable things are on screen, from the last render. Later
 /// entries are on top.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HitMap {
     entries: Vec<(Hit, Rect)>,
+    /// The pixel widgets the last render placed (see [`draw_with`]).
+    pixels: Vec<PixelSpot>,
 }
 
 impl HitMap {
@@ -82,10 +85,35 @@ impl HitMap {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// The pixel widgets of the last render, in drawing order.
+    pub fn pixels(&self) -> &[PixelSpot] {
+        &self.pixels
+    }
 }
 
-/// Draws the whole screen and returns its hit map.
+/// Draws the whole screen in text and returns its hit map (the golden
+/// snapshots use this).
 pub fn draw(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
+    draw_with(f, app, meters, None)
+}
+
+/// [`draw`], then, with a pixel layer, the pixel widgets over their cells.
+/// Not while a modal is open: the modal's text must stay on top.
+pub fn draw_with(
+    f: &mut Frame,
+    app: &App,
+    meters: &Meters,
+    pixels: Option<&mut PixelLayer>,
+) -> HitMap {
+    let hits = draw_text(f, app, meters);
+    if let (Some(layer), None) = (pixels, app.modal()) {
+        layer.render(hits.pixels(), f.buffer_mut());
+    }
+    hits
+}
+
+fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
     let area = f.area();
     let buf = f.buffer_mut();
     let mut hits = HitMap::default();
@@ -424,6 +452,43 @@ fn columns(area: Rect, n: u16) -> Vec<Rect> {
         .collect()
 }
 
+/// The largest input gain and Monitor Mix knob, in cells (about 12×6).
+const GAIN_KNOB: (u16, u16) = (12, 6);
+/// The largest pan knob, in cells (about 8×4).
+const PAN_KNOB: (u16, u16) = (8, 4);
+
+/// A knob to draw: the Braille knob as text, and its cells recorded for
+/// the pixel layer.
+struct Knob {
+    value: Option<f64>,
+    label: Option<String>,
+    focused: bool,
+    dimmed: bool,
+    max: (u16, u16),
+    ticks: u32,
+}
+
+impl Knob {
+    fn draw(self, buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
+        let rect = knob_rect(area, self.label.is_some(), self.max);
+        hits.pixels.push(PixelSpot {
+            rect,
+            widget: PixelWidget::Knob {
+                value: self.value,
+                ticks: self.ticks,
+                dimmed: self.dimmed,
+            },
+        });
+        Dial::new(t)
+            .value(self.value)
+            .dimmed(self.dimmed)
+            .focused(self.focused)
+            .label(self.label)
+            .max_cells(self.max.0, self.max.1)
+            .render(area, buf);
+    }
+}
+
 /// A gain value: `+12 dB`; 0 dB reads `−0 dB`, as in the official app.
 pub fn gain_text(gain_db: u8) -> String {
     match gain_db.min(MAX_GAIN_DB) {
@@ -527,13 +592,25 @@ fn draw_input_strip(
     // The gain knob takes every row under the switches: dial, then value.
     let knob_y = r.y + 7;
     if r.bottom() >= knob_y + 4 {
-        let knob = Rect::new(right.x, knob_y, right.width, r.bottom() - knob_y);
+        // From just right of the scale to the edge: as wide as the strip
+        // allows (about 12×6 cells at 120 columns).
+        let kx = x0 + 5;
+        let knob = Rect::new(
+            kx,
+            knob_y,
+            r.right().saturating_sub(kx),
+            r.bottom() - knob_y,
+        );
         let gain = input.gain_db.min(MAX_GAIN_DB);
-        Dial::new(t)
-            .value(Some(f64::from(gain) / f64::from(MAX_GAIN_DB)))
-            .focused(focused(InputControl::Gain))
-            .label(Some(gain_text(gain)))
-            .render(knob, buf);
+        let k = Knob {
+            value: Some(f64::from(gain) / f64::from(MAX_GAIN_DB)),
+            label: Some(gain_text(gain)),
+            focused: focused(InputControl::Gain),
+            dimmed: false,
+            max: GAIN_KNOB,
+            ticks: GAIN_TICKS,
+        };
+        k.draw(buf, knob, t, hits);
         hits.push(
             Hit::Control(Control::Input {
                 ch,
@@ -621,7 +698,7 @@ fn dial_rows(r: Rect) -> u16 {
 
 /// Two pan dials side by side with their values under them, in the top
 /// `rows` rows of `area`.
-fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2], rows: u16) {
+fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2], rows: u16, hits: &mut HitMap) {
     let halves = columns(
         Rect {
             height: rows,
@@ -630,11 +707,15 @@ fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2], rows: u16) 
         2,
     );
     for (h, p) in halves.into_iter().zip(pans) {
-        Dial::new(t)
-            .value(Some(p))
-            .bipolar(true)
-            .label(Some(pan_text(p)))
-            .render(h, buf);
+        let k = Knob {
+            value: Some(p),
+            label: Some(pan_text(p)),
+            focused: false,
+            dimmed: false,
+            max: PAN_KNOB,
+            ticks: 0,
+        };
+        k.draw(buf, h, t, hits);
     }
 }
 
@@ -687,7 +768,7 @@ fn draw_pb_strip(
         return;
     }
     let d = dial_rows(r);
-    pan_dials(buf, r, t, [s.pan_l, s.pan_r], d);
+    pan_dials(buf, r, t, [s.pan_l, s.pan_r], d, hits);
     put_centered(
         buf,
         r,
@@ -771,7 +852,7 @@ fn draw_in12_strip(
     // Link puts IN1 hard L and IN2 hard R: show what is in effect.
     let pans = if link { [0.0, 1.0] } else { [in1.pan, in2.pan] };
     let d = dial_rows(r);
-    pan_dials(buf, r, t, pans, d);
+    pan_dials(buf, r, t, pans, d, hits);
     put_centered(
         buf,
         r,
@@ -969,7 +1050,15 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
     if r.height >= 6 {
         // The dial takes what the two text rows leave.
         let dial_h = r.height - 3;
-        Dial::new(t).render(Rect::new(r.x, r.y, r.width, dial_h), buf);
+        let k = Knob {
+            value: None,
+            label: None,
+            focused: false,
+            dimmed: true,
+            max: GAIN_KNOB,
+            ticks: 0,
+        };
+        k.draw(buf, Rect::new(r.x, r.y, r.width, dial_h), t, hits);
         put_centered(
             buf,
             r,

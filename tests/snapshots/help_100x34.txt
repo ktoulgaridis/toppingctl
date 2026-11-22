@@ -4,19 +4,19 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭┤¹input├──────────────────────────╮╭┤²mixer├─┤a mix A├ b mix B   c mix C  ────────────────────────╮
 │╭───── IN╭ Help ────────────────────────────────────────────────────────────────────────╮ 5/6 ───╮│
-││ ▔▔ −18 │                                                                              │╮╭──━━━┓││
-││ ▕   0  │   Tab  Shift-Tab   next / previous panel                                     │││  ↘  ┃││
-││ ▕  −6  │   1  2  3  4       input, mixer, loopback, output                            │╯╰     ┛││
+││ ▔▔ −18 │                                                                              │ ⢠⢖⠭⠭⡲⡄ ││
+││ ▕   0  │   Tab  Shift-Tab   next / previous panel                                     │ ⡇⡇ ⢄⢸⢸ ││
+││ ▕  −6  │   1  2  3  4       input, mixer, loopback, output                            │ ⠘⠊⠒⠒⠑⠃ ││
 ││ ▕ −12  │   ↑ ↓              move along an input                                       │  R100  ││
 ││ ▃▃     │   ← →              next strip; on a gain knob −1 / +1 dB                     │INK     ││
 ││ ██−24  │   Shift ← →        gain −10 / +10 dB                                         │ dB     ││
 ││ ██     │   0                reset the gain to −0 dB                                   │┃     ▔ ││
-││ ██    ┏│   space            toggle the focused switch                                 │┃ 0   ▕ ││
-││ ██−36 ┃│   a  b  c          show mix A / B / C                                        │┃ −6  ▕ ││
-││ ██    ┃│   ?                this help                                                 │┃ −12 ▕ ││
-││ ██−48 ┗│   q  Ctrl-C        quit                                                      │┃ −24 ▕ ││
+││ ██   ⢀⡴│   space            toggle the focused switch                                 │┃ 0   ▕ ││
+││ ██−36⣾⠱│   a  b  c          show mix A / B / C                                        │┃ −6  ▕ ││
+││ ██   ⢿⡰│   ?                this help                                                 │┃ −12 ▕ ││
+││ ██−48⠈⠃│   q  Ctrl-C        quit                                                      │┃ −24 ▕ ││
 ││ ██     │                                                                              │●━−∞  ▕ ││
-││ ██−60  │   click            focus a strip; flip a switch; pick a mix                  │S   M   ││
+││ ██−60 +│   click            focus a strip; flip a switch; pick a mix                  │S   M   ││
 │╰────────│   wheel            turn a knob (Shift ×10)                                   │────────╯│
 ╰─────────│   drag             turn a knob (up / down)                                   │─────────╯
 ╭┤³loopbac│   double-click     reset a knob                                              │─────────╮
