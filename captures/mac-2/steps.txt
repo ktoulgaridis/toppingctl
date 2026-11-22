@@ -1,0 +1,3 @@
+1795353735.692618 hidsniff start (rx elapsed=0 here)
+1795353837.336261 PASS2 start: app: IN1 MON on/off, IN1 gain up/back, MixA IN1 fader, LB1+2 src MixA->PB3/4, HP off/on, store; device: MON x2, Monitor Mix knob, volume knob
+1795354104.603721 PASS3 start (in-app rx+tx hook, pass3.txt): app MON on/off, app HP off/on; device MON x2, Monitor Mix, volume, headphone gain

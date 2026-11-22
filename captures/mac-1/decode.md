@@ -46,7 +46,8 @@ IN1 = `0x1000`, IN2 = `0x2000`, IN1+2 = `0x3000` (a bitmask).
 
 ## Gaps / notes
 
-- **Monitor Mix knob:** device-only, so it doesn't appear in tx. It's probably `11 01` from the Linux rx capture.
+- **Monitor Mix knob:** device-only, so it doesn't appear in tx. mac-2 found it sends no rx either. `11 01` is the volume knob.
+- **Sample rate:** set through CoreAudio, not HID (see `../mac-2/notes.md`).
 - **Workspace save/load and app-only settings:** no frames.
 - **Mix B/C:** only faders were exercised. Pan is assumed to match Mix A.
 - **Hardware buttons:** pressed during the first pass, before the app pass. They show no tx, as expected; that pass is noted in `steps.txt`.
