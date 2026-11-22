@@ -1500,6 +1500,26 @@ fn pixel_widgets_redraw() {
     let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     assert_eq!(out, "");
 
+    // A focus change re-places only the strip titles' chips (the
+    // focused title is lit), with no blanket delete.
+    let mut focus_app = synced_app(Theme::color());
+    let mut focus_layer = kitty_layer();
+    draw_pixels(&focus_app, &meters, 120, 40, &mut focus_layer);
+    focus_app.handle_key(key(KeyCode::Tab));
+    let (_, hits, out) = draw_pixels(&focus_app, &meters, 120, 40, &mut focus_layer);
+    assert!(!out.contains("d=a"), "{out:?}");
+    let placed = placements(&out);
+    assert!(!placed.is_empty());
+    assert_eq!(count(&out, "d"), placed.len());
+    for p in &placed {
+        let s = hits
+            .pixels()
+            .iter()
+            .find(|s| (s.rect.x, s.rect.y) == (p.x, p.y))
+            .unwrap();
+        assert_eq!(kind(&s.widget), "chip", "{s:?}");
+    }
+
     // A clip lights IN1's lamps and they go out after the hold.
     let t0 = Instant::now();
     meters.inputs[0] = 0.0;
