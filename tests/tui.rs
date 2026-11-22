@@ -314,10 +314,13 @@ fn phantom_needs_confirmation() {
     assert!(app.handle_key(ch(' ')).is_empty());
     assert_eq!(app.modal(), Some(Modal::Phantom { ch: 0 }));
 
-    // A device report updates 48V.
+    // A device report updates 48V; 48V and the volume knob are not
+    // persisted, so they cause no save. A MON press does.
     let mut app = synced_app(Theme::color());
-    app.on_report(&frame(0x22, 0x02, 0));
+    assert!(app.on_report(&frame(0x22, 0x02, 0)).is_empty());
     assert_eq!(app.state().inputs[1].phantom, Some(false));
+    assert!(app.on_report(&frame(0x11, 0x01, 0x30)).is_empty());
+    assert_eq!(app.on_report(&frame(0x22, 0x01, 1)), vec![Action::Save]);
 }
 
 #[test]
@@ -350,6 +353,12 @@ fn first_run_asks_before_pushing() {
         assert!(app.handle_key(k).is_empty());
     }
     assert_eq!(app.modal(), Some(Modal::PushDefaults));
+
+    // A device button press while asking is applied but not saved: saving
+    // would skip this question on the next launch.
+    assert!(app.on_report(&frame(0x21, 0x01, 1)).is_empty());
+    assert!(app.state().inputs[0].mon);
+    app.on_report(&frame(0x21, 0x01, 0));
 
     // y pushes the state (the device's own settings excepted) and saves it.
     let actions = app.handle_key(ch('y'));

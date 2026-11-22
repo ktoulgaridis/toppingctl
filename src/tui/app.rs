@@ -231,7 +231,10 @@ impl App {
             KeyCode::Down => self.move_vertical(1),
             KeyCode::Left => self.move_horizontal(-1),
             KeyCode::Right => self.move_horizontal(1),
-            KeyCode::Char('?') => self.modal = Some(Modal::Help),
+            KeyCode::Char('?') => {
+                self.modal = Some(Modal::Help);
+                self.drag = None;
+            }
             KeyCode::Char('h') => return self.adjust(self.focus, -1),
             KeyCode::Char('l') => return self.adjust(self.focus, 1),
             KeyCode::Char('H') => return self.adjust(self.focus, -10),
@@ -321,11 +324,12 @@ impl App {
     }
 
     /// Applies a device report (a button press or an echo). Saves when it
-    /// changes the state.
+    /// changes what is persisted, but not while the first-run question is
+    /// open: a save then would skip the question on the next launch.
     pub fn on_report(&mut self, f: &Frame) -> Vec<Action> {
-        let before = self.state.clone();
+        let before = persisted(&self.state);
         self.state.apply(f);
-        if self.state != before && self.phase == Phase::Synced {
+        if self.controls_live() && persisted(&self.state) != before {
             vec![Action::Save]
         } else {
             Vec::new()
@@ -405,6 +409,7 @@ impl App {
                     vec![Action::Send(phantom_frame(ch, false))]
                 } else {
                     self.modal = Some(Modal::Phantom { ch });
+                    self.drag = None;
                     Vec::new()
                 };
             }
@@ -461,6 +466,16 @@ impl App {
             self.focus = Control::Input { ch, kind };
         }
     }
+}
+
+/// `state` without what the store leaves out (48V and the readout).
+fn persisted(state: &State) -> State {
+    let mut s = state.clone();
+    s.readout = Default::default();
+    for input in &mut s.inputs {
+        input.phantom = None;
+    }
+    s
 }
 
 /// The 48V register of input `ch`.
