@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+                   ╭ First run ─────────────────────────────╮
+                   │                                        │
+                   │   No saved state.                      │
+                   │   Push defaults to the device?         │
+                   │                                        │
+                   │   No quits without writing anything.   │
+                   │                                        │
+                   │         [y] Push      [N] Quit         │
+                   │                                        │
+                   ╰────────────────────────────────────────╯
+
+
+
+
+
+
+

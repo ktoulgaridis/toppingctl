@@ -8,4 +8,5 @@ pub mod frame;
 pub mod open;
 pub mod state;
 pub mod sync;
+pub mod tui;
 pub mod value;
