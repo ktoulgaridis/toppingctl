@@ -151,7 +151,10 @@ fn store_round_trip() {
     // A corrupt file is an error and is left untouched.
     fs::write(&path, b"{ not json").unwrap();
     assert!(matches!(store.load(), Err(StoreError::Corrupt { .. })));
-    assert!(matches!(store.save(&state), Err(StoreError::Corrupt { .. })));
+    assert!(matches!(
+        store.save(&state),
+        Err(StoreError::Corrupt { .. })
+    ));
     assert_eq!(fs::read(&path).unwrap(), b"{ not json");
 
     // The path honours XDG_CONFIG_HOME, and falls back to the home dir.

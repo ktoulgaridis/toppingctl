@@ -42,11 +42,17 @@ fn full_push_covers_every_register() {
         *counts.entry((f.group, f.param)).or_default() += 1;
     }
     for (reg, n) in &counts {
-        assert_eq!(*n, 1, "register {:02x} {:02x} written {n} times", reg.0, reg.1);
+        assert_eq!(
+            *n, 1,
+            "register {:02x} {:02x} written {n} times",
+            reg.0, reg.1
+        );
     }
     let written: Vec<(u8, u8)> = counts.keys().copied().collect();
     assert_eq!(written, writable_registers());
-    assert!(frames.iter().all(|f| f.param != 0x02 || !matches!(f.group, 0x21 | 0x22)));
+    assert!(frames
+        .iter()
+        .all(|f| f.param != 0x02 || !matches!(f.group, 0x21 | 0x22)));
 }
 
 /// The app's launch push in `captures/mac-1/tx.txt`, from the first
@@ -129,7 +135,10 @@ fn diff_is_minimal() {
     s.mixes[0].in1.pan = 0.49;
     assert_eq!(
         diff_regs(&base, &s),
-        vec![frame(0x51, 0x11, 0x0105_1ea8), frame(0x51, 0x21, 0x00fa_e138)]
+        vec![
+            frame(0x51, 0x11, 0x0105_1ea8),
+            frame(0x51, 0x21, 0x00fa_e138)
+        ]
     );
 
     // IN1 solo: the other input goes to 0.
@@ -165,7 +174,10 @@ fn diff_is_minimal() {
     s.mixes[1].in2.fader_db = -1.0;
     assert_eq!(
         diff_regs(&base, &s),
-        vec![frame(0x52, 0x12, 0x00e4_28fc), frame(0x52, 0x22, 0x00e4_28fc)]
+        vec![
+            frame(0x52, 0x12, 0x00e4_28fc),
+            frame(0x52, 0x22, 0x00e4_28fc)
+        ]
     );
 
     // Stereo PB strip at -1 dB: odd → L, even → R, full level each.
@@ -173,7 +185,10 @@ fn diff_is_minimal() {
     s.mixes[0].pb12.fader_db = -1.0;
     assert_eq!(
         diff_regs(&base, &s),
-        vec![frame(0x51, 0x13, 0x01c8_51f8), frame(0x51, 0x24, 0x01c8_51f8)]
+        vec![
+            frame(0x51, 0x13, 0x01c8_51f8),
+            frame(0x51, 0x24, 0x01c8_51f8)
+        ]
     );
 
     // Stereo PB balance left of centre pans the even channel left (as the
@@ -182,7 +197,10 @@ fn diff_is_minimal() {
     s.mixes[0].pb12.pan = 0.49;
     assert_eq!(
         diff_regs(&base, &s),
-        vec![frame(0x51, 0x14, 0x000a_3d70), frame(0x51, 0x24, 0x01f5_c270)]
+        vec![
+            frame(0x51, 0x14, 0x000a_3d70),
+            frame(0x51, 0x24, 0x01f5_c270)
+        ]
     );
 
     // Mix strip phase: both sides negated.
@@ -190,7 +208,10 @@ fn diff_is_minimal() {
     s.mixes[0].pb12.phase = true;
     assert_eq!(
         diff_regs(&base, &s),
-        vec![frame(0x51, 0x13, -0x01ff_ffe0), frame(0x51, 0x24, -0x01ff_ffe0)]
+        vec![
+            frame(0x51, 0x13, -0x01ff_ffe0),
+            frame(0x51, 0x24, -0x01ff_ffe0)
+        ]
     );
 
     // Mix strip solo: every other strip in that mix goes to 0.
@@ -221,7 +242,10 @@ fn diff_is_minimal() {
         .iter()
         .map(|f| (f.group, f.param))
         .collect();
-    assert_eq!(regs, vec![(0x34, 0x01), (0x34, 0x02), (0x31, 0x01), (0x31, 0x02)]);
+    assert_eq!(
+        regs,
+        vec![(0x34, 0x01), (0x34, 0x02), (0x31, 0x01), (0x31, 0x02)]
+    );
 
     // Loopback mute: L and R to 0.
     let mut s = base.clone();
