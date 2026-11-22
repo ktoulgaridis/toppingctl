@@ -197,3 +197,26 @@ fn drop_stops_thread() {
         Some(std::sync::mpsc::TryRecvError::Disconnected)
     );
 }
+
+/// The device's idle `00 00` frames are not events, but they show the link
+/// is alive: `Connection::last_seen` moves with them.
+#[test]
+fn idle_frames_mark_the_link_alive() {
+    let (transport, fake) = FakeTransport::new();
+    let (conn, events) = Connection::spawn(transport);
+    assert_eq!(conn.last_seen(), None, "nothing has arrived yet");
+    let before = std::time::Instant::now();
+    fake.push_report(&frame(0x00, 0x00, 0).encode(Crc::Fill));
+    let deadline = before + WAIT;
+    while conn.last_seen().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let seen = conn.last_seen().expect("an idle frame counts as alive");
+    assert!(seen >= before);
+    assert!(
+        events
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err(),
+        "still no event for an idle frame"
+    );
+}

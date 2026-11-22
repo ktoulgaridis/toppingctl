@@ -7,7 +7,9 @@
 
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use hidapi::HidDevice;
 
@@ -111,7 +113,11 @@ pub struct Connection {
     commands: Option<Sender<[u8; REPORT_LEN]>>,
     thread: Option<JoinHandle<()>>,
     crc: Crc,
+    seen: Seen,
 }
+
+/// When the device last sent a valid frame, idle ones included.
+type Seen = Arc<Mutex<Option<Instant>>>;
 
 impl Connection {
     /// Starts the I/O thread on `transport`. Frames are sent with the CRC16
@@ -124,13 +130,23 @@ impl Connection {
     pub fn spawn_with_crc<T: Transport>(transport: T, crc: Crc) -> (Connection, Receiver<Event>) {
         let (commands, command_rx) = mpsc::channel();
         let (event_tx, events) = mpsc::channel();
-        let thread = thread::spawn(move || run(transport, command_rx, event_tx));
+        let seen = Seen::default();
+        let io_seen = Arc::clone(&seen);
+        let thread = thread::spawn(move || run(transport, command_rx, event_tx, io_seen));
         let conn = Connection {
             commands: Some(commands),
             thread: Some(thread),
             crc,
+            seen,
         };
         (conn, events)
+    }
+
+    /// When the device last sent a valid frame, including the idle `00 00`
+    /// frames it streams (about 250/s) while nothing changes. Those are not
+    /// events, but they show the link is alive when there is no signal.
+    pub fn last_seen(&self) -> Option<Instant> {
+        self.seen.lock().map_or(None, |s| *s)
     }
 
     /// Queues `frame` for writing. Refuses frames that turn 48V phantom power on.
@@ -170,8 +186,9 @@ fn run<T: Transport>(
     mut transport: T,
     commands: Receiver<[u8; REPORT_LEN]>,
     events: Sender<Event>,
+    seen: Seen,
 ) {
-    let error = match pump(&mut transport, &commands, &events) {
+    let error = match pump(&mut transport, &commands, &events, &seen) {
         Some(error) => error,
         None => return,
     };
@@ -187,6 +204,7 @@ fn pump<T: Transport>(
     transport: &mut T,
     commands: &Receiver<[u8; REPORT_LEN]>,
     events: &Sender<Event>,
+    seen: &Seen,
 ) -> Option<IoError> {
     let mut buf = [0u8; READ_BUFFER_LEN];
     loop {
@@ -206,7 +224,13 @@ fn pump<T: Transport>(
             Ok(len) => len.min(buf.len()),
             Err(e) => return Some(e),
         };
-        if let Some(event) = classify(&buf[..len]) {
+        let event = classify(&buf[..len]);
+        if !matches!(event, Some(Event::Malformed { .. })) {
+            if let Ok(mut s) = seen.lock() {
+                *s = Some(Instant::now());
+            }
+        }
+        if let Some(event) = event {
             let _ = events.send(event);
         }
     }
