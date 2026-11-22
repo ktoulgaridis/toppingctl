@@ -41,3 +41,7 @@ Verified by the meters:
 | `32 05 = 0x100` / `33 05 = 0x100` (Loopback source PB1/2) | loopback meters show the tone; switching back to PB3/4 or PB5/6 drops them to the floor |
 
 The meters sit before the level controls, so `31 01/02` and `32`/`33` `01/02` did not move them. Those levels still need checking by ear or by recording.
+
+## Output fader range (`app-output-fader.txt`)
+
+Captured from the official app (Frida rx+tx hook). The Output 1+2 fader runs from 0 to `0x2000000` (0 dB is the top of the fader) and writes `31 01` and `31 02` together.

@@ -29,7 +29,7 @@ A negative value means phase-inverted (Ø) and 0 means muted.
 | `21`/`22` `03` | IN1/IN2 INST | 0/1 |
 | `21`/`22` `04` | IN1/IN2 gain | level, +0…+20 dB (`0x02000000`…`0x14000000`). MUTE writes 0, Ø writes the negated level, SOLO writes 0 to the *other* input |
 | `51`/`52`/`53` `<o><s>` | Mix A/B/C crosspoint | level. o: 1 = L, 2 = R. s: 1 IN1, 2 IN2, 3–8 PB1…PB6. Fader and pan (linear split, centre = 0.5 each) are computed in the app. Fader max ≈ +6 dB (`0x3fb2784`). Ø negates, MUTE writes 0, SOLO rewrites all 16, Link on = IN1 hard L / IN2 hard R |
-| `31` `01`/`02` | Output 1+2 L/R level | level |
+| `31` `01`/`02` | Output 1+2 L/R level | level, 0 (−∞) … `0x2000000` (0 dB max, no boost). The fader writes both (`../mac-3/app-output-fader.txt`) |
 | `31` `05` | Output 1+2 source | see source encoding |
 | `32`/`33` `01`/`02` | Loopback 1+2 / 3+4 L/R level | level, MUTE writes 0 |
 | `32`/`33` `05` | Loopback 1+2 / 3+4 source | see source encoding |
