@@ -7,7 +7,8 @@
 //!
 //! The knob sweeps from down-left (min) through up (centre) to down-right
 //! (max), like a pot, and the arc is lit from the minimum. Dimmed (Monitor
-//! Mix: the device never reports it) draws the ring dim with no pointer.
+//! Mix: read-only, mirroring the balance the device reports) draws the ring
+//! dim with nothing lit, and the pointer only for a known value.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -78,7 +79,8 @@ impl Dial {
         self
     }
 
-    /// Dim everything and draw no pointer (Monitor Mix).
+    /// Dim everything, light no arc (Monitor Mix); a known value still
+    /// gets its pointer.
     pub fn dimmed(mut self, dimmed: bool) -> Self {
         self.dimmed = dimmed;
         self
@@ -124,7 +126,8 @@ impl Dial {
                 };
             }
         }
-        if let (Some(v), false) = (self.value, self.dimmed) {
+        // The pointer shows a known value, dimmed or not.
+        if let Some(v) = self.value {
             let a = (START_DEG - SWEEP_DEG * v).to_radians();
             for i in 0..40 {
                 let t = f64::from(i) / 39.0 * 0.62 * r;

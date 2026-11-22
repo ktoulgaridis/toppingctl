@@ -314,7 +314,7 @@ fn reports_update_state() {
     assert_eq!(state.system.brightness, 2);
     assert!(state.system.auto_standby);
     assert!(state.system.mobile_apps);
-    assert_eq!(state.readout.volume_knob, Some(0x49));
+    assert_eq!(state.readout.monitor_mix, Some(0x49));
     assert_eq!(
         state.readout.hardware_version,
         Some(Version {

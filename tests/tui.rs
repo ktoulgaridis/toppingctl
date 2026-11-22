@@ -100,7 +100,7 @@ fn fake_state() -> State {
     a.pb56.link = false;
     s.loopbacks[1].set_level(-6.0);
     s.output.source = Source::MixA;
-    s.readout.volume_knob = Some(0x49);
+    s.readout.monitor_mix = Some(0x49);
     s.readout.hardware_version = Some(Version {
         major: 1,
         minor: 14,
@@ -1719,4 +1719,79 @@ fn pixel_transmit_budget() {
     }
     let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     assert_eq!(out, "", "then nothing more");
+}
+
+// ------------------------------------------------- Monitor Mix and PHONE
+
+/// MONITOR MIX mirrors the balance the device reports (`11 01`, 0 ..= 100,
+/// 50 = centre) on a dimmed knob nobody can turn; PHONE shows the level
+/// switch (`11 02`) as +17 dBu / 0 dBu, with no volume knob.
+#[test]
+fn monitor_mix_and_phone_level() {
+    use toppingctl::tui::pixel::PixelWidget;
+    let mut app = synced_app(Theme::color());
+    app.on_report(&frame(0x11, 0x01, 30));
+    let (buf, hits) = render(&app, &fake_meters(), 120, 40);
+    let t = text(&buf);
+    assert!(!t.contains("on device only"), "{t}");
+    assert!(!t.contains("volume knob"), "{t}");
+    let monitor = hits
+        .pixels()
+        .iter()
+        .find(|s| matches!(s.widget, PixelWidget::Knob { dimmed: true, .. }))
+        .expect("the Monitor Mix knob");
+    assert_eq!(
+        monitor.widget,
+        PixelWidget::Knob {
+            value: Some(0.3),
+            ticks: 0,
+            dimmed: true
+        }
+    );
+    // Its value in the strip, as the app shows it (v − 50).
+    let strip: String = (monitor.rect.y..40)
+        .map(|y| {
+            (monitor.rect.x.saturating_sub(4)..monitor.rect.right() + 4)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect();
+    assert!(strip.contains("−20"), "{strip}");
+    // Not interactive: a click on it sends nothing.
+    let mut actions = Vec::new();
+    let c = monitor.rect.as_position();
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        actions.extend(app.handle_mouse(mouse(kind, c.x, c.y, KeyModifiers::NONE), &hits));
+    }
+    actions.extend(app.handle_mouse(
+        mouse(MouseEventKind::ScrollUp, c.x, c.y, KeyModifiers::NONE),
+        &hits,
+    ));
+    assert!(sends(&actions).is_empty());
+
+    // Centre reads 0; unknown has no pointer and a dash.
+    app.on_report(&frame(0x11, 0x01, 50));
+    let (buf, _) = render(&app, &fake_meters(), 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("input") && t.contains("playback"), "{t}");
+
+    // PHONE: the level switch, lit on the active side.
+    let lit = |buf: &Buffer, label: &str| -> Option<bool> {
+        let t = text(buf);
+        let (y, line) = t.lines().enumerate().find(|(_, l)| l.contains(label))?;
+        let col = line[..line.find(label)?].chars().count() as u16;
+        Some(buf[(col, y as u16)].bg == Theme::ACCENT)
+    };
+    app.on_report(&frame(0x11, 0x02, 1));
+    let (buf, _) = render(&app, &fake_meters(), 120, 40);
+    assert_eq!(lit(&buf, "+17 dBu"), Some(true));
+    assert_eq!(lit(&buf, " 0 dBu"), Some(false));
+    app.on_report(&frame(0x11, 0x02, 0));
+    let (buf, _) = render(&app, &fake_meters(), 120, 40);
+    assert_eq!(lit(&buf, "+17 dBu"), Some(false));
+    assert_eq!(lit(&buf, " 0 dBu"), Some(true));
 }

@@ -939,7 +939,8 @@ pub fn knob_image(w: u32, h: u32, value: Option<f64>, ticks: u32, dimmed: bool) 
             None,
         );
     }
-    if let (Some(v), false) = (value, dimmed) {
+    // The pointer shows a known value, dimmed or not.
+    if let Some(v) = value {
         let deg = START_DEG as f32 - sweep * v as f32;
         let (x, y) = polar(cx, cy, 0.5 * r, deg);
         let mut pb = PathBuilder::new();

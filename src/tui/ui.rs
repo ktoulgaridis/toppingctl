@@ -1206,13 +1206,16 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
         );
     }
 
-    // Monitor Mix: an analog knob the device never reports.
+    // Monitor Mix: the balance the device reports when its knob turns
+    // (`11 01`), shown read-only like the official app: dimmed, and no
+    // click target.
     let r = strip_box(buf, mon_area, t, "MONITOR MIX", focused(1), hits);
     if r.height >= 6 {
         // The dial takes what the two text rows leave.
         let dial_h = r.height - 3;
+        let balance = state.readout.monitor_mix;
         let k = Knob {
-            value: None,
+            value: balance.map(|v| f64::from(v.clamp(0, 100)) / 100.0),
             label: None,
             focused: false,
             dimmed: true,
@@ -1235,40 +1238,38 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
             buf,
             r,
             r.y + dial_h + 2,
-            &[Span::styled(
-                if r.width >= 19 {
-                    "knob on device only"
-                } else {
-                    "on device only"
-                },
-                t.track(),
-            )],
+            &[Span::styled(monitor_mix_text(balance), t.heading())],
             hits,
         );
     }
 
-    // Phone out: the gain switch and the volume knob's raw position.
+    // Phone out: the level switch (`11 02`). Its volume is an analog knob
+    // that software never sets.
     let r = strip_box(buf, phone_area, t, "PHONE", focused(2), hits);
     if r.height >= 4 {
+        put_centered(buf, r, r.y + 1, &[Span::styled("level", t.dim())], hits);
         put_centered(
             buf,
             r,
-            r.y + 1,
-            &[pill("GAIN", state.phone_gain, PillKind::Normal, false, t)],
+            r.y + 2,
+            &[
+                pill("+17 dBu", state.phone_gain, PillKind::Normal, false, t),
+                Span::raw(" "),
+                pill("0 dBu", !state.phone_gain, PillKind::Normal, false, t),
+            ],
             hits,
         );
-        put_centered(
-            buf,
-            r,
-            r.y + 3,
-            &[Span::styled("volume knob", t.dim())],
-            hits,
-        );
-        let knob = state
-            .readout
-            .volume_knob
-            .map_or("—".to_string(), |v| v.to_string());
-        put_centered(buf, r, r.y + 4, &[Span::styled(knob, t.heading())], hits);
+    }
+}
+
+/// The Monitor Mix balance as the official app shows it, `v − 50`:
+/// `−20` toward input, `+20` toward playback, `0` centred; `—` unknown.
+pub fn monitor_mix_text(balance: Option<i32>) -> String {
+    match balance.map(|v| v.clamp(0, 100) - 50) {
+        None => "—".into(),
+        Some(0) => "0".into(),
+        Some(d) if d < 0 => format!("−{}", -d),
+        Some(d) => format!("+{d}"),
     }
 }
 

@@ -147,15 +147,20 @@ fn braille_knob_min_centre_max() {
     }
 }
 
-/// Monitor Mix (style L): dimmed, no pointer, nothing lit, still a knob.
+/// Monitor Mix (style L): dimmed, nothing lit, still a knob; the pointer
+/// shows the balance the device reports (none while unknown).
 #[test]
 fn braille_knob_dimmed() {
     for v in [None, Some(0.5)] {
         let b = braille(v, true, 12, 6);
-        assert_eq!(count(&b, Theme::KNOB_POINTER), 0, "no pointer");
         assert_eq!(count(&b, Theme::KNOB_ACCENT), 0, "nothing lit");
         assert!(count(&b, Theme::KNOB_DIM) > 6, "the ring is drawn");
     }
+    let b = braille(None, true, 12, 6);
+    assert_eq!(count(&b, Theme::KNOB_POINTER), 0, "unknown: no pointer");
+    let b = braille(Some(0.5), true, 12, 6);
+    let a = mean_angle(&b, 12, 6, Theme::KNOB_POINTER).expect("a pointer");
+    assert!(close(a, 90.0, 30.0), "centre points up: {a}°");
     // An unknown value without dimming draws no pointer either.
     let b = braille(None, false, 12, 6);
     assert_eq!(count(&b, Theme::KNOB_POINTER), 0);
@@ -267,9 +272,12 @@ fn pixel_knob_lights_the_arc() {
     // Corners are transparent (round knob on a see-through square).
     assert_eq!(img.get_pixel(0, 0).0[3], 0);
 
-    // Dimmed (Monitor Mix): nothing lit, no pointer.
-    let img = knob_image(120, 120, Some(0.95), ticks, true);
-    assert!(near(arc_pixel(&img, late), KNOB_DIM_RGB));
+    // Dimmed (Monitor Mix): nothing lit; the pointer shows the value,
+    // and there is none while it is unknown.
+    let img = knob_image(120, 120, Some(0.5), ticks, true);
+    assert!(near(arc_pixel(&img, early), KNOB_DIM_RGB));
+    assert!(near(img.get_pixel(60, 60 - 18).0, KNOB_POINTER_RGB));
+    let img = knob_image(120, 120, None, ticks, true);
     assert!(!near(img.get_pixel(60, 60 - 18).0, KNOB_POINTER_RGB));
     // A solid arc (pan, style K) has no gaps.
     let img = knob_image(80, 80, Some(1.0), 0, false);

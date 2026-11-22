@@ -27,8 +27,8 @@ MOCK_DUMP=120x40 cargo run --release -q           # print a frozen render (used 
   - **Loopback (bottom left):** LOOP 1+2 and 3+4, each with a source dropdown, LINK, the value,
     an L meter · fader · R meter and MUTE.
   - **Output (bottom right):** OUT 1+2 (source dropdown, LINK, fader and meters, HP / LINE), a
-    MONITOR MIX knob (shown as unknown: the knob is analog and the device never reports it) and
-    PHONE (level, GAIN toggle).
+    MONITOR MIX knob (read-only and dimmed, mirroring the balance the device reports as `11 01`)
+    and PHONE (the +17 dBu / 0 dBu level switch, `11 02`).
 - **Style (btop-level, "pretty, not pretentious"):**
   - rounded dim borders, titles set into the border with the shortcut key highlighted
   - one accent colour (soft blue)

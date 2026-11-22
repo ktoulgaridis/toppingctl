@@ -214,8 +214,9 @@ pub struct System {
 /// Read-only values the device reports.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Readout {
-    /// The volume knob's raw step count.
-    pub volume_knob: Option<i32>,
+    /// The Monitor Mix balance (`11 01`): 0 ..= 100, 50 = centre (input ←
+    /// → playback). Reported when the device's knob turns; never written.
+    pub monitor_mix: Option<i32>,
     pub hardware_version: Option<Version>,
     pub firmware_version: Option<Version>,
 }
@@ -578,7 +579,7 @@ impl State {
                 }
             }
             (0x11, 0x02) => self.phone_gain = on,
-            (0x11, 0x01) => self.readout.volume_knob = Some(f.value),
+            (0x11, 0x01) => self.readout.monitor_mix = Some(f.value),
             (0x10, 0x03) => self.readout.hardware_version = Some(Version::from_wire(f.value)),
             (0x10, 0x04) => self.readout.firmware_version = Some(Version::from_wire(f.value)),
             (0x10, 0x0a) => self.system.brightness = f.value.clamp(0, 2) as u8,
