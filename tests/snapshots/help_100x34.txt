@@ -2,17 +2,17 @@
 │ ▄█▄ ▄▄▄ ▄▄▄ ▄▄▄ ▄ ▄▄▄ ▄▄▄ ▄▄▄ ▄█▄ █   E2x2                                 default ▾  │  — kHz ▾ │
 │  █▄ █▄█ █▀▀ █▀▀ █ █ █ ▀▀█ █▄▄  █▄ █▄  fw 1.13         s save  │  l load  │  w store  │  ● synced │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭┤¹input├──────────────────────────╮╭┤²mixer├─┤a mix A├ b mix B   c mix C  ────────────────────────╮
-│╭───── IN╭ Help ────────────────────────────────────────────────────────────────────────╮ 5/6 ───╮│
-││ ▔▔ −18 │                                                                              │ ⢠⢖⠭⠭⡲⡄ ││
-││ ▕   0  │   Tab  Shift-Tab   next / previous panel                                     │ ⡇⡇ ⢄⢸⢸ ││
-││ ▕  −6  │   1  2  3  4       input, mixer, loopback, output                            │ ⠘⠊⠒⠒⠑⠃ ││
-││ ▕ −12  │   ↑ ↓              move along an input                                       │  R100  ││
-││ ▃▃     │   ← →              next strip; on a gain knob −1 / +1 dB                     │INK     ││
-││ ██−24  │   Shift ← →        gain −10 / +10 dB                                         │ dB     ││
-││ ██     │   0                reset the gain to −0 dB                                   │┃     ▔ ││
-││ ██   ⢀⡴│   space            toggle the focused switch                                 │┃ 0   ▕ ││
-││ ██−36⣾⠱│   a  b  c          show mix A / B / C                                        │┃ −6  ▕ ││
+╭┤¹input├─╭ Help ────────────────────────────────────────────────────────────────────────╮─────────╮
+│╭───── IN│                                                                              │ 5/6 ───╮│
+││ ▔▔ −18 │   Tab  Shift-Tab   next / previous panel                                     │ ⢠⢖⠭⠭⡲⡄ ││
+││ ▕   0  │   1  2  3  4       input, mixer, loopback, output                            │ ⡇⡇ ⢄⢸⢸ ││
+││ ▕  −6  │   ↑ ↓              move along an input                                       │ ⠘⠊⠒⠒⠑⠃ ││
+││ ▕ −12  │   ← →              next strip; on a gain knob −1 / +1 dB                     │  R100  ││
+││ ▃▃     │   Shift ← →        gain −10 / +10 dB                                         │INK     ││
+││ ██−24  │   0                reset the gain to −0 dB                                   │ dB     ││
+││ ██     │   space            toggle the focused switch                                 │┃     ▔ ││
+││ ██   ⢀⡴│   a  b  c          show mix A / B / C                                        │┃ 0   ▕ ││
+││ ██−36⣾⠱│   r                sample rate list (sets it through PipeWire)               │┃ −6  ▕ ││
 ││ ██   ⢿⡰│   ?                this help                                                 │┃ −12 ▕ ││
 ││ ██−48⠈⠃│   q  Ctrl-C        quit                                                      │┃ −24 ▕ ││
 ││ ██     │                                                                              │●━−∞  ▕ ││
@@ -21,12 +21,12 @@
 ╰─────────│   drag             turn a knob (up / down)                                   │─────────╯
 ╭┤³loopbac│   double-click     reset a knob                                              │─────────╮
 │╭── LOOP │                                                                              │NE ─────╮│
-││   PB 3/│                    mixer, loopback, output: shown, set in a later version    │        ││
-││  LINK  │                                                                              │el      ││
-││    −0.0│                                 [Esc] close                                  │  0 dBu ││
-││▔   0━━●│                                                                              │        ││
-││▕  −6  ┃╰──────────────────────────────────────────────────────────────────────────────╯        ││
-││▄ −12  ┃  −12 ▄││▕ −12  ┃  −12 ▕││││   █ −12  ┃  −12 █    ││input    playback││                 ││
+││   PB 3/│                    PHONE: space or a click sets the level switch             │        ││
+││  LINK  │                    mixer, loopback, output: shown, set in a later version    │el      ││
+││    −0.0│                                                                              │  0 dBu ││
+││▔   0━━●│                                 [Esc] close                                  │        ││
+││▕  −6  ┃│                                                                              │        ││
+││▄ −12  ┃╰──────────────────────────────────────────────────────────────────────────────╯        ││
 ││█ −24  ┃  −24 █││▕ −24  ┃  −24 ▕││││   █ −24  ┃  −24 █    ││                 ││                 ││
 ││█  −∞  ┃  −∞  █││▕  −∞  ┃  −∞  ▕││││   █  −∞  ┃  −∞  █    ││       +23       ││                 ││
 │╰───────────────╯╰───────────────╯││╰──────────────────────╯╰─────────────────╯╰─────────────────╯│

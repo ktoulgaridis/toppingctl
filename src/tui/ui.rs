@@ -1398,6 +1398,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ("0", "reset the gain to −0 dB"),
         ("space", "toggle the focused switch"),
         ("a  b  c", "show mix A / B / C"),
+        ("r", "sample rate list (sets it through PipeWire)"),
         ("?", "this help"),
         ("q  Ctrl-C", "quit"),
         ("", ""),
@@ -1406,6 +1407,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ("drag", "turn a knob (up / down)"),
         ("double-click", "reset a knob"),
         ("", ""),
+        ("", "PHONE: space or a click sets the level switch"),
         ("", "mixer, loopback, output: shown, set in a later version"),
     ];
     let h = keys.len() as u16 + 6;
