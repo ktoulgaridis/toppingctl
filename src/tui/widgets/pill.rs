@@ -1,6 +1,6 @@
 //! Pill toggles: ` MON `, ` 48V `, … lit when on. 48V and MUTE light red,
 //! everything else the accent. A disabled pill (IN 1+2 LINK while off) is
-//! greyed out with no pill background. Focus is bold and underlined.
+//! a pill like the others with its text greyed out. Focus is bold and underlined.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
@@ -26,7 +26,7 @@ pub fn pill(label: &str, on: bool, kind: PillKind, focused: bool, t: Theme) -> S
         (true, _) => t
             .fg_bg(Theme::PILL_ON_FG, Theme::ACCENT)
             .add_modifier(Modifier::BOLD),
-        (false, PillKind::Disabled) => t.track(),
+        (false, PillKind::Disabled) => t.fg_bg(Theme::SCALE, Theme::PILL_OFF_BG),
         (false, _) => t.fg_bg(Theme::DIM, Theme::PILL_OFF_BG),
     };
     if on && !t.is_color() {

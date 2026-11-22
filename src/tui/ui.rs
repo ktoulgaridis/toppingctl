@@ -15,6 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
+use crate::rate::{format_khz, RATES};
 use crate::state::{Meters, Mix, PbStrip, Source};
 use crate::tui::app::{App, Control, InputControl, MeterId, Modal, Panel, Phase, MAX_GAIN_DB};
 use crate::tui::pixel::{chip_rgb, clear_under, PixelLayer, PixelSpot, PixelWidget, GAIN_TICKS};
@@ -41,6 +42,12 @@ pub enum Hit {
     Focus(Control),
     /// The tab of mix A (0), B (1) or C (2).
     MixTab(usize),
+    /// A PHONE level pill: +17 dBu (`true`) or 0 dBu.
+    Phone(bool),
+    /// The header's sample rate: opens the list.
+    Rate,
+    /// Rate `i` in the sample-rate list.
+    RateOption(usize),
     /// A modal's confirm button.
     Yes,
     /// A modal's cancel (or close) button.
@@ -176,6 +183,7 @@ fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
             &mut hits,
         ),
         Some(Modal::Help) => help(buf, area, t, &mut hits),
+        Some(Modal::Rate { sel }) => rate_list(buf, area, t, app.sample_rate(), sel, &mut hits),
         None => {}
     }
     hits
@@ -282,7 +290,7 @@ fn console(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut 
     let (input, mixer) = split(top);
     let (loopback, output) = split(bottom);
 
-    draw_header(buf, header, app, t);
+    draw_header(buf, header, app, t, hits);
     draw_input_panel(buf, input, app, meters, hits);
     draw_mixer_panel(buf, mixer, app, meters, hits);
     draw_loopback_panel(buf, loopback, app, meters, hits);
@@ -324,7 +332,7 @@ fn wordmark(t: Theme) -> [Line<'static>; 2] {
     [Line::from(top), Line::from(bot)]
 }
 
-fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
+fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut HitMap) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(t.border());
@@ -348,21 +356,29 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
     let key = |k: &'static str| Span::styled(k, t.focus());
     let lab = |s: &'static str| Span::styled(s, t.dim());
     let val = |s: &'static str| Span::styled(s, t.heading());
-    // No workspaces yet (#17) and the sample rate is not HID (its own
-    // story): both are shown as placeholders.
-    let l1 = if wide {
+    // No workspaces yet (#17): a placeholder. The sample rate is read
+    // from the OS (crate::rate); a click on it opens the list.
+    let rate = Span::styled(format!("{} ▾", format_khz(app.sample_rate())), t.heading());
+    let mut l1 = if wide {
         vec![
             lab("workspace  "),
             val("default"),
             lab(" ▾"),
             sep(),
             lab("sample rate  "),
-            val("—"),
-            lab(" Hz ▾ "),
         ]
     } else {
-        vec![val("default"), lab(" ▾"), sep(), val("—"), lab(" kHz ▾ ")]
+        vec![val("default"), lab(" ▾"), sep()]
     };
+    let rate_at = l1.len();
+    l1.extend([rate, Span::raw(" ")]);
+    let l1_w: u16 = l1.iter().map(|s| s.width() as u16).sum();
+    let rate_x = inner.right().saturating_sub(l1_w)
+        + l1[..rate_at].iter().map(|s| s.width() as u16).sum::<u16>();
+    hits.push(
+        Hit::Rate,
+        Rect::new(rate_x, inner.y, l1[rate_at].width() as u16, 1),
+    );
     let (dot, status) = match app.phase() {
         Phase::Synced if app.rx_stale() => (t.warn(), " no meters "),
         Phase::Synced => (t.fg(Theme::OK), " synced "),
@@ -731,15 +747,14 @@ fn draw_mixer_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hi
         let colour = Theme::MIX[m];
         let start = x;
         let active = app.mix() == m;
+        let key = ((b'a' + m as u8) as char).to_string();
+        // The active tab: key and name on one chip of the mix's colour.
+        // The others: key (bold) and name in that colour, as in the mockup.
         let parts: Vec<(String, Style)> = if active {
             vec![
                 ("┤".into(), t.border()),
                 (
-                    ((b'a' + m as u8) as char).to_string(),
-                    t.fg(colour).add_modifier(Modifier::BOLD),
-                ),
-                (
-                    format!(" {name}"),
+                    format!("{key} {name}"),
                     t.fg_bg(Theme::PILL_ON_FG, colour)
                         .add_modifier(Modifier::BOLD),
                 ),
@@ -748,8 +763,8 @@ fn draw_mixer_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hi
         } else {
             vec![
                 (" ".into(), t.border()),
-                (((b'a' + m as u8) as char).to_string(), t.fg(colour)),
-                (format!(" {name} "), t.dim()),
+                (key, t.fg(colour).add_modifier(Modifier::BOLD)),
+                (format!(" {name} "), t.fg(colour)),
                 (" ".into(), t.border()),
             ]
         };
@@ -1246,7 +1261,7 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
     let r = strip_box(buf, phone_area, t, "PHONE", focused(2), hits);
     if r.height >= 4 {
         put_centered(buf, r, r.y + 1, &[Span::styled("level", t.dim())], hits);
-        put_centered(
+        let rects = put_centered(
             buf,
             r,
             r.y + 2,
@@ -1257,6 +1272,8 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
             ],
             hits,
         );
+        hits.push(Hit::Phone(true), rects[0]);
+        hits.push(Hit::Phone(false), rects[2]);
     }
 }
 
@@ -1323,6 +1340,43 @@ fn confirm(
         y,
         &no,
         t.focus().add_modifier(Modifier::REVERSED),
+    );
+    hits.push(Hit::No, r);
+}
+
+/// The sample-rate list: the E2x2's rates, the current one marked, `sel`
+/// highlighted.
+fn rate_list(
+    buf: &mut Buffer,
+    area: Rect,
+    t: Theme,
+    current: Option<u32>,
+    sel: usize,
+    hits: &mut HitMap,
+) {
+    let h = RATES.len() as u16 + 6;
+    let inner = modal_box(buf, area, t, " Sample rate ", 30, h);
+    for (i, &r) in RATES.iter().enumerate() {
+        let mark = if current == Some(r) { "●" } else { " " };
+        let line = format!(" {mark} {:<10}", format_khz(Some(r)));
+        let style = if i == sel {
+            t.focus().add_modifier(Modifier::REVERSED)
+        } else {
+            t.text()
+        };
+        let y = inner.y + 1 + i as u16;
+        let r = put(buf, inner, inner.x + 6, y, &line, style);
+        hits.push(Hit::RateOption(i), r);
+    }
+    let close = " [Esc] close ";
+    let x = inner.x + inner.width.saturating_sub(close.chars().count() as u16) / 2;
+    let r = put(
+        buf,
+        inner,
+        x,
+        inner.bottom().saturating_sub(2),
+        close,
+        t.dim(),
     );
     hits.push(Hit::No, r);
 }

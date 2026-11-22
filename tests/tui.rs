@@ -342,7 +342,16 @@ fn mix_tabs() {
     for m in 0..3 {
         let r = hits.rect(Hit::MixTab(m)).expect("a tab");
         let key_cell = &buf[(r.x, r.y)];
-        assert_eq!(key_cell.fg, Theme::MIX[m], "tab {m} colour");
+        if m == app.mix() {
+            // The active tab: its key and name on one chip of its colour.
+            for x in r.left()..r.right() {
+                assert_eq!(buf[(x, r.y)].bg, Theme::MIX[m], "active tab cell {x}");
+            }
+        } else {
+            // The others: key and name in their colour, as in the mockup.
+            assert_eq!(key_cell.fg, Theme::MIX[m], "tab {m} key colour");
+            assert_eq!(buf[(r.x + 2, r.y)].fg, Theme::MIX[m], "tab {m} name colour");
+        }
     }
     assert_eq!(app.mix(), 0);
     assert!(text(&buf).contains("−12.0 dB"), "mix A's PB 3/4 fader");
@@ -401,12 +410,13 @@ fn pill_colours() {
     assert_eq!(buf[hp[0]].bg, Theme::ACCENT);
     let line = find_all(" LINE ");
     assert_eq!(buf[line[0]].bg, Theme::ACCENT);
-    // The first LINK is IN 1+2's (off): grey text, no pill background.
+    // The first LINK is IN 1+2's (off): a pill like the others, its text
+    // greyed out.
     let link = find_all(" LINK ");
     assert!(link.len() >= 4);
     let in12 = link.iter().min_by_key(|(x, y)| (*y, *x)).unwrap();
-    assert_eq!(buf[(in12.0 + 1, in12.1)].fg, Theme::TRACK);
-    assert_eq!(buf[(in12.0 + 1, in12.1)].bg, Color::Reset);
+    assert_eq!(buf[(in12.0 + 1, in12.1)].fg, Theme::SCALE);
+    assert_eq!(buf[(in12.0 + 1, in12.1)].bg, Theme::PILL_OFF_BG);
 }
 
 /// The clip lights hold about a second after a clip (fake clock).
@@ -1814,4 +1824,216 @@ fn monitor_mix_and_phone_level() {
     let (buf, _) = render(&app, &fake_meters(), 120, 40);
     assert_eq!(lit(&buf, "+17 dBu"), Some(false));
     assert_eq!(lit(&buf, " 0 dBu"), Some(true));
+}
+
+// ------------------------------------------------------ hardware fix round
+
+/// The device's idle frames keep the header at "synced" while every meter
+/// sits at the floor; "no meters" is kept for a real silence.
+#[test]
+fn idle_frames_keep_synced() {
+    use toppingctl::tui::run::mark_alive;
+    let header = |app: &App| {
+        let (buf, _) = render(app, &Meters::default(), 120, 40);
+        text(&buf).lines().take(4).collect::<Vec<_>>().join("\n")
+    };
+    let long_ago = Instant::now() - Duration::from_secs(3);
+
+    // Silence: nothing at all for 3 s.
+    let mut app = synced_app(Theme::color());
+    app.tick(&Meters::default(), long_ago);
+    app.tick(&Meters::default(), Instant::now());
+    assert!(header(&app).contains("no meters"), "{}", header(&app));
+
+    // Idle frames only (no signal, no meter frames): alive.
+    let (transport, fake) = FakeTransport::new();
+    let (conn, _events) = Connection::spawn(transport);
+    let mut app = synced_app(Theme::color());
+    app.tick(&Meters::default(), long_ago);
+    fake.push_report(&frame(0x00, 0x00, 0).encode(toppingctl::frame::Crc::Fill));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while conn.last_seen().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    mark_alive(&conn, &mut app);
+    app.tick(&Meters::default(), Instant::now());
+    let h = header(&app);
+    assert!(h.contains("synced") && !h.contains("no meters"), "{h}");
+}
+
+/// The PHONE level switch (`11 02`): space / Enter on PHONE toggles it and
+/// writes it; a click on either pill picks that level; the device's own
+/// button (its echo) moves it too.
+#[test]
+fn phone_level_switch_is_programmable() {
+    let mut app = synced_app(Theme::color());
+    assert!(app.state().phone_gain, "+17 dBu to start");
+    app.handle_key(ch('4'));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(app.focus(), Control::Output(2));
+    let a = app.handle_key(ch(' '));
+    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 0)]);
+    assert!(a.contains(&Action::Save));
+    assert!(!app.state().phone_gain);
+    let a = app.handle_key(key(KeyCode::Enter));
+    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 1)]);
+
+    // Clicks: "0 dBu" picks 0 dBu, again does nothing, "+17 dBu" goes back.
+    let (_, hits) = render(&app, &fake_meters(), 120, 40);
+    let low = hits.rect(Hit::Phone(false)).expect("the 0 dBu pill");
+    let high = hits.rect(Hit::Phone(true)).expect("the +17 dBu pill");
+    let a = click_at(&mut app, &hits, low, Instant::now());
+    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 0)]);
+    let a = click_at(
+        &mut app,
+        &hits,
+        low,
+        Instant::now() + Duration::from_secs(1),
+    );
+    assert!(sends(&a).is_empty());
+    let a = click_at(
+        &mut app,
+        &hits,
+        high,
+        Instant::now() + Duration::from_secs(2),
+    );
+    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 1)]);
+
+    // The device's button: its report moves the switch.
+    app.on_report(&frame(0x11, 0x02, 0));
+    assert!(!app.state().phone_gain);
+    let (buf, hits) = render(&app, &fake_meters(), 120, 40);
+    let low = hits.rect(Hit::Phone(false)).unwrap();
+    assert_eq!(buf[(low.x, low.y)].bg, Theme::ACCENT, "0 dBu lit");
+}
+
+/// The header shows the interface's real sample rate (`48 kHz ▾`); the
+/// ▾ (or `r`) opens a list of the E2x2's rates, and picking one asks the
+/// event loop to set it.
+#[test]
+fn sample_rate_header_and_list() {
+    let mut app = synced_app(Theme::color());
+    let head = |app: &App, w: u16, h: u16| {
+        let (buf, hits) = render(app, &fake_meters(), w, h);
+        (
+            text(&buf).lines().take(4).collect::<Vec<_>>().join("\n"),
+            hits,
+        )
+    };
+    assert!(head(&app, 120, 40).0.contains("— kHz ▾"));
+    app.set_sample_rate(Some(48000));
+    assert!(
+        head(&app, 120, 40).0.contains("48 kHz ▾"),
+        "{}",
+        head(&app, 120, 40).0
+    );
+    app.set_sample_rate(Some(44100));
+    assert!(head(&app, 140, 40).0.contains("44.1 kHz ▾"));
+
+    // Click the rate: the list opens; click 96 kHz: set it.
+    let (_, hits) = head(&app, 120, 40);
+    let r = hits.rect(Hit::Rate).expect("the rate is clickable");
+    assert!(click_at(&mut app, &hits, r, Instant::now()).is_empty());
+    assert!(matches!(app.modal(), Some(Modal::Rate { .. })));
+    let (buf, hits) = render(&app, &fake_meters(), 120, 40);
+    let t = text(&buf);
+    for k in [
+        "44.1 kHz",
+        "48 kHz",
+        "88.2 kHz",
+        "96 kHz",
+        "176.4 kHz",
+        "192 kHz",
+    ] {
+        assert!(t.contains(k), "{k} in the list:\n{t}");
+    }
+    let r96 = hits.rect(Hit::RateOption(3)).unwrap();
+    let a = click_at(
+        &mut app,
+        &hits,
+        r96,
+        Instant::now() + Duration::from_secs(1),
+    );
+    assert_eq!(a, vec![Action::SetRate(96000)]);
+    assert_eq!(app.modal(), None);
+
+    // Keys: r opens at the current rate, ↓ and Enter pick the next one,
+    // Esc closes without a change.
+    app.handle_key(ch('r'));
+    assert_eq!(app.modal(), Some(Modal::Rate { sel: 0 }), "44.1 kHz now");
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        vec![Action::SetRate(48000)]
+    );
+    app.handle_key(ch('r'));
+    assert!(app.handle_key(key(KeyCode::Esc)).is_empty());
+    assert_eq!(app.modal(), None);
+}
+
+/// The exact meter frames hidsniff saw (IN1 at −34.3 dB, output L at
+/// −34.2 dB), and the PB 1/2 and output R meters the device sends while
+/// music plays (`41 01/02`, `31 04`), amid idle frames, go through a
+/// `Connection` to the pixel meters.
+#[test]
+fn hidsniff_meters_reach_the_pixel_meters() {
+    use toppingctl::frame::Crc;
+    use toppingctl::tui::pixel::PixelWidget;
+    use toppingctl::tui::run::drain_device;
+    let input = [
+        0x22, 0x33, 0x20, 0x01, 0x01, 0x21, 0x05, 0xff, 0xff, 0xfe, 0xa9, 0xb6, 0x08, 0x66, 0x77,
+        0x00,
+    ];
+    let enc = |g, p, v: i32| frame(g, p, v).encode(Crc::Fill);
+    let idle = enc(0x00, 0x00, 0);
+    let (transport, fake) = FakeTransport::new();
+    for report in [
+        idle,
+        input,
+        idle,
+        enc(0x31, 0x03, 0xffff_feaa_u32 as i32), // −34.2 dB
+        enc(0x31, 0x04, -150),                   // −15.0 dB
+        enc(0x41, 0x01, -120),                   // −12.0 dB
+        idle,
+        enc(0x41, 0x02, -95), // −9.5 dB
+    ] {
+        fake.push_report(&report);
+    }
+    let (_conn, events) = Connection::spawn(transport);
+    let mut app = synced_app(Theme::color());
+    let mut meters = Meters::default();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while meters.playback[0][1] < -90.0 && Instant::now() < deadline {
+        drain_device(&events, &mut app, &mut meters).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let near = |a: f64, b: f64| (a - b).abs() < 0.05;
+    assert!(near(meters.inputs[0], -34.3), "{:?}", meters.inputs);
+    assert!(near(meters.output[0], -34.2), "{:?}", meters.output);
+    assert!(near(meters.output[1], -15.0), "{:?}", meters.output);
+    assert!(near(meters.playback[0][0], -12.0), "{:?}", meters.playback);
+    assert!(near(meters.playback[0][1], -9.5), "{:?}", meters.playback);
+
+    let mut layer = kitty_layer();
+    let (_, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let placed = placements(&out);
+    let at = |db: f64| {
+        hits.pixels()
+            .iter()
+            .filter(|s| matches!(s.widget, PixelWidget::Meter { db: d } if (d - db).abs() < 1e-9))
+            .map(|s| {
+                assert!(
+                    placed.iter().any(|p| (p.x, p.y) == (s.rect.x, s.rect.y)),
+                    "{s:?}"
+                );
+                s.rect
+            })
+            .count()
+    };
+    assert_eq!(at(meters.inputs[0]), 2, "input panel and IN 1+2");
+    assert_eq!(at(meters.output[0]), 1, "OUT 1+2 L");
+    assert_eq!(at(meters.output[1]), 1, "OUT 1+2 R");
+    assert_eq!(at(meters.playback[0][0]), 1, "PB 1/2 L");
+    assert_eq!(at(meters.playback[0][1]), 1, "PB 1/2 R");
 }

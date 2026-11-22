@@ -6,7 +6,7 @@
 
 use std::io::{self, Write};
 use std::panic;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
@@ -21,6 +21,7 @@ use ratatui::Terminal;
 use crate::conn::{Connection, Event, HidTransport, SendError};
 use crate::error::{message, Platform};
 use crate::open::open_e2x2;
+use crate::rate;
 use crate::state::Meters;
 use crate::sync::{connect, Store, SyncError};
 use crate::tui::app::{Action, App};
@@ -142,7 +143,17 @@ pub fn run() -> Result<()> {
         Err(e) => return Err(e.into()),
     }
 
+    // The sample rate is read off the loop, every 2 s.
+    let rates = rate::poll();
+    let (rate_errors_tx, rate_errors) = mpsc::channel::<String>();
     loop {
+        while let Ok(r) = rates.try_recv() {
+            app.set_sample_rate(r);
+        }
+        while let Ok(e) = rate_errors.try_recv() {
+            app.set_notice(Some(e));
+        }
+        mark_alive(&conn, &mut app);
         app.tick(&meters, Instant::now());
         let hits = draw_frame(
             &mut terminal,
@@ -171,6 +182,16 @@ pub fn run() -> Result<()> {
                         .err()
                         .map(|e| format!("could not save the state: {e}"));
                     app.set_notice(notice);
+                }
+                Action::SetRate(rate) => {
+                    // pw-metadata off the loop; a failure comes back as a
+                    // notice.
+                    let tx = rate_errors_tx.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = rate::set(rate) {
+                            let _ = tx.send(e);
+                        }
+                    });
                 }
                 Action::Quit => return Ok(()),
             }
@@ -209,10 +230,19 @@ pub fn send_actions(conn: &Connection, actions: &[Action]) -> Result<(), SendErr
         match *action {
             Action::Send(f) => conn.send(f)?,
             Action::SendConfirmedPhantom(f) => conn.send_confirmed_phantom(f)?,
-            Action::Save | Action::Quit => {}
+            Action::Save | Action::SetRate(_) | Action::Quit => {}
         }
     }
     Ok(())
+}
+
+/// Counts anything the device sent, its idle frames included, as a sign of
+/// life (see [`Connection::last_seen`]), so a silent device with nothing to
+/// meter still reads as synced.
+pub fn mark_alive(conn: &Connection, app: &mut App) {
+    if let Some(t) = conn.last_seen() {
+        app.on_rx(t);
+    }
 }
 
 /// Applies everything the device sent since the last call.

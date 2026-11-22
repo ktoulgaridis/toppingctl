@@ -16,6 +16,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButto
 use crossterm::event::{MouseEvent, MouseEventKind};
 
 use crate::frame::Frame;
+use crate::rate::RATES;
 use crate::state::{Meters, State};
 use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
@@ -38,6 +39,8 @@ pub enum Action {
     SendConfirmedPhantom(Frame),
     /// Save [`App::state`] to the store.
     Save,
+    /// Set the interface's sample rate (Hz), through the OS.
+    SetRate(u32),
     /// Restore the terminal and exit.
     Quit,
 }
@@ -153,6 +156,8 @@ pub enum Modal {
     Phantom { ch: usize },
     /// The key and mouse reference.
     Help,
+    /// The sample-rate list ([`crate::rate::RATES`]), `sel` highlighted.
+    Rate { sel: usize },
 }
 
 /// Where the session is.
@@ -257,7 +262,12 @@ pub struct App {
     rx_stale: bool,
     theme: Theme,
     notice: Option<String>,
+    /// The interface's sample rate (Hz), when the OS tells.
+    sample_rate: Option<u32>,
 }
+
+/// The PHONE strip's index among the output strips.
+pub const PHONE: usize = 2;
 
 /// With no report from the device for this long, the header says so (the
 /// device streams meter reports several times a second).
@@ -280,7 +290,18 @@ impl App {
             rx_stale: false,
             theme,
             notice: None,
+            sample_rate: None,
         }
+    }
+
+    /// The interface's sample rate (Hz), as last read from the OS.
+    pub fn sample_rate(&self) -> Option<u32> {
+        self.sample_rate
+    }
+
+    /// A new reading of the sample rate.
+    pub fn set_sample_rate(&mut self, rate: Option<u32>) {
+        self.sample_rate = rate;
     }
 
     /// The mix the mixer shows: A (0), B (1), C (2).
@@ -305,7 +326,7 @@ impl App {
 
     /// The device sent something (a report or a meter) at `now`.
     pub fn on_rx(&mut self, now: Instant) {
-        self.last_rx = Some(now);
+        self.last_rx = Some(self.last_rx.map_or(now, |l| l.max(now)));
     }
 
     /// Whether the device has sent nothing for [`RX_STALE`] (as of the last
@@ -389,6 +410,25 @@ impl App {
                 return Vec::new();
             }
             Some(Modal::Help) if key.code == KeyCode::Char('q') => return vec![Action::Quit],
+            Some(Modal::Rate { sel }) => {
+                match key.code {
+                    KeyCode::Up => {
+                        self.modal = Some(Modal::Rate {
+                            sel: sel.saturating_sub(1),
+                        })
+                    }
+                    KeyCode::Down => {
+                        self.modal = Some(Modal::Rate {
+                            sel: (sel + 1).min(RATES.len() - 1),
+                        })
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => return self.pick_rate(sel),
+                    KeyCode::Esc | KeyCode::Char('r') => self.modal = None,
+                    KeyCode::Char('q') => return vec![Action::Quit],
+                    _ => {}
+                }
+                return Vec::new();
+            }
             Some(_) => return Vec::new(),
             None => {}
         }
@@ -434,12 +474,13 @@ impl App {
                 self.drag = None;
             }
             KeyCode::Char('0') => return self.reset(self.focus),
+            KeyCode::Char('r') => self.open_rates(),
             KeyCode::Char(c @ ('a' | 'b' | 'c')) => self.mix = usize::from(c as u8 - b'a'),
-            KeyCode::Char(' ') | KeyCode::Enter => {
-                if let Control::Input { ch, kind } = self.focus {
-                    return self.toggle(ch, kind);
-                }
-            }
+            KeyCode::Char(' ') | KeyCode::Enter => match self.focus {
+                Control::Input { ch, kind } => return self.toggle(ch, kind),
+                Control::Output(PHONE) => return self.set_phone_level(!self.state.phone_gain),
+                _ => {}
+            },
             _ => {}
         }
         Vec::new()
@@ -465,10 +506,11 @@ impl App {
                     self.modal = None;
                     Vec::new()
                 }
-                (Modal::Help, Some(Hit::No)) => {
+                (Modal::Help | Modal::Rate { .. }, Some(Hit::No)) => {
                     self.modal = None;
                     Vec::new()
                 }
+                (Modal::Rate { .. }, Some(Hit::RateOption(i))) => self.pick_rate(i),
                 _ => Vec::new(),
             };
         }
@@ -506,6 +548,11 @@ impl App {
                         });
                     }
                     Some(Hit::MixTab(m)) => self.mix = m,
+                    Some(Hit::Phone(high)) => {
+                        self.focus = Control::Output(PHONE);
+                        return self.set_phone_level(high);
+                    }
+                    Some(Hit::Rate) => self.open_rates(),
                     _ => {}
                 }
             }
@@ -633,6 +680,32 @@ impl App {
             InputControl::Phase => input.phase = !input.phase,
         }
         self.commit(new)
+    }
+
+    /// The PHONE level switch (`11 02`): +17 dBu (`true`) or 0 dBu.
+    fn set_phone_level(&mut self, high: bool) -> Vec<Action> {
+        let mut new = self.state.clone();
+        new.phone_gain = high;
+        self.commit(new)
+    }
+
+    /// Opens the sample-rate list at the current rate (48 kHz if unknown).
+    fn open_rates(&mut self) {
+        let sel = self
+            .sample_rate
+            .and_then(|r| RATES.iter().position(|&x| x == r))
+            .unwrap_or(1);
+        self.modal = Some(Modal::Rate { sel });
+        self.drag = None;
+    }
+
+    /// Picks rate `i` from the list: the event loop sets it.
+    fn pick_rate(&mut self, i: usize) -> Vec<Action> {
+        self.modal = None;
+        RATES
+            .get(i)
+            .map(|&r| vec![Action::SetRate(r)])
+            .unwrap_or_default()
     }
 
     /// Tab / Shift-Tab: the next / previous panel, wrapping.

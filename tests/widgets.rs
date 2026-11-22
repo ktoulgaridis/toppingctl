@@ -477,10 +477,10 @@ fn pills() {
     assert_eq!(on("LINE", PillKind::Normal).style.bg, Some(Theme::ACCENT));
     let off = pill("MON", false, PillKind::Normal, false, t);
     assert_eq!(off.style.bg, Some(Theme::PILL_OFF_BG));
-    // Disabled (IN 1+2 LINK off): greyed, no pill background.
+    // Disabled (IN 1+2 LINK off): a pill, its text greyed out.
     let dis = pill("LINK", false, PillKind::Disabled, false, t);
-    assert_eq!(dis.style.fg, Some(Theme::TRACK));
-    assert_eq!(dis.style.bg, None);
+    assert_eq!(dis.style.fg, Some(Theme::SCALE));
+    assert_eq!(dis.style.bg, Some(Theme::PILL_OFF_BG));
     assert_eq!(dis.content, " LINK ");
     // Focus is bold and underlined, with or without colour.
     let f = pill("SOLO", false, PillKind::Normal, true, t);
