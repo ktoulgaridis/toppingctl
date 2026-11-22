@@ -489,3 +489,128 @@ fn pills() {
     let off = pill("48V", false, PillKind::Danger, false, p);
     assert!(!off.style.add_modifier.contains(Modifier::REVERSED));
 }
+
+// ------------------------------------------- pixel faders, meters, chips
+
+use toppingctl::tui::pixel::{
+    chip_image, clip_image, fader_image, meter_image, PX_CHIP, PX_GREEN, PX_RED, PX_TRACK,
+};
+use toppingctl::tui::widgets::fader::fader_row;
+
+const CELL: (u16, u16) = (10, 20);
+
+fn px(img: &image::RgbaImage, x: f64, y: f64) -> [u8; 4] {
+    img.get_pixel(x as u32, y as u32).0
+}
+
+/// The pixel fader (docs/design/mockup.py): a capsule track, the value
+/// filled below a light thumb, tick marks on both sides, and the label
+/// columns left see-through for the scale text.
+#[test]
+fn pixel_fader_track_fill_thumb() {
+    let (cw, ch) = (10.0, 20.0);
+    let img = fader_image(11, 10, CELL, -12.0, 6.0, true);
+    assert_eq!((img.width(), img.height()), (110, 200));
+    let tx = 5.5 * cw;
+    let row = |r: u16| (f64::from(r) + 0.5) * ch;
+    let cap = fader_row(fader_frac(-12.0, 6.0), 10);
+    // Just above the thumb's accent line.
+    let thumb = px(&img, tx - 1.0 * cw, row(cap) - 0.2 * ch);
+    assert!(thumb[3] > 200 && thumb[0] > 130, "thumb {thumb:?}");
+    // Above the thumb: the bare track; below it: the value fill (blue).
+    let above = px(&img, tx, row(1));
+    assert!(near(above, (52, 57, 80)), "track {above:?}");
+    let below = px(&img, tx, row(8));
+    assert!(below[3] > 200 && below[2] > below[0] + 40, "fill {below:?}");
+    // The label columns (0..3, 8..11) stay clear for the scale text.
+    for y in 0..200 {
+        for x in (0..28).chain(83..110) {
+            assert_eq!(img.get_pixel(x, y).0[3], 0, "label column {x},{y}");
+        }
+    }
+    // A tick mark beside the track on a tick row (−24 is on row 7).
+    let ticks = Fader::ticks(6.0, 10);
+    let (r24, _) = ticks.iter().find(|(_, l)| l == "−24").unwrap();
+    assert!(px(&img, tx - 1.0 * cw, row(*r24))[3] > 100, "tick mark");
+    assert_eq!(
+        px(&img, tx - 1.0 * cw, row(*r24) + 0.5 * ch)[3],
+        0,
+        "between rows"
+    );
+
+    // Turned up, the thumb moves up.
+    let up = fader_image(11, 10, CELL, 0.0, 6.0, true);
+    let cap0 = fader_row(fader_frac(0.0, 6.0), 10);
+    assert!(cap0 < cap);
+    assert!(px(&up, tx - 1.0 * cw, row(cap0) - 0.2 * ch)[0] > 130);
+    assert!(near(px(&up, tx, row(cap0)), (122, 162, 247)), "accent line");
+    // The narrow form (3 columns, no labels) fits its track and thumb.
+    let narrow = fader_image(3, 10, CELL, -12.0, 6.0, false);
+    assert_eq!((narrow.width(), narrow.height()), (30, 200));
+    assert!(px(&narrow, 15.0, row(cap))[3] > 200);
+}
+
+/// The pixel meter: a dark capsule track, a green → amber → red
+/// gradient up to the level, and a white peak line on top of the fill.
+#[test]
+fn pixel_meter_gradient_and_peak() {
+    let (cw, ch) = (10.0, 20.0);
+    let rows = 20u16;
+    let h = f64::from(rows) * ch;
+    let (top, bot) = (0.5 * ch, h - 0.5 * ch);
+    let level_y = |db: f64| top + (bot - top) * (-db / 60.0);
+    let img = meter_image(1, rows, CELL, -2.0);
+    assert_eq!((img.width(), img.height()), (10, 400));
+    let cx = 0.5 * cw;
+    assert!(
+        near(px(&img, cx, bot - 5.0), PX_GREEN),
+        "green at the bottom"
+    );
+    let hot = px(&img, cx, level_y(-2.0) + 6.0);
+    assert!(near(hot, PX_RED), "red near 0 dB {hot:?}");
+    let peak = px(&img, cx, level_y(-2.0));
+    assert!(
+        peak[0] > 220 && peak[1] > 220 && peak[2] > 220,
+        "peak line {peak:?}"
+    );
+    // Above the level: the empty track.
+    let quiet = meter_image(1, rows, CELL, -40.0);
+    assert!(near(px(&quiet, cx, level_y(-20.0)), PX_TRACK));
+    assert!(near(px(&quiet, cx, bot - 5.0), PX_GREEN));
+    // Silence: just the track, no peak line.
+    let off = meter_image(1, rows, CELL, f64::NEG_INFINITY);
+    assert!(near(px(&off, cx, bot - 5.0), PX_TRACK));
+    // The sides are see-through.
+    assert_eq!(px(&img, 0.0, h / 2.0)[3], 0);
+    // Two columns wide (the input meter): a wider bar.
+    let wide = meter_image(2, rows, CELL, -2.0);
+    assert!(near(px(&wide, 7.0, bot - 5.0), PX_GREEN));
+}
+
+/// The clip light: a red lamp with a glow when lit, a dark one without.
+#[test]
+fn pixel_clip_light() {
+    let lit = clip_image(2, 1, CELL, true);
+    let off = clip_image(2, 1, CELL, false);
+    assert_eq!((lit.width(), lit.height()), (20, 20));
+    assert!(near(px(&lit, 10.0, 10.0), PX_RED));
+    assert!(near(px(&off, 10.0, 10.0), (60, 44, 56)));
+    // The glow reaches past the lamp only when lit.
+    let r = 10.0 * 5.0 / 24.0 * 2.0;
+    assert!(px(&lit, 10.0 + r + 1.5, 10.0)[3] > 0, "glow");
+    assert_eq!(px(&off, 10.0 + r + 1.5, 10.0)[3], 0);
+    let narrow = clip_image(1, 1, CELL, true);
+    assert!(near(px(&narrow, 5.0, 10.0), PX_RED));
+}
+
+/// A chip (pill, tab, title): a rounded rect in its colour, corners
+/// see-through, under the label's cells.
+#[test]
+fn pixel_chip_rounded() {
+    let img = chip_image(6, 1, CELL, PX_CHIP);
+    assert_eq!((img.width(), img.height()), (60, 20));
+    assert!(near(px(&img, 30.0, 10.0), PX_CHIP));
+    assert_eq!(px(&img, 0.0, 0.0)[3], 0, "round corner");
+    assert_eq!(px(&img, 59.0, 19.0)[3], 0, "round corner");
+    assert!(near(px(&img, 5.0, 10.0), PX_CHIP), "the ends are filled");
+}

@@ -1207,116 +1207,516 @@ fn zero_db_reads_minus_zero() {
     assert!(!t.contains(" 0.0 dB"), "{t}");
 }
 
-// ------------------------------------------------------------- pixel knobs
+// ---------------------------------------------------------- pixel widgets
 
 fn kitty_layer() -> toppingctl::tui::pixel::PixelLayer {
     use ratatui_image::picker::{Picker, ProtocolType};
-    // A kitty picker with a fixed cell size, without asking a terminal.
+    // A kitty picker with a fixed cell size (10×20), without asking a
+    // terminal.
     let mut picker = Picker::halfblocks();
     picker.set_protocol_type(ProtocolType::Kitty);
     toppingctl::tui::pixel::PixelLayer::new(picker)
 }
 
+/// Draws with the pixel layer; returns the buffer, the hit map and the
+/// kitty sequences the frame emits.
 fn draw_pixels(
     app: &App,
+    meters: &Meters,
     w: u16,
     h: u16,
     layer: &mut toppingctl::tui::pixel::PixelLayer,
-) -> (Buffer, HitMap) {
+) -> (Buffer, HitMap, String) {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
     let mut hits = HitMap::default();
-    // The frame's own buffer: TestBackend drops the escape sequences.
-    let frame = terminal
-        .draw(|f| hits = ui::draw_with(f, app, &fake_meters(), Some(&mut *layer)))
+    terminal
+        .draw(|f| hits = ui::draw_with(f, app, meters, Some(&mut *layer)))
         .unwrap();
-    (frame.buffer.clone(), hits)
+    let out = layer.take_output();
+    (terminal.backend().buffer().clone(), hits, out)
 }
 
-/// In a kitty terminal every knob is a kitty image in the cells the
-/// Braille knob uses; images are cached by size and value, and a modal
-/// keeps the text on top.
-#[test]
-fn pixel_knobs_in_kitty() {
-    use toppingctl::tui::pixel::PixelWidget;
-    let mut app = synced_app(Theme::color());
-    let mut layer = kitty_layer();
-    let (buf, hits) = draw_pixels(&app, 120, 40, &mut layer);
+/// A placement in the emitted sequences: cell, size in cells, z.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Placed {
+    x: u16,
+    y: u16,
+    cols: u16,
+    rows: u16,
+    z: i32,
+    image: u32,
+}
 
-    // Two gain knobs, eight pan knobs, Monitor Mix (dimmed).
-    let knobs: Vec<_> = hits.pixels().iter().collect();
-    assert_eq!(knobs.len(), 11);
-    let dimmed = knobs
+/// The kitty commands in `out`: their control data (`a=…,i=…`), in order,
+/// with the cursor position before each.
+fn commands(out: &str) -> Vec<(Option<(u16, u16)>, String)> {
+    let mut cmds = Vec::new();
+    let mut pos = None;
+    let mut rest = out;
+    loop {
+        let csi = rest.find("\x1b[");
+        let apc = rest.find("\x1b_G");
+        match (csi, apc) {
+            (Some(c), a) if a.is_none_or(|a| c < a) => {
+                let tail = &rest[c + 2..];
+                let end = tail.find('H').expect("cursor move");
+                let (y, x) = tail[..end].split_once(';').unwrap();
+                pos = Some((x.parse::<u16>().unwrap() - 1, y.parse::<u16>().unwrap() - 1));
+                rest = &tail[end + 1..];
+            }
+            (_, Some(a)) => {
+                let tail = &rest[a + 3..];
+                let end = tail.find("\x1b\\").expect("ST");
+                let body = &tail[..end];
+                let ctrl = body.split(';').next().unwrap().to_string();
+                cmds.push((pos, ctrl));
+                rest = &tail[end + 2..];
+            }
+            _ => return cmds,
+        }
+    }
+}
+
+fn field<'a>(ctrl: &'a str, k: &str) -> Option<&'a str> {
+    ctrl.split(',')
+        .find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('=')))
+}
+
+fn placements(out: &str) -> Vec<Placed> {
+    commands(out)
+        .into_iter()
+        .filter(|(_, c)| field(c, "a") == Some("p"))
+        .map(|(pos, c)| {
+            let (x, y) = pos.expect("a placement is positioned");
+            assert_eq!(field(&c, "C"), Some("1"), "the cursor stays: {c}");
+            Placed {
+                x,
+                y,
+                cols: field(&c, "c").unwrap().parse().unwrap(),
+                rows: field(&c, "r").unwrap().parse().unwrap(),
+                z: field(&c, "z").unwrap().parse().unwrap(),
+                image: field(&c, "i").unwrap().parse().unwrap(),
+            }
+        })
+        .collect()
+}
+
+fn count(out: &str, action: &str) -> usize {
+    commands(out)
         .iter()
-        .filter(|s| matches!(s.widget, PixelWidget::Knob { dimmed: true, .. }))
-        .count();
-    assert_eq!(dimmed, 1);
-    // About 12×6 for the gain knob, 8×4 for pans at this size.
-    let gain = hits.pixels()[0].rect;
-    assert_eq!((gain.width, gain.height), (12, 6));
-    let pan = hits.pixels()[2].rect;
-    assert_eq!((pan.width, pan.height), (8, 4));
-    // Each knob's first cell carries the kitty image (transmit + placeholder).
-    for s in hits.pixels() {
-        let sym = buf[(s.rect.x, s.rect.y)].symbol();
+        .filter(|(_, c)| field(c, "a") == Some(action))
+        .count()
+}
+
+fn kind(w: &toppingctl::tui::pixel::PixelWidget) -> &'static str {
+    use toppingctl::tui::pixel::PixelWidget as W;
+    match w {
+        W::Knob { .. } => "knob",
+        W::Fader { .. } => "fader",
+        W::Meter { .. } => "meter",
+        W::ClipLight { .. } => "clip",
+        W::Chip { .. } => "chip",
+    }
+}
+
+/// In kitty / Ghostty every fader, meter, clip light, pill, tab, chip and
+/// knob is a kitty image placed directly in its cells, labels on top.
+#[test]
+fn pixel_widgets_in_kitty() {
+    let app = synced_app(Theme::color());
+    let meters = fake_meters();
+    let mut layer = kitty_layer();
+    let (buf, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let spots = hits.pixels();
+
+    let n = |k: &str| spots.iter().filter(|s| kind(&s.widget) == k).count();
+    // Two gain knobs, eight pans, Monitor Mix.
+    assert_eq!(n("knob"), 11);
+    // IN1, IN2 in IN 1+2, three PB strips, two loopbacks, the output.
+    assert_eq!(n("fader"), 8);
+    // Input 2 (2 wide), IN 1+2 2, PB 6, loopback 4, output 2; each has a
+    // clip light.
+    assert_eq!(n("meter"), 16);
+    assert_eq!(n("clip"), 16);
+    assert!(n("chip") >= 30, "pills, titles, the mix tab: {}", n("chip"));
+
+    // Each widget is placed once, at its cells, with its size in cells.
+    // Widgets with text on top (pills, tabs, chips, faders' scales) sit
+    // under the text (z=-1).
+    let placed = placements(&out);
+    assert_eq!(placed.len(), spots.len());
+    for s in spots {
+        let p = placed
+            .iter()
+            .find(|p| (p.x, p.y) == (s.rect.x, s.rect.y))
+            .unwrap_or_else(|| panic!("no placement for {s:?}"));
+        assert_eq!((p.cols, p.rows), (s.rect.width, s.rect.height), "{s:?}");
+        let z = match kind(&s.widget) {
+            "chip" | "fader" => -1,
+            _ => 0,
+        };
+        assert_eq!(p.z, z, "{s:?}");
+    }
+    // Each distinct image is sent once (zlib, RGBA), then placed by id.
+    let sent: Vec<_> = commands(&out)
+        .into_iter()
+        .filter(|(_, c)| field(c, "a") == Some("t"))
+        .collect();
+    assert_eq!(sent.len(), layer.cached());
+    assert_eq!(layer.built(), layer.cached());
+    assert!(layer.cached() < spots.len(), "equal widgets share an image");
+    for (_, c) in &sent {
+        assert_eq!(field(c, "f"), Some("32"), "{c}");
+        assert_eq!(field(c, "o"), Some("z"), "{c}");
+        assert_eq!(field(c, "q"), Some("2"), "{c}");
+    }
+    // No Unicode placeholders: the images are not in the cells' text.
+    assert!(buf
+        .content()
+        .iter()
+        .all(|c| !c.symbol().contains('\u{10EEEE}')));
+
+    // Labels stay readable on top: the pill's text is there, with no cell
+    // background in the way of the image.
+    let mon = hits
+        .rect(Hit::Control(input(0, InputControl::Mon)))
+        .unwrap();
+    let chip = spots
+        .iter()
+        .find(|s| s.rect == mon)
+        .expect("a chip under MON");
+    assert_eq!(kind(&chip.widget), "chip");
+    let label: String = (mon.x..mon.right())
+        .map(|x| buf[(x, mon.y)].symbol())
+        .collect();
+    assert_eq!(label.trim(), "MON");
+    assert!((mon.x..mon.right()).all(|x| buf[(x, mon.y)].bg == Color::Reset));
+    // The active mix tab and every strip title have a chip.
+    let tab = hits.rect(Hit::MixTab(0)).unwrap();
+    assert!(spots
+        .iter()
+        .any(|s| kind(&s.widget) == "chip" && s.rect.y == tab.y && s.rect.x >= tab.x));
+    for name in [
+        "IN1", "IN2", "IN 1+2", "PB 1/2", "LOOP 1+2", "OUT 1+2", "PHONE",
+    ] {
         assert!(
-            sym.contains("\u{10EEEE}"),
-            "kitty placeholder at {:?}",
-            s.rect
+            spots.iter().any(|s| {
+                let t: String = (s.rect.x..s.rect.right())
+                    .map(|x| buf[(x, s.rect.y)].symbol())
+                    .collect();
+                kind(&s.widget) == "chip" && t.trim() == name
+            }),
+            "a chip under {name}"
         );
     }
-    assert!(
-        buf[(gain.x, gain.y)].symbol().contains("\x1b_G"),
-        "transmitted"
-    );
-    // The gain knob's click target still covers its cells.
-    let g = hits
-        .rect(Hit::Control(input(0, InputControl::Gain)))
+    // Graphics without labels leave their cells blank (no Braille or
+    // blocks under the image); a fader keeps its scale labels.
+    for s in spots
+        .iter()
+        .filter(|s| matches!(kind(&s.widget), "knob" | "meter" | "clip"))
+    {
+        for y in s.rect.top()..s.rect.bottom() {
+            for x in s.rect.left()..s.rect.right() {
+                assert_eq!(buf[(x, y)].symbol(), " ", "{s:?} at {x},{y}");
+            }
+        }
+    }
+    let fader = spots
+        .iter()
+        .find(|s| {
+            matches!(
+                s.widget,
+                toppingctl::tui::pixel::PixelWidget::Fader { labels: true, .. }
+            )
+        })
         .unwrap();
-    assert!(g.contains(gain.as_position()));
-
-    // Same values: nothing new is drawn. Equal knobs share an image.
-    let built = layer.built();
+    let rows: Vec<String> = (fader.rect.top()..fader.rect.bottom())
+        .map(|y| {
+            (fader.rect.left()..fader.rect.right())
+                .map(|x| buf[(x, y)].symbol())
+                .collect()
+        })
+        .collect();
+    assert!(rows.iter().any(|r| r.contains("−12")), "{rows:?}");
     assert!(
-        layer.cached() < 11,
-        "PB pans at the same value share images"
+        rows.iter().all(|r| !r.contains('┃') && !r.contains('●')),
+        "{rows:?}"
     );
-    draw_pixels(&app, 120, 40, &mut layer);
-    assert_eq!(layer.built(), built, "a redraw reuses the cache");
 
-    // A new gain draws one new image.
+    // Mouse hit-testing is the same as on the text path.
+    let (_, text_hits) = render(&app, &meters, 120, 40);
+    for y in 0..40 {
+        for x in 0..120 {
+            assert_eq!(hits.get(x, y), text_hits.get(x, y), "at {x},{y}");
+        }
+    }
+}
+
+/// Redraws only send what changed: nothing for an unchanged frame, a
+/// swap of placements for a moving meter, cached images for values seen
+/// before, and every placement goes on resize, too-small and a modal.
+#[test]
+fn pixel_widgets_redraw() {
+    let mut app = synced_app(Theme::color());
+    let mut meters = fake_meters();
+    let mut layer = kitty_layer();
+    let (_, hits, _) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let all = hits.pixels().len();
+
+    // Unchanged: nothing at all is written (no flicker).
+    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    assert_eq!(out, "", "an unchanged frame writes nothing");
+
+    // IN1 moves: its two meters (input panel, IN 1+2) are re-placed, new
+    // image first, then the old placement is deleted.
+    let built = layer.built();
+    meters.inputs[0] = -6.0;
+    let (_, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let placed = placements(&out);
+    assert_eq!(placed.len(), 2, "{out:?}");
+    assert_eq!(count(&out, "d"), 2, "{out:?}");
+    for p in &placed {
+        let s = hits
+            .pixels()
+            .iter()
+            .find(|s| (s.rect.x, s.rect.y) == (p.x, p.y))
+            .unwrap();
+        assert_eq!(kind(&s.widget), "meter");
+    }
+    let first_delete = out.find("a=d").unwrap();
+    let first_place = out.find("a=p").unwrap();
+    assert!(first_place < first_delete, "place, then delete: {out:?}");
+    assert!(layer.built() > built);
+
+    // Back to a level seen before: the cached image, nothing sent.
+    let built = layer.built();
+    meters.inputs[0] = -18.4;
+    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    assert_eq!(count(&out, "t"), 0, "cache hit");
+    assert_eq!(placements(&out).len(), 2);
+    assert_eq!(layer.built(), built);
+    // A wiggle under the quantisation step is the same image.
+    meters.inputs[0] = -18.45;
+    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    assert_eq!(out, "");
+
+    // A clip lights IN1's lamps and they go out after the hold.
+    let t0 = Instant::now();
+    meters.inputs[0] = 0.0;
+    app.tick(&meters, t0);
+    let (_, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let lit = hits
+        .pixels()
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.widget,
+                toppingctl::tui::pixel::PixelWidget::ClipLight { lit: true }
+            )
+        })
+        .count();
+    assert_eq!(lit, 2, "IN1 in the input panel and in IN 1+2");
+    assert!(placements(&out).len() >= 4, "2 meters, 2 lamps");
+    meters.inputs[0] = -18.4;
+    app.tick(&meters, t0 + Duration::from_millis(1100));
+    let (_, hits, _) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    assert!(hits.pixels().iter().all(|s| !matches!(
+        s.widget,
+        toppingctl::tui::pixel::PixelWidget::ClipLight { lit: true }
+    )));
+
+    // The gain knob turns: one new image.
+    let built = layer.built();
     app.handle_key(ch('1'));
     for _ in 0..6 {
         app.handle_key(key(KeyCode::Down));
     }
     app.handle_key(key(KeyCode::Right));
-    draw_pixels(&app, 120, 40, &mut layer);
+    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     assert_eq!(layer.built(), built + 1);
+    assert_eq!(count(&out, "t"), 1);
 
-    // A smaller terminal: new sizes, new images, inside the new cells.
-    let (_, hits) = draw_pixels(&app, 100, 34, &mut layer);
-    assert!(layer.built() > built + 1);
-    assert!(hits
-        .pixels()
+    // Resize: every placement goes first, then all are placed again in
+    // the new cells.
+    let (_, hits, out) = draw_pixels(&app, &meters, 100, 34, &mut layer);
+    assert!(out.starts_with("\x1b_Ga=d,d=a,q=2\x1b\\"), "{out:?}");
+    assert_eq!(placements(&out).len(), hits.pixels().len());
+    assert!(placements(&out)
         .iter()
-        .all(|s| s.rect.right() <= 100 && s.rect.bottom() <= 34));
+        .all(|p| p.x + p.cols <= 100 && p.y + p.rows <= 34));
 
-    // Too small: no knobs at all.
-    let (_, hits) = draw_pixels(&app, 90, 30, &mut layer);
+    // Too small: nothing placed, the old placements gone.
+    let (_, hits, out) = draw_pixels(&app, &meters, 90, 30, &mut layer);
     assert!(hits.pixels().is_empty());
+    assert!(out.starts_with("\x1b_Ga=d,d=a,q=2\x1b\\"), "{out:?}");
+    assert!(placements(&out).is_empty());
 
-    // A modal open: no images, so its text stays on top.
+    // Back to full size, then a modal: every placement is deleted so its
+    // text stays on top, and the text widgets are drawn under it.
+    draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let built = layer.built();
     app.handle_key(ch('?'));
-    let (buf, _) = draw_pixels(&app, 120, 40, &mut layer);
-    assert!(buf
-        .content()
-        .iter()
-        .all(|c| !c.symbol().contains("\x1b_G") && !c.symbol().contains("\u{10EEEE}")));
-
-    // The text path (and the golden snapshots) never draw images.
+    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    assert!(placements(&out).is_empty());
+    assert_eq!(count(&out, "d"), all);
+    // Closed: placed again from the cache.
     app.handle_key(key(KeyCode::Esc));
-    let (buf, _) = render(&app, &fake_meters(), 120, 40);
-    assert!(buf
-        .content()
-        .iter()
-        .all(|c| !c.symbol().contains("\u{10EEEE}")));
+    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    assert_eq!(placements(&out).len(), all);
+    assert_eq!(count(&out, "t"), 0);
+    assert_eq!(layer.built(), built);
+
+    // The text path (and the golden snapshots) never place images.
+    let (buf, hits) = render(&app, &meters, 120, 40);
+    assert!(buf.content().iter().all(|c| !c.symbol().contains("\x1b_G")));
+    assert!(!hits.pixels().is_empty(), "spots are recorded either way");
+}
+
+/// Quitting frees every image the TUI sent; TOPPINGCTL_PIXELS=0 keeps
+/// the text widgets.
+#[test]
+fn pixel_cleanup_and_opt_out() {
+    use std::ffi::OsStr;
+    use toppingctl::tui::pixel::{pixels_wanted, PixelLayer};
+    let mut out = Vec::new();
+    toppingctl::tui::run::free_images(&mut out).unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "\x1b_Ga=d,d=A,q=2\x1b\\");
+    assert_eq!(PixelLayer::FREE_ALL, "\x1b_Ga=d,d=A,q=2\x1b\\");
+
+    assert!(pixels_wanted(None));
+    assert!(pixels_wanted(Some(OsStr::new("1"))));
+    assert!(!pixels_wanted(Some(OsStr::new("0"))));
+}
+
+/// Every kitty escape carries at most 4096 bytes of base64; a long image
+/// goes in `m=1` chunks ending with `m=0`.
+#[test]
+fn pixel_images_are_chunked() {
+    let app = synced_app(Theme::color());
+    let mut layer = kitty_layer();
+    let (_, _, out) = draw_pixels(&app, &fake_meters(), 120, 40, &mut layer);
+    let mut open = false;
+    let mut chunked = 0;
+    for apc in out.split("\x1b_G").skip(1) {
+        let body = &apc[..apc.find("\x1b\\").expect("every escape is closed")];
+        let (ctrl, payload) = body.split_once(';').unwrap_or((body, ""));
+        assert!(
+            payload.len() <= 4096,
+            "{} bytes in one escape",
+            payload.len()
+        );
+        let m = field(ctrl, "m");
+        if open {
+            assert_eq!(
+                ctrl.split(',').count(),
+                1,
+                "a continuation has only m: {ctrl}"
+            );
+        }
+        if m == Some("1") && field(ctrl, "a") == Some("t") {
+            chunked += 1;
+        }
+        open = m == Some("1");
+    }
+    assert!(!open, "the last chunk is m=0");
+    // Nothing but well-formed escapes: kitty commands and cursor moves.
+    let mut rest = out.as_str();
+    while !rest.is_empty() {
+        if let Some(t) = rest.strip_prefix("\x1b_G") {
+            rest = &t[t.find("\x1b\\").unwrap() + 2..];
+        } else if let Some(t) = rest.strip_prefix("\x1b[") {
+            let end = t.find('H').unwrap();
+            assert!(t[..end].chars().all(|c| c.is_ascii_digit() || c == ';'));
+            rest = &t[end + 1..];
+        } else {
+            panic!("stray bytes: {:?}", &rest[..rest.len().min(40)]);
+        }
+    }
+    assert!(chunked > 0, "some image needed chunks");
+}
+
+/// Regression (hardware run on 0e04129: the frame stopped where the first
+/// pixel knob began, and the meters froze): a frame through a real
+/// crossterm backend writes the whole text grid, with no image bytes in
+/// it; the images go out once, after the text, and the next frames keep
+/// following the meters.
+#[test]
+fn pixel_frame_writes_the_whole_grid() {
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::{TerminalOptions, Viewport};
+    use toppingctl::tui::run::draw_frame;
+
+    /// What the backend writes, readable from the test.
+    #[derive(Clone, Default)]
+    struct Shared(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+    impl std::io::Write for Shared {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let app = synced_app(Theme::color());
+    let mut meters = fake_meters();
+    let mut layer = kitty_layer();
+    let written = Shared::default();
+    let mut terminal = Terminal::with_options(
+        CrosstermBackend::new(written.clone()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, 120, 40)),
+        },
+    )
+    .unwrap();
+    let mut images = Vec::new();
+    let hits = draw_frame(&mut terminal, &app, &meters, Some(&mut layer), &mut images).unwrap();
+    let grid = String::from_utf8(written.0.take()).unwrap();
+    assert!(!grid.contains("\x1b_G"), "no image bytes in the text grid");
+    // The last row (the key hints) and the last panel made it out.
+    assert!(grid.contains("quit"), "the footer was written");
+    assert!(grid.contains("PHONE"), "the output panel was written");
+    let images = String::from_utf8(images).unwrap();
+    assert_eq!(placements(&images).len(), hits.pixels().len());
+
+    // The meters move: the next frame places the new meter images.
+    meters.inputs[1] = -30.0;
+    let mut images = Vec::new();
+    draw_frame(&mut terminal, &app, &meters, Some(&mut layer), &mut images).unwrap();
+    let images = String::from_utf8(images).unwrap();
+    // IN2's meter in the input panel and in IN 1+2.
+    assert_eq!(placements(&images).len(), 2, "{images:?}");
+}
+
+/// A first frame with more images than one frame's budget sends them over
+/// a few frames; until a widget's image is sent it keeps its text form.
+#[test]
+fn pixel_transmit_budget() {
+    use toppingctl::tui::pixel::{PixelLayer, TRANSMIT_BUDGET};
+    let app = synced_app(Theme::color());
+    let meters = fake_meters();
+    // Big cells: the first frame is over budget.
+    let mut layer = PixelLayer::with_cell_size((40, 80));
+    let (buf, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let first = placements(&out).len();
+    assert!(
+        first < hits.pixels().len(),
+        "not everything fits in one frame"
+    );
+    assert!(out.len() < TRANSMIT_BUDGET * 2, "{} bytes", out.len());
+    // A widget not placed yet is still drawn as text (the Braille knob's
+    // dots, block meters).
+    let t = text(&buf);
+    assert!(t.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)) || t.contains('▕'));
+    let mut frames = 1;
+    let mut total = first;
+    while total < hits.pixels().len() {
+        let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+        total += placements(&out).len();
+        frames += 1;
+        assert!(frames < 30, "everything is sent in a few frames");
+    }
+    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    assert_eq!(out, "", "then nothing more");
 }

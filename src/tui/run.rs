@@ -15,7 +15,7 @@ use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event as Input, MouseEventKind,
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::Terminal;
 
 use crate::conn::{Connection, Event, HidTransport, SendError};
@@ -73,17 +73,49 @@ impl Drop for Guard {
     }
 }
 
-/// Frees every kitty image the TUI sent, when dropped (on every way out).
+/// Writes the sequence that frees every kitty image the TUI sent.
+pub fn free_images(w: &mut impl Write) -> io::Result<()> {
+    w.write_all(PixelLayer::FREE_ALL.as_bytes())?;
+    w.flush()
+}
+
+/// Frees every kitty image the TUI sent, when dropped (on every way out,
+/// before the terminal leaves the alternate screen).
 struct FreeImages(bool);
 
 impl Drop for FreeImages {
     fn drop(&mut self) {
         if self.0 {
-            let mut out = io::stdout();
-            let _ = write!(out, "{}", PixelLayer::FREE_ALL);
-            let _ = out.flush();
+            let _ = free_images(&mut io::stdout());
         }
     }
+}
+
+/// Draws one frame: the text grid through `terminal`, then (with a pixel
+/// layer) the frame's kitty commands to `images` in one write, flushed.
+/// The images never go through the text grid, and a frame sends at most
+/// [`TRANSMIT_BUDGET`](crate::tui::pixel::TRANSMIT_BUDGET) of image data,
+/// so drawing never holds up the loop that drains the device.
+pub fn draw_frame<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &App,
+    meters: &Meters,
+    mut pixels: Option<&mut PixelLayer>,
+    images: &mut impl Write,
+) -> Result<HitMap>
+where
+    B::Error: Send + Sync + 'static,
+{
+    let mut hits = HitMap::default();
+    terminal.draw(|f| hits = ui::draw_with(f, app, meters, pixels.as_deref_mut()))?;
+    if let Some(layer) = pixels {
+        let out = layer.take_output();
+        if !out.is_empty() {
+            images.write_all(out.as_bytes())?;
+            images.flush()?;
+        }
+    }
+    Ok(hits)
 }
 
 /// Runs the TUI until the user quits. Errors (no device, no permission, a
@@ -110,16 +142,15 @@ pub fn run() -> Result<()> {
         Err(e) => return Err(e.into()),
     }
 
-    let mut hits = HitMap::default();
     loop {
         app.tick(&meters, Instant::now());
-        terminal.draw(|f| hits = ui::draw_with(f, &app, &meters, pixels.as_mut()))?;
-        if pixels.as_mut().is_some_and(PixelLayer::take_cleanup) {
-            // The cache was dropped: free the terminal's copies too. What
-            // is on screen now is re-sent on the next frame.
-            write!(io::stdout(), "{}", PixelLayer::FREE_ALL)?;
-            terminal.clear()?;
-        }
+        let hits = draw_frame(
+            &mut terminal,
+            &app,
+            &meters,
+            pixels.as_mut(),
+            &mut io::stdout(),
+        )?;
         let mut actions = Vec::new();
         if event::poll(TICK)? {
             // Everything already queued, without waiting again.

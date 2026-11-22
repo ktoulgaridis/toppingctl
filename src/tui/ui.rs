@@ -17,7 +17,7 @@ use ratatui::Frame;
 
 use crate::state::{Meters, Mix, PbStrip, Source};
 use crate::tui::app::{App, Control, InputControl, MeterId, Modal, Panel, Phase, MAX_GAIN_DB};
-use crate::tui::pixel::{PixelLayer, PixelSpot, PixelWidget, GAIN_TICKS};
+use crate::tui::pixel::{chip_rgb, clear_under, PixelLayer, PixelSpot, PixelWidget, GAIN_TICKS};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::dial::{knob_rect, Dial};
 use crate::tui::widgets::fader::{fmt_db, Fader};
@@ -90,6 +90,21 @@ impl HitMap {
     pub fn pixels(&self) -> &[PixelSpot] {
         &self.pixels
     }
+
+    /// Records `widget` over `rect` for the pixel layer.
+    fn pixel(&mut self, rect: Rect, widget: PixelWidget) {
+        if !rect.is_empty() {
+            self.pixels.push(PixelSpot { rect, widget });
+        }
+    }
+
+    /// Records a chip under text drawn in `style` over `rect`, when the
+    /// style has a background (a pill, a lit tab, a strip title).
+    fn chip(&mut self, rect: Rect, style: Style) {
+        if let Some(rgb) = style.bg.and_then(chip_rgb) {
+            self.pixel(rect, PixelWidget::Chip { rgb });
+        }
+    }
 }
 
 /// Draws the whole screen in text and returns its hit map (the golden
@@ -98,8 +113,11 @@ pub fn draw(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
     draw_with(f, app, meters, None)
 }
 
-/// [`draw`], then, with a pixel layer, the pixel widgets over their cells.
-/// Not while a modal is open: the modal's text must stay on top.
+/// [`draw`], then, with a pixel layer, the pixel widgets: the layer queues
+/// the kitty commands for what changed (the caller writes them after the
+/// frame, see [`PixelLayer::take_output`]) and the text form under each
+/// placed widget is blanked, labels kept. Not while a modal is open: every
+/// placement goes, so the modal's text stays on top.
 pub fn draw_with(
     f: &mut Frame,
     app: &App,
@@ -107,8 +125,14 @@ pub fn draw_with(
     pixels: Option<&mut PixelLayer>,
 ) -> HitMap {
     let hits = draw_text(f, app, meters);
-    if let (Some(layer), None) = (pixels, app.modal()) {
-        layer.render(hits.pixels(), f.buffer_mut());
+    if let Some(layer) = pixels {
+        let spots = if app.modal().is_none() {
+            hits.pixels()
+        } else {
+            &[]
+        };
+        layer.update(spots, f.area());
+        clear_under(layer, spots, f.buffer_mut());
     }
     hits
 }
@@ -168,13 +192,22 @@ fn put(buf: &mut Buffer, area: Rect, x: u16, y: u16, s: &str, style: Style) -> R
 }
 
 /// Writes `spans` centred on row `y` of `area`; returns each span's rect.
-fn put_centered(buf: &mut Buffer, area: Rect, y: u16, spans: &[Span]) -> Vec<Rect> {
+/// A span with a background (a pill) gets a chip under it on the pixel
+/// layer.
+fn put_centered(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    spans: &[Span],
+    hits: &mut HitMap,
+) -> Vec<Rect> {
     let w: u16 = spans.iter().map(|s| s.width() as u16).sum();
     let mut x = area.x + area.width.saturating_sub(w) / 2;
     spans
         .iter()
         .map(|s| {
             let r = put(buf, area, x, y, &s.content, s.style);
+            hits.chip(r, s.style);
             x += s.width() as u16;
             r
         })
@@ -416,7 +449,14 @@ fn panel(
 }
 
 /// A strip: an inner rounded box with its name set into the top border.
-fn strip_box(buf: &mut Buffer, area: Rect, t: Theme, name: &str, focused: bool) -> Rect {
+fn strip_box(
+    buf: &mut Buffer,
+    area: Rect,
+    t: Theme,
+    name: &str,
+    focused: bool,
+    hits: &mut HitMap,
+) -> Rect {
     let title = if focused {
         t.fg_bg(Theme::PILL_ON_FG, Theme::ACCENT)
             .add_modifier(Modifier::BOLD)
@@ -430,6 +470,15 @@ fn strip_box(buf: &mut Buffer, area: Rect, t: Theme, name: &str, focused: bool) 
         .title(Line::from(Span::styled(format!(" {name} "), title)).centered());
     let inner = block.inner(area);
     block.render(area, buf);
+    // The title's cells (the block centres it): a chip under them.
+    if let Some(bg) = title.bg {
+        let cells: Vec<u16> = (area.left()..area.right())
+            .filter(|&x| buf[(x, area.y)].bg == bg)
+            .collect();
+        if let (Some(&x0), Some(&x1)) = (cells.first(), cells.last()) {
+            hits.chip(Rect::new(x0, area.y, x1 + 1 - x0, 1), title);
+        }
+    }
     inner
 }
 
@@ -487,6 +536,53 @@ impl Knob {
             .max_cells(self.max.0, self.max.1)
             .render(area, buf);
     }
+}
+
+/// A level meter as text, its bar and clip light recorded for the pixel
+/// layer (the clip light on the top row, as the text meter draws it).
+#[allow(clippy::too_many_arguments)]
+fn meter(
+    buf: &mut Buffer,
+    area: Rect,
+    db: f64,
+    width: u16,
+    clip: Option<bool>,
+    t: Theme,
+    hits: &mut HitMap,
+) {
+    Meter::new(db, t).width(width).clip(clip).render(area, buf);
+    let mut bar = Rect {
+        width: width.min(area.width),
+        ..area
+    };
+    if bar.is_empty() {
+        return;
+    }
+    if let Some(lit) = clip {
+        hits.pixel(Rect { height: 1, ..bar }, PixelWidget::ClipLight { lit });
+        bar.y += 1;
+        bar.height -= 1;
+    }
+    hits.pixel(bar, PixelWidget::Meter { db });
+}
+
+/// A fader as text, recorded for the pixel layer over the cells the text
+/// fader takes.
+#[allow(clippy::too_many_arguments)]
+fn fader(
+    buf: &mut Buffer,
+    area: Rect,
+    db: f64,
+    max_db: f64,
+    labels: bool,
+    t: Theme,
+    hits: &mut HitMap,
+) {
+    Fader::new(db, max_db, t).labels(labels).render(area, buf);
+    hits.pixel(
+        Fader::rect(labels, area),
+        PixelWidget::Fader { db, max_db, labels },
+    );
 }
 
 /// A gain value: `+12 dB`; 0 dB reads `−0 dB`, as in the official app.
@@ -550,17 +646,22 @@ fn draw_input_strip(
         }),
         area,
     );
-    let r = strip_box(buf, area, t, &format!("IN{}", ch + 1), in_strip);
+    let r = strip_box(buf, area, t, &format!("IN{}", ch + 1), in_strip, hits);
     if r.height < 2 || r.width < 8 {
         return;
     }
     let db = meters.inputs[ch];
     let x0 = r.x + 1;
     let lit = app.clips().lit(MeterId::Input(ch));
-    Meter::new(db, t)
-        .width(2)
-        .clip(Some(lit))
-        .render(Rect::new(x0, r.y, 2, r.height), buf);
+    meter(
+        buf,
+        Rect::new(x0, r.y, 2, r.height),
+        db,
+        2,
+        Some(lit),
+        t,
+        hits,
+    );
     Scale::new(&INPUT_SCALE_DB, t).render(Rect::new(x0 + 2, r.y + 1, 3, r.height - 1), buf);
     put(buf, r, x0 + 3, r.y, &peak_text(db), t.peak(db));
 
@@ -586,7 +687,7 @@ fn draw_input_strip(
     for (i, (kind, label, on, pk)) in switches.into_iter().enumerate() {
         let y = r.y + 1 + i as u16;
         let span = pill(&format!("{label:^4}"), on, pk, focused(kind), t);
-        let rects = put_centered(buf, right, y, &[span]);
+        let rects = put_centered(buf, right, y, &[span], hits);
         hits.push(Hit::Control(Control::Input { ch, kind }), rects[0]);
     }
     // The gain knob takes every row under the switches: dial, then value.
@@ -655,7 +756,9 @@ fn draw_mixer_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hi
             ]
         };
         for (s, st) in &parts {
-            x = put(buf, area, x, area.y, s, *st).right().max(x);
+            let r = put(buf, area, x, area.y, s, *st);
+            hits.chip(r, *st);
+            x = r.right().max(x);
         }
         // The click target starts at the key letter.
         let key_x = start + 1;
@@ -729,6 +832,7 @@ fn stereo_body(
     max_db: f64,
     levels: [f64; 2],
     clips: [bool; 2],
+    hits: &mut HitMap,
 ) {
     let fw = Fader::width(true, area.width.saturating_sub(4));
     let total = fw + 4;
@@ -741,13 +845,17 @@ fn stereo_body(
         width: w,
         ..area
     };
-    Meter::new(levels[0], t)
-        .clip(Some(clips[0]))
-        .render(col(x, 1), buf);
-    Fader::new(db, max_db, t).render(col(x + 2, fw), buf);
-    Meter::new(levels[1], t)
-        .clip(Some(clips[1]))
-        .render(col(x + 3 + fw, 1), buf);
+    meter(buf, col(x, 1), levels[0], 1, Some(clips[0]), t, hits);
+    fader(buf, col(x + 2, fw), db, max_db, true, t, hits);
+    meter(
+        buf,
+        col(x + 3 + fw, 1),
+        levels[1],
+        1,
+        Some(clips[1]),
+        t,
+        hits,
+    );
 }
 
 fn draw_pb_strip(
@@ -763,7 +871,7 @@ fn draw_pb_strip(
     let name = ["PB 1/2", "PB 3/4", "PB 5/6"][i];
     let me = Control::Mixer(i + 1);
     hits.push(Hit::Focus(me), area);
-    let r = strip_box(buf, area, t, name, app.focus() == me);
+    let r = strip_box(buf, area, t, name, app.focus() == me, hits);
     if r.height < 8 {
         return;
     }
@@ -774,12 +882,14 @@ fn draw_pb_strip(
         r,
         r.y + d,
         &[pill("LINK", s.link, PillKind::Normal, false, t)],
+        hits,
     );
     put_centered(
         buf,
         r,
         r.y + d + 1,
         &[value_span(s.fader_db, s.mute, t, true)],
+        hits,
     );
     let rows = switch_rows(r);
     let body = Rect::new(r.x, r.y + d + 2, r.width, r.height - d - 2 - rows);
@@ -792,8 +902,9 @@ fn draw_pb_strip(
         MIX_FADER_MAX_DB,
         meters.playback[i],
         clips,
+        hits,
     );
-    strip_switches(buf, r, t, [s.phase, s.solo, s.mute], rows);
+    strip_switches(buf, r, t, [s.phase, s.solo, s.mute], rows, hits);
 }
 
 /// Rows for a mix strip's Ø / SOLO / MUTE: stacked when the strip is tall
@@ -808,12 +919,19 @@ fn switch_rows(r: Rect) -> u16 {
 
 /// Ø / SOLO / MUTE (`on` in that order) at the bottom of `r`, in `rows`
 /// rows (3 or 1).
-fn strip_switches(buf: &mut Buffer, r: Rect, t: Theme, on: [bool; 3], rows: u16) {
+fn strip_switches(
+    buf: &mut Buffer,
+    r: Rect,
+    t: Theme,
+    on: [bool; 3],
+    rows: u16,
+    hits: &mut HitMap,
+) {
     let kinds = [PillKind::Normal, PillKind::Normal, PillKind::Danger];
     if rows >= 3 {
         for (k, label) in ["Ø", "SOLO", "MUTE"].into_iter().enumerate() {
             let span = pill(&format!("{label:^4}"), on[k], kinds[k], false, t);
-            put_centered(buf, r, r.bottom() - 3 + k as u16, &[span]);
+            put_centered(buf, r, r.bottom() - 3 + k as u16, &[span], hits);
         }
         return;
     }
@@ -824,7 +942,7 @@ fn strip_switches(buf: &mut Buffer, r: Rect, t: Theme, on: [bool; 3], rows: u16)
         }
         spans.push(pill(label, on[k], kinds[k], false, t));
     }
-    put_centered(buf, r, r.bottom() - 1, &spans);
+    put_centered(buf, r, r.bottom() - 1, &spans, hits);
 }
 
 /// A pill with no padding, for tight rows.
@@ -845,7 +963,7 @@ fn draw_in12_strip(
     let (link, in1, in2) = (mix.link, &mix.in1, &mix.in2);
     let me = Control::Mixer(0);
     hits.push(Hit::Focus(me), area);
-    let r = strip_box(buf, area, t, "IN 1+2", app.focus() == me);
+    let r = strip_box(buf, area, t, "IN 1+2", app.focus() == me, hits);
     if r.height < 8 {
         return;
     }
@@ -858,10 +976,17 @@ fn draw_in12_strip(
         r,
         r.y + d,
         &[pill("LINK", link, PillKind::Disabled, false, t)],
+        hits,
     );
     let halves = columns(row(r, d + 1), 2);
     for (h, s) in halves.iter().zip([in1, in2]) {
-        put_centered(buf, *h, h.y, &[value_span(s.fader_db, s.mute, t, false)]);
+        put_centered(
+            buf,
+            *h,
+            h.y,
+            &[value_span(s.fader_db, s.mute, t, false)],
+            hits,
+        );
     }
 
     // M1 · F1 · scale · F2 · M2: one scale between two mono faders, tick
@@ -880,12 +1005,17 @@ fn draw_in12_strip(
             .into_iter()
             .enumerate()
         {
-            Meter::new(meters.inputs[k], t)
-                .clip(Some(app.clips().lit(MeterId::Input(k))))
-                .render(col(mx, 1), buf);
-            Fader::new(s.fader_db, MIX_FADER_MAX_DB, t)
-                .labels(false)
-                .render(col(fx, 3), buf);
+            let lit = app.clips().lit(MeterId::Input(k));
+            meter(buf, col(mx, 1), meters.inputs[k], 1, Some(lit), t, hits);
+            fader(
+                buf,
+                col(fx, 3),
+                s.fader_db,
+                MIX_FADER_MAX_DB,
+                false,
+                t,
+                hits,
+            );
         }
         for (y, label) in Fader::ticks(MIX_FADER_MAX_DB, body.height) {
             put(
@@ -905,7 +1035,7 @@ fn draw_in12_strip(
                 height: r.height,
                 ..*h
             };
-            strip_switches(buf, col, t, [s.phase, s.solo, s.mute], rows);
+            strip_switches(buf, col, t, [s.phase, s.solo, s.mute], rows, hits);
             continue;
         }
         let h = Rect {
@@ -923,6 +1053,7 @@ fn draw_in12_strip(
                 Span::raw(" "),
                 tight("M", s.mute, PillKind::Danger, t),
             ],
+            hits,
         );
     }
 }
@@ -942,11 +1073,18 @@ fn draw_loopback_panel(
         let lb = &app.state().loopbacks[i];
         let me = Control::Loopback(i);
         hits.push(Hit::Focus(me), col);
-        let r = strip_box(buf, col, t, ["LOOP 1+2", "LOOP 3+4"][i], app.focus() == me);
+        let r = strip_box(
+            buf,
+            col,
+            t,
+            ["LOOP 1+2", "LOOP 3+4"][i],
+            app.focus() == me,
+            hits,
+        );
         if r.height < 5 {
             continue;
         }
-        source_line(buf, r, t, lb.source);
+        source_line(buf, r, t, lb.source, hits);
         put_centered(
             buf,
             r,
@@ -956,20 +1094,31 @@ fn draw_loopback_panel(
                 Span::raw(" "),
                 pill("MUTE", lb.mute, PillKind::Danger, false, t),
             ],
+            hits,
         );
         put_centered(
             buf,
             r,
             r.y + 2,
             &levels_spans(lb.level_l_db, lb.level_r_db, lb.mute, t),
+            hits,
         );
         let body = Rect::new(r.x, r.y + 3, r.width, r.height - 3);
         let clips = [0, 1].map(|c| app.clips().lit(MeterId::Loopback(i, c)));
-        stereo_body(buf, body, t, lb.level_l_db, 0.0, meters.loopbacks[i], clips);
+        stereo_body(
+            buf,
+            body,
+            t,
+            lb.level_l_db,
+            0.0,
+            meters.loopbacks[i],
+            clips,
+            hits,
+        );
     }
 }
 
-fn source_line(buf: &mut Buffer, r: Rect, t: Theme, s: Source) {
+fn source_line(buf: &mut Buffer, r: Rect, t: Theme, s: Source, hits: &mut HitMap) {
     put_centered(
         buf,
         r,
@@ -978,6 +1127,7 @@ fn source_line(buf: &mut Buffer, r: Rect, t: Theme, s: Source) {
             Span::styled(source_name(s), t.active()),
             Span::styled(" ▾", t.dim()),
         ],
+        hits,
     );
 }
 
@@ -1019,9 +1169,9 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
     }
     let focused = |k| app.focus() == Control::Output(k);
     let out = &state.output;
-    let r = strip_box(buf, out_area, t, "OUT 1+2", focused(0));
+    let r = strip_box(buf, out_area, t, "OUT 1+2", focused(0), hits);
     if r.height >= 5 {
-        source_line(buf, r, t, out.source);
+        source_line(buf, r, t, out.source, hits);
         put_centered(
             buf,
             r,
@@ -1033,20 +1183,31 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
                 Span::raw(" "),
                 pill("LINE", out.line, PillKind::Normal, false, t),
             ],
+            hits,
         );
         put_centered(
             buf,
             r,
             r.y + 2,
             &levels_spans(out.level_l_db, out.level_r_db, false, t),
+            hits,
         );
         let body = Rect::new(r.x, r.y + 3, r.width, r.height - 3);
         let clips = [0, 1].map(|c| app.clips().lit(MeterId::Output(c)));
-        stereo_body(buf, body, t, out.level_l_db, 0.0, meters.output, clips);
+        stereo_body(
+            buf,
+            body,
+            t,
+            out.level_l_db,
+            0.0,
+            meters.output,
+            clips,
+            hits,
+        );
     }
 
     // Monitor Mix: an analog knob the device never reports.
-    let r = strip_box(buf, mon_area, t, "MONITOR MIX", focused(1));
+    let r = strip_box(buf, mon_area, t, "MONITOR MIX", focused(1), hits);
     if r.height >= 6 {
         // The dial takes what the two text rows leave.
         let dial_h = r.height - 3;
@@ -1068,6 +1229,7 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
                 Span::raw("    "),
                 Span::styled("playback", t.dim()),
             ],
+            hits,
         );
         put_centered(
             buf,
@@ -1081,24 +1243,32 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
                 },
                 t.track(),
             )],
+            hits,
         );
     }
 
     // Phone out: the gain switch and the volume knob's raw position.
-    let r = strip_box(buf, phone_area, t, "PHONE", focused(2));
+    let r = strip_box(buf, phone_area, t, "PHONE", focused(2), hits);
     if r.height >= 4 {
         put_centered(
             buf,
             r,
             r.y + 1,
             &[pill("GAIN", state.phone_gain, PillKind::Normal, false, t)],
+            hits,
         );
-        put_centered(buf, r, r.y + 3, &[Span::styled("volume knob", t.dim())]);
+        put_centered(
+            buf,
+            r,
+            r.y + 3,
+            &[Span::styled("volume knob", t.dim())],
+            hits,
+        );
         let knob = state
             .readout
             .volume_knob
             .map_or("—".to_string(), |v| v.to_string());
-        put_centered(buf, r, r.y + 4, &[Span::styled(knob, t.heading())]);
+        put_centered(buf, r, r.y + 4, &[Span::styled(knob, t.heading())], hits);
     }
 }
 
