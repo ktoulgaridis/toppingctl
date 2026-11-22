@@ -7,7 +7,7 @@
 use std::io::{self, Write};
 use std::panic;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use crossterm::cursor::{Hide, Show};
@@ -16,7 +16,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::conn::{Connection, Event, HidTransport};
+use crate::conn::{Connection, Event, HidTransport, SendError};
 use crate::error::{message, Platform};
 use crate::open::open_e2x2;
 use crate::state::Meters;
@@ -93,6 +93,7 @@ pub fn run() -> Result<()> {
 
     let mut hits = HitMap::default();
     loop {
+        app.tick(&meters, Instant::now());
         terminal.draw(|f| hits = ui::draw(f, &app, &meters))?;
         let mut actions = Vec::new();
         if event::poll(TICK)? {
@@ -103,10 +104,10 @@ pub fn run() -> Result<()> {
             }
         }
         actions.extend(drain_device(&events, &mut app, &mut meters)?);
+        send_actions(&conn, &actions)?;
         for action in actions {
             match action {
-                Action::Send(f) => conn.send(f)?,
-                Action::SendConfirmedPhantom(f) => conn.send_confirmed_phantom(f)?,
+                Action::Send(_) | Action::SendConfirmedPhantom(_) => {}
                 Action::Save => {
                     let notice = store
                         .save(app.state())
@@ -118,6 +119,21 @@ pub fn run() -> Result<()> {
             }
         }
     }
+}
+
+/// Sends the frames in `actions` to the device, in order: [`Action::Send`]
+/// with `Connection::send` (which refuses to turn 48V on) and
+/// [`Action::SendConfirmedPhantom`] with `send_confirmed_phantom`. Other
+/// actions are left to the caller.
+pub fn send_actions(conn: &Connection, actions: &[Action]) -> Result<(), SendError> {
+    for action in actions {
+        match *action {
+            Action::Send(f) => conn.send(f)?,
+            Action::SendConfirmedPhantom(f) => conn.send_confirmed_phantom(f)?,
+            Action::Save | Action::Quit => {}
+        }
+    }
+    Ok(())
 }
 
 /// Applies everything the device sent since the last call.

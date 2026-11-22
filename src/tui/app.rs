@@ -5,17 +5,28 @@
 //! of [`State::diff`] and a [`Action::Save`]. 48V is never in a diff: turning
 //! it on needs the confirm modal and comes out as
 //! [`Action::SendConfirmedPhantom`].
+//!
+//! Only the input panel takes input in this version (#34); the mixer,
+//! loopback and output are drawn from the state, and the mix tabs pick
+//! which mix the mixer shows. Their controls come with #14 and #15.
+
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton};
 use crossterm::event::{MouseEvent, MouseEventKind};
 
 use crate::frame::Frame;
-use crate::state::State;
+use crate::state::{Meters, State};
 use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
+use crate::tui::widgets::meter::ClipHold;
 
 /// The highest input gain, in dB.
 pub const MAX_GAIN_DB: u8 = 20;
+/// The input gain a reset (double-click, `0`) goes back to.
+pub const DEFAULT_GAIN_DB: u8 = 0;
+/// Two clicks on the same knob within this are a double-click.
+pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// What the event loop should do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,26 +55,20 @@ pub enum InputControl {
 }
 
 impl InputControl {
-    /// The Tab order on one input.
+    /// The order on one input, top to bottom as drawn: the switches, then
+    /// the gain knob. Tab and ↑↓ follow it.
     pub const ORDER: [InputControl; 7] = [
-        InputControl::Gain,
         InputControl::Mon,
         InputControl::Phantom,
         InputControl::Inst,
-        InputControl::Mute,
         InputControl::Solo,
+        InputControl::Mute,
         InputControl::Phase,
+        InputControl::Gain,
     ];
 
-    /// The row in the panel (M, S and Ø share the last one).
-    fn row(self) -> usize {
-        match self {
-            InputControl::Gain => 0,
-            InputControl::Mon => 1,
-            InputControl::Phantom => 2,
-            InputControl::Inst => 3,
-            InputControl::Mute | InputControl::Solo | InputControl::Phase => 4,
-        }
+    fn index(self) -> usize {
+        Self::ORDER.iter().position(|&k| k == self).unwrap_or(0)
     }
 }
 
@@ -109,6 +114,77 @@ pub enum Phase {
     Synced,
 }
 
+/// A gain knob being dragged: which input, where the press was, and the
+/// gain then.
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    ch: usize,
+    y: u16,
+    gain: u8,
+}
+
+/// The meters' clip lights, in the shape of [`Meters`].
+#[derive(Clone, Debug, Default)]
+pub struct Clips {
+    holds: [ClipHold; 14],
+    lit: [bool; 14],
+}
+
+/// Which meter a clip light belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeterId {
+    /// IN1 (0), IN2 (1).
+    Input(usize),
+    /// PB 1/2 (0) … 5/6 (2), L (0) / R (1).
+    Playback(usize, usize),
+    /// Output 1+2, L / R.
+    Output(usize),
+    /// Loopback 1+2 (0), 3+4 (1), L / R.
+    Loopback(usize, usize),
+}
+
+impl MeterId {
+    fn index(self) -> usize {
+        match self {
+            MeterId::Input(i) => i.min(1),
+            MeterId::Playback(p, c) => 2 + p.min(2) * 2 + c.min(1),
+            MeterId::Output(c) => 8 + c.min(1),
+            MeterId::Loopback(l, c) => 10 + l.min(1) * 2 + c.min(1),
+        }
+    }
+}
+
+impl Clips {
+    /// Takes the latest readings at `now`.
+    pub fn update(&mut self, m: &Meters, now: Instant) {
+        let values = [
+            m.inputs[0],
+            m.inputs[1],
+            m.playback[0][0],
+            m.playback[0][1],
+            m.playback[1][0],
+            m.playback[1][1],
+            m.playback[2][0],
+            m.playback[2][1],
+            m.output[0],
+            m.output[1],
+            m.loopbacks[0][0],
+            m.loopbacks[0][1],
+            m.loopbacks[1][0],
+            m.loopbacks[1][1],
+        ];
+        for (i, db) in values.into_iter().enumerate() {
+            self.holds[i].update(db, now);
+            self.lit[i] = self.holds[i].lit(now);
+        }
+    }
+
+    /// Whether `id`'s clip light is on (as of the last update).
+    pub fn lit(&self, id: MeterId) -> bool {
+        self.lit[id.index()]
+    }
+}
+
 /// The TUI's state.
 #[derive(Debug)]
 pub struct App {
@@ -116,8 +192,12 @@ pub struct App {
     phase: Phase,
     focus: Control,
     modal: Option<Modal>,
-    /// The input whose gain bar is being dragged.
-    drag: Option<usize>,
+    drag: Option<Drag>,
+    /// The last left click: what it hit and when (for double-clicks).
+    last_click: Option<(Hit, Instant)>,
+    /// The mix the mixer shows: A (0), B (1), C (2).
+    mix: usize,
+    clips: Clips,
     theme: Theme,
     notice: Option<String>,
 }
@@ -130,13 +210,30 @@ impl App {
             phase: Phase::Connecting,
             focus: Control::Input {
                 ch: 0,
-                kind: InputControl::Gain,
+                kind: InputControl::ORDER[0],
             },
             modal: None,
             drag: None,
+            last_click: None,
+            mix: 0,
+            clips: Clips::default(),
             theme,
             notice: None,
         }
+    }
+
+    /// The mix the mixer shows: A (0), B (1), C (2).
+    pub fn mix(&self) -> usize {
+        self.mix
+    }
+
+    pub fn clips(&self) -> &Clips {
+        &self.clips
+    }
+
+    /// The meters as of `now`: updates the clip lights.
+    pub fn tick(&mut self, meters: &Meters, now: Instant) {
+        self.clips.update(meters, now);
     }
 
     /// The device is at `state` (from `sync::connect`).
@@ -224,25 +321,37 @@ impl App {
             return Vec::new();
         }
         let Control::Input { ch, kind } = self.focus;
+        let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
+            10
+        } else {
+            1
+        };
         match key.code {
             KeyCode::Tab => self.cycle(1),
             KeyCode::BackTab => self.cycle(-1),
             KeyCode::Up => self.move_vertical(-1),
             KeyCode::Down => self.move_vertical(1),
-            KeyCode::Left => self.move_horizontal(-1),
-            KeyCode::Right => self.move_horizontal(1),
+            KeyCode::Left | KeyCode::Right => {
+                let delta = if key.code == KeyCode::Left {
+                    -step
+                } else {
+                    step
+                };
+                if kind == InputControl::Gain {
+                    return self.adjust(self.focus, delta);
+                }
+                self.focus = Control::Input {
+                    ch: if delta < 0 { 0 } else { 1 },
+                    kind,
+                };
+            }
             KeyCode::Char('?') => {
                 self.modal = Some(Modal::Help);
                 self.drag = None;
             }
-            KeyCode::Char('h') => return self.adjust(self.focus, -1),
-            KeyCode::Char('l') => return self.adjust(self.focus, 1),
-            KeyCode::Char('H') => return self.adjust(self.focus, -10),
-            KeyCode::Char('L') => return self.adjust(self.focus, 10),
+            KeyCode::Char('0') => return self.reset(self.focus),
+            KeyCode::Char(c @ ('a' | 'b' | 'c')) => self.mix = usize::from(c as u8 - b'a'),
             KeyCode::Char(' ') | KeyCode::Enter => return self.toggle(ch, kind),
-            KeyCode::Char('m') => return self.toggle(ch, InputControl::Mute),
-            KeyCode::Char('s') => return self.toggle(ch, InputControl::Solo),
-            KeyCode::Char('p') => return self.toggle(ch, InputControl::Phase),
             _ => {}
         }
         Vec::new()
@@ -250,6 +359,11 @@ impl App {
 
     /// Handles a mouse event, using the hit map of the last render.
     pub fn handle_mouse(&mut self, ev: MouseEvent, hits: &HitMap) -> Vec<Action> {
+        self.handle_mouse_at(ev, hits, Instant::now())
+    }
+
+    /// [`App::handle_mouse`] at time `now` (double-clicks are timed).
+    pub fn handle_mouse_at(&mut self, ev: MouseEvent, hits: &HitMap, now: Instant) -> Vec<Action> {
         let hit = hits.get(ev.column, ev.row);
         if let Some(modal) = self.modal {
             if ev.kind != MouseEventKind::Down(MouseButton::Left) {
@@ -276,27 +390,39 @@ impl App {
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         let step = if shift { 10 } else { 1 };
         match ev.kind {
-            MouseEventKind::Down(MouseButton::Left) => match hit {
-                Some(Hit::Control(c)) => {
-                    self.focus = c;
-                    let Control::Input { ch, kind } = c;
-                    if kind != InputControl::Gain {
-                        return self.toggle(ch, kind);
+            MouseEventKind::Down(MouseButton::Left) => {
+                let double = matches!(
+                    (hit, self.last_click),
+                    (Some(h), Some((last, at))) if h == last && now.saturating_duration_since(at) <= DOUBLE_CLICK
+                );
+                // A double-click is used up: a third click starts afresh.
+                self.last_click = if double { None } else { hit.map(|h| (h, now)) };
+                match hit {
+                    Some(Hit::Control(c)) => {
+                        self.focus = c;
+                        let Control::Input { ch, kind } = c;
+                        if kind != InputControl::Gain {
+                            return self.toggle(ch, kind);
+                        }
+                        if double {
+                            self.drag = None;
+                            return self.reset(c);
+                        }
+                        self.drag = Some(Drag {
+                            ch,
+                            y: ev.row,
+                            gain: self.state.inputs[ch].gain_db.min(MAX_GAIN_DB),
+                        });
                     }
+                    Some(Hit::MixTab(m)) => self.mix = m,
+                    _ => {}
                 }
-                Some(Hit::GainBar(ch)) => {
-                    self.focus = Control::Input {
-                        ch,
-                        kind: InputControl::Gain,
-                    };
-                    self.drag = Some(ch);
-                    return self.drag_to(ch, ev.column, hits);
-                }
-                _ => {}
-            },
+            }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(ch) = self.drag {
-                    return self.drag_to(ch, ev.column, hits);
+                if let Some(d) = self.drag {
+                    let rows = i32::from(d.y) - i32::from(ev.row);
+                    let gain = (i32::from(d.gain) + rows).clamp(0, i32::from(MAX_GAIN_DB));
+                    return self.set_gain(d.ch, gain as u8);
                 }
             }
             MouseEventKind::Up(_) => self.drag = None,
@@ -306,16 +432,8 @@ impl App {
                 } else {
                     -step
                 };
-                match hit {
-                    Some(Hit::Control(c)) => return self.adjust(c, delta),
-                    Some(Hit::GainBar(ch)) => {
-                        let c = Control::Input {
-                            ch,
-                            kind: InputControl::Gain,
-                        };
-                        return self.adjust(c, delta);
-                    }
-                    _ => {}
+                if let Some(Hit::Control(c)) = hit {
+                    return self.adjust(c, delta);
                 }
             }
             _ => {}
@@ -382,20 +500,21 @@ impl App {
         self.set_gain(ch, gain)
     }
 
+    /// Puts a knob back to its default.
+    fn reset(&mut self, c: Control) -> Vec<Action> {
+        match c {
+            Control::Input {
+                ch,
+                kind: InputControl::Gain,
+            } => self.set_gain(ch, DEFAULT_GAIN_DB),
+            _ => Vec::new(),
+        }
+    }
+
     fn set_gain(&mut self, ch: usize, gain: u8) -> Vec<Action> {
         let mut new = self.state.clone();
         new.inputs[ch].gain_db = gain;
         self.commit(new)
-    }
-
-    fn drag_to(&mut self, ch: usize, x: u16, hits: &HitMap) -> Vec<Action> {
-        let Some(bar) = hits.rect(Hit::GainBar(ch)) else {
-            return Vec::new();
-        };
-        let span = f64::from(bar.width.saturating_sub(1).max(1));
-        let offset = f64::from(x.saturating_sub(bar.x)).min(span);
-        let gain = (offset / span * f64::from(MAX_GAIN_DB)).round() as u8;
-        self.set_gain(ch, gain)
     }
 
     fn toggle(&mut self, ch: usize, kind: InputControl) -> Vec<Action> {
@@ -429,42 +548,15 @@ impl App {
         self.focus = all[(i as isize + step).rem_euclid(n) as usize];
     }
 
-    /// Up/Down: the previous/next row of the same input. From the M/S/Ø
-    /// row up goes to INST; down from INST goes to M.
+    /// Up/Down: along the input's column, clamped at the ends.
     fn move_vertical(&mut self, step: isize) {
         let Control::Input { ch, kind } = self.focus;
-        let rows = [
-            InputControl::Gain,
-            InputControl::Mon,
-            InputControl::Phantom,
-            InputControl::Inst,
-            InputControl::Mute,
-        ];
-        let row = (kind.row() as isize + step).clamp(0, rows.len() as isize - 1) as usize;
-        if row != kind.row() {
-            self.focus = Control::Input {
-                ch,
-                kind: rows[row],
-            };
-        }
-    }
-
-    /// Left/Right: across to the other input; along the M/S/Ø row, through
-    /// IN1's switches and then IN2's.
-    fn move_horizontal(&mut self, step: isize) {
-        let Control::Input { ch, kind } = self.focus;
-        if kind.row() == 4 {
-            let row: Vec<Control> = Control::all()
-                .into_iter()
-                .filter(|c| matches!(c, Control::Input { kind, .. } if kind.row() == 4))
-                .collect();
-            let i = row.iter().position(|&c| c == self.focus).unwrap_or(0) as isize;
-            let j = (i + step).clamp(0, row.len() as isize - 1) as usize;
-            self.focus = row[j];
-        } else {
-            let ch = (ch as isize + step).clamp(0, 1) as usize;
-            self.focus = Control::Input { ch, kind };
-        }
+        let n = InputControl::ORDER.len() as isize;
+        let i = (kind.index() as isize + step).clamp(0, n - 1) as usize;
+        self.focus = Control::Input {
+            ch,
+            kind: InputControl::ORDER[i],
+        };
     }
 }
 
