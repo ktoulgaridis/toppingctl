@@ -6,26 +6,36 @@
 //! it on needs the confirm modal and comes out as
 //! [`Action::SendConfirmedPhantom`].
 //!
-//! Only the input panel takes input in this version (#34); the mixer,
-//! loopback and output are drawn from the state, and the mix tabs pick
-//! which mix the mixer shows. Their controls come with #14 and #15.
+//! The input panel and the mixer (#14) take input; the mix tabs pick which
+//! mix the mixer shows and its controls act on. Loopback and output are
+//! drawn from the state; their controls come with #15.
 
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton};
 use crossterm::event::{MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 
 use crate::frame::Frame;
 use crate::rate::RATES;
-use crate::state::{Meters, State};
+use crate::state::{Meters, Mix, PbStrip, State};
 use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
+use crate::tui::widgets::fader::db_at_frac;
 use crate::tui::widgets::meter::ClipHold;
 
 /// The highest input gain, in dB.
 pub const MAX_GAIN_DB: u8 = 20;
 /// The input gain a reset (double-click, `0`) goes back to.
 pub const DEFAULT_GAIN_DB: u8 = 0;
+/// A mix fader's top, in dB (the app's crosspoint top, ≈ +6 dB).
+pub const MIX_FADER_MAX_DB: f64 = 6.0;
+/// A mix fader at or below this is at −∞.
+pub const MIX_FADER_FLOOR_DB: f64 = -60.0;
+/// One step of a pan dial: 5 % of its travel.
+pub const PAN_STEP: f64 = 0.05;
+/// The longest strip name, in characters.
+pub const NAME_MAX: usize = 10;
 /// Two clicks on the same knob within this are a double-click.
 pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
@@ -75,14 +85,83 @@ impl InputControl {
     }
 }
 
+/// A control on a mixer strip. `usize` is the channel: on IN 1+2, IN1 (0)
+/// or IN2 (1); on a PB strip, the odd (0) or even (1) channel's pan dial,
+/// and 0 for its single fader and switches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MixControl {
+    Pan(usize),
+    Fader(usize),
+    Link,
+    Phase(usize),
+    Solo(usize),
+    Mute(usize),
+}
+
+impl MixControl {
+    /// A PB strip's controls in focus order (↑↓): left dial, right dial,
+    /// fader, LINK, Ø, SOLO, MUTE.
+    pub const PB: [MixControl; 7] = [
+        MixControl::Pan(0),
+        MixControl::Pan(1),
+        MixControl::Fader(0),
+        MixControl::Link,
+        MixControl::Phase(0),
+        MixControl::Solo(0),
+        MixControl::Mute(0),
+    ];
+    /// IN 1+2's controls in focus order: the same, with IN1's and IN2's
+    /// fader and switches side by side.
+    pub const IN12: [MixControl; 11] = [
+        MixControl::Pan(0),
+        MixControl::Pan(1),
+        MixControl::Fader(0),
+        MixControl::Fader(1),
+        MixControl::Link,
+        MixControl::Phase(0),
+        MixControl::Phase(1),
+        MixControl::Solo(0),
+        MixControl::Solo(1),
+        MixControl::Mute(0),
+        MixControl::Mute(1),
+    ];
+
+    /// The controls of mixer strip `strip`, in focus order.
+    pub fn order(strip: usize) -> &'static [MixControl] {
+        if strip == 0 {
+            &Self::IN12
+        } else {
+            &Self::PB
+        }
+    }
+
+    /// The same control on mixer strip `strip`: a PB strip has one fader
+    /// and one set of switches, so IN2's become its.
+    fn on_strip(self, strip: usize) -> MixControl {
+        if Self::order(strip).contains(&self) {
+            return self;
+        }
+        match self {
+            MixControl::Fader(_) => MixControl::Fader(0),
+            MixControl::Phase(_) => MixControl::Phase(0),
+            MixControl::Solo(_) => MixControl::Solo(0),
+            MixControl::Mute(_) => MixControl::Mute(0),
+            other => other,
+        }
+    }
+}
+
 /// Something that can have focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Control {
     /// A control on IN1 (`ch` 0) or IN2 (`ch` 1).
     Input { ch: usize, kind: InputControl },
-    /// A mixer strip: IN 1+2 (0), PB 1/2 (1), PB 3/4 (2), PB 5/6 (3).
-    /// Highlighted only: its controls come with #14.
+    /// A mixer strip's name: IN 1+2 (0), PB 1/2 (1), PB 3/4 (2), PB 5/6
+    /// (3). Enter renames it; ↓ goes into its controls.
     Mixer(usize),
+    /// A control on mixer strip `strip` (numbered as in [`Control::Mixer`]),
+    /// acting on the mix shown.
+    Mix { strip: usize, ctl: MixControl },
     /// LOOP 1+2 (0), LOOP 3+4 (1). Highlighted only until #15.
     Loopback(usize),
     /// OUT 1+2 (0), MONITOR MIX (1), PHONE (2). Highlighted only until #15.
@@ -124,7 +203,7 @@ impl Control {
     pub fn panel(self) -> Panel {
         match self {
             Control::Input { .. } => Panel::Input,
-            Control::Mixer(_) => Panel::Mixer,
+            Control::Mixer(_) | Control::Mix { .. } => Panel::Mixer,
             Control::Loopback(_) => Panel::Loopback,
             Control::Output(_) => Panel::Output,
         }
@@ -140,6 +219,13 @@ impl Control {
                 kind,
             },
             Control::Mixer(i) => Control::Mixer(mv(i, 4)),
+            Control::Mix { strip, ctl } => {
+                let strip = mv(strip, 4);
+                Control::Mix {
+                    strip,
+                    ctl: ctl.on_strip(strip),
+                }
+            }
             Control::Loopback(i) => Control::Loopback(mv(i, 2)),
             Control::Output(i) => Control::Output(mv(i, 3)),
         }
@@ -170,13 +256,24 @@ pub enum Phase {
     Synced,
 }
 
-/// A gain knob being dragged: which input, where the press was, and the
-/// gain then.
+/// A knob or fader being dragged.
 #[derive(Clone, Copy, Debug)]
-struct Drag {
-    ch: usize,
-    y: u16,
-    gain: u8,
+enum Drag {
+    /// An input's gain knob: where the press was, and the gain then.
+    Gain { ch: usize, y: u16, gain: u8 },
+    /// A mix fader: its cap follows the pointer along `track`.
+    Fader {
+        strip: usize,
+        ch: usize,
+        track: Rect,
+    },
+    /// A pan dial: one step a row from where the press was.
+    Pan {
+        strip: usize,
+        ch: usize,
+        y: u16,
+        pan: f64,
+    },
 }
 
 /// The meters' clip lights, in the shape of [`Meters`].
@@ -264,6 +361,8 @@ pub struct App {
     notice: Option<String>,
     /// The interface's sample rate (Hz), when the OS tells.
     sample_rate: Option<u32>,
+    /// A mixer strip's name being edited: the strip and the text so far.
+    editing: Option<(usize, String)>,
 }
 
 /// The PHONE strip's index among the output strips.
@@ -291,6 +390,7 @@ impl App {
             theme,
             notice: None,
             sample_rate: None,
+            editing: None,
         }
     }
 
@@ -307,6 +407,11 @@ impl App {
     /// The mix the mixer shows: A (0), B (1), C (2).
     pub fn mix(&self) -> usize {
         self.mix
+    }
+
+    /// The mixer strip whose name is being edited, and the text so far.
+    pub fn editing(&self) -> Option<(usize, &str)> {
+        self.editing.as_ref().map(|(i, s)| (*i, s.as_str()))
     }
 
     pub fn clips(&self) -> &Clips {
@@ -393,6 +498,9 @@ impl App {
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
             return vec![Action::Quit];
         }
+        if self.modal.is_none() && self.editing.is_some() {
+            return self.edit_key(key.code);
+        }
         let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
         let no = matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc);
         match self.modal {
@@ -443,10 +551,13 @@ impl App {
         } else {
             1
         };
-        let gain_focused = matches!(
+        let adjustable = matches!(
             self.focus,
             Control::Input {
                 kind: InputControl::Gain,
+                ..
+            } | Control::Mix {
+                ctl: MixControl::Fader(_) | MixControl::Pan(_),
                 ..
             }
         );
@@ -464,7 +575,7 @@ impl App {
                 } else {
                     step
                 };
-                if gain_focused {
+                if adjustable {
                     return self.adjust(self.focus, delta);
                 }
                 self.focus = self.focus.beside(delta.signum() as isize);
@@ -476,9 +587,17 @@ impl App {
             KeyCode::Char('0') => return self.reset(self.focus),
             KeyCode::Char('r') => self.open_rates(),
             KeyCode::Char(c @ ('a' | 'b' | 'c')) => self.mix = usize::from(c as u8 - b'a'),
+            KeyCode::Enter if matches!(self.focus, Control::Mixer(_)) => {
+                if let Control::Mixer(strip) = self.focus {
+                    let name = self.state.strip_names[strip].clone().unwrap_or_default();
+                    self.editing = Some((strip, name));
+                    self.drag = None;
+                }
+            }
             KeyCode::Char(' ') | KeyCode::Enter => match self.focus {
                 Control::Input { ch, kind } => return self.toggle(ch, kind),
                 Control::Output(PHONE) => return self.set_phone_level(!self.state.phone_gain),
+                Control::Mix { strip, ctl } => return self.toggle_mix(strip, ctl),
                 _ => {}
             },
             _ => {}
@@ -517,6 +636,10 @@ impl App {
         if !self.controls_live() {
             return Vec::new();
         }
+        if matches!(ev.kind, MouseEventKind::Down(_)) {
+            // A click elsewhere ends a name edit, without keeping it.
+            self.editing = None;
+        }
         let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
         let step = if shift { 10 } else { 1 };
         match ev.kind {
@@ -529,23 +652,27 @@ impl App {
                 self.last_click = if double { None } else { hit.map(|h| (h, now)) };
                 match hit {
                     Some(Hit::Focus(c)) => self.focus = c,
-                    Some(Hit::Control(c)) => {
+                    Some(h @ Hit::Control(c)) => {
                         self.focus = c;
-                        let Control::Input { ch, kind } = c else {
-                            return Vec::new();
+                        let adjustable = match c {
+                            Control::Input { ch, kind } if kind != InputControl::Gain => {
+                                return self.toggle(ch, kind)
+                            }
+                            Control::Mix { strip, ctl } => match ctl {
+                                MixControl::Fader(_) | MixControl::Pan(_) => true,
+                                _ => return self.toggle_mix(strip, ctl),
+                            },
+                            Control::Input { .. } => true,
+                            _ => false,
                         };
-                        if kind != InputControl::Gain {
-                            return self.toggle(ch, kind);
+                        if !adjustable {
+                            return Vec::new();
                         }
                         if double {
                             self.drag = None;
                             return self.reset(c);
                         }
-                        self.drag = Some(Drag {
-                            ch,
-                            y: ev.row,
-                            gain: self.state.inputs[ch].gain_db.min(MAX_GAIN_DB),
-                        });
+                        self.drag = self.start_drag(c, ev.row, hits.rect(h));
                     }
                     Some(Hit::MixTab(m)) => self.mix = m,
                     Some(Hit::Phone(high)) => {
@@ -558,9 +685,7 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(d) = self.drag {
-                    let rows = i32::from(d.y) - i32::from(ev.row);
-                    let gain = (i32::from(d.gain) + rows).clamp(0, i32::from(MAX_GAIN_DB));
-                    return self.set_gain(d.ch, gain as u8);
+                    return self.drag_to(d, ev.row);
                 }
             }
             MouseEventKind::Up(_) => self.drag = None,
@@ -628,27 +753,98 @@ impl App {
         out
     }
 
+    /// Turns a knob or moves a fader by `delta` steps: 1 dB of gain or
+    /// fader, [`PAN_STEP`] of pan.
     fn adjust(&mut self, c: Control, delta: i32) -> Vec<Action> {
-        let Control::Input {
-            ch,
-            kind: InputControl::Gain,
-        } = c
-        else {
-            return Vec::new();
-        };
-        let gain = i32::from(self.state.inputs[ch].gain_db.min(MAX_GAIN_DB));
-        let gain = (gain + delta).clamp(0, i32::from(MAX_GAIN_DB)) as u8;
-        self.set_gain(ch, gain)
+        match c {
+            Control::Input {
+                ch,
+                kind: InputControl::Gain,
+            } => {
+                let gain = i32::from(self.state.inputs[ch].gain_db.min(MAX_GAIN_DB));
+                let gain = (gain + delta).clamp(0, i32::from(MAX_GAIN_DB)) as u8;
+                self.set_gain(ch, gain)
+            }
+            Control::Mix {
+                strip,
+                ctl: MixControl::Fader(ch),
+            } => {
+                let db = step_fader(self.fader_db(strip, ch), f64::from(delta));
+                self.set_fader(strip, ch, db)
+            }
+            Control::Mix {
+                strip,
+                ctl: MixControl::Pan(ch),
+            } => {
+                let pan = self.pan(strip, ch) + PAN_STEP * f64::from(delta);
+                self.set_pan(strip, ch, pan)
+            }
+            _ => Vec::new(),
+        }
     }
 
-    /// Puts a knob back to its default.
+    /// Puts a knob or fader back to its default: gain −0 dB, fader 0 dB,
+    /// a pan dial where the app starts it (odd channel and IN1 hard L, even
+    /// channel and IN2 hard R).
     fn reset(&mut self, c: Control) -> Vec<Action> {
         match c {
             Control::Input {
                 ch,
                 kind: InputControl::Gain,
             } => self.set_gain(ch, DEFAULT_GAIN_DB),
+            Control::Mix {
+                strip,
+                ctl: MixControl::Fader(ch),
+            } => self.set_fader(strip, ch, 0.0),
+            Control::Mix {
+                strip,
+                ctl: MixControl::Pan(ch),
+            } => self.set_pan(strip, ch, ch.min(1) as f64),
             _ => Vec::new(),
+        }
+    }
+
+    /// The drag a press on `c` (at `row`, on `rect`) starts.
+    fn start_drag(&self, c: Control, row: u16, rect: Option<Rect>) -> Option<Drag> {
+        match c {
+            Control::Input { ch, .. } => Some(Drag::Gain {
+                ch,
+                y: row,
+                gain: self.state.inputs[ch].gain_db.min(MAX_GAIN_DB),
+            }),
+            Control::Mix {
+                strip,
+                ctl: MixControl::Fader(ch),
+            } => rect.map(|track| Drag::Fader { strip, ch, track }),
+            Control::Mix {
+                strip,
+                ctl: MixControl::Pan(ch),
+            } => Some(Drag::Pan {
+                strip,
+                ch,
+                y: row,
+                pan: self.pan(strip, ch),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The pointer of drag `d` is at `row`.
+    fn drag_to(&mut self, d: Drag, row: u16) -> Vec<Action> {
+        match d {
+            Drag::Gain { ch, y, gain } => {
+                let rows = i32::from(y) - i32::from(row);
+                let gain = (i32::from(gain) + rows).clamp(0, i32::from(MAX_GAIN_DB));
+                self.set_gain(ch, gain as u8)
+            }
+            Drag::Fader { strip, ch, track } => {
+                let db = db_at_row(track, row);
+                self.set_fader(strip, ch, db)
+            }
+            Drag::Pan { strip, ch, y, pan } => {
+                let rows = f64::from(i32::from(y) - i32::from(row));
+                self.set_pan(strip, ch, pan + PAN_STEP * rows)
+            }
         }
     }
 
@@ -680,6 +876,134 @@ impl App {
             InputControl::Phase => input.phase = !input.phase,
         }
         self.commit(new)
+    }
+
+    fn fader_db(&self, strip: usize, ch: usize) -> f64 {
+        let m = &self.state.mixes[self.mix];
+        match strip {
+            0 if ch == 0 => m.in1.fader_db,
+            0 => m.in2.fader_db,
+            _ => pb(m, strip).fader_db,
+        }
+    }
+
+    fn pan(&self, strip: usize, ch: usize) -> f64 {
+        let m = &self.state.mixes[self.mix];
+        match (strip, ch) {
+            (0, 0) => m.in1.pan,
+            (0, _) => m.in2.pan,
+            (_, 0) => pb(m, strip).pan_l,
+            _ => pb(m, strip).pan_r,
+        }
+    }
+
+    /// Sets a mix fader, clamped at [`MIX_FADER_MAX_DB`].
+    fn set_fader(&mut self, strip: usize, ch: usize, db: f64) -> Vec<Action> {
+        let db = db.min(MIX_FADER_MAX_DB);
+        let mut new = self.state.clone();
+        let m = &mut new.mixes[self.mix];
+        match strip {
+            0 if ch == 0 => m.in1.fader_db = db,
+            0 => m.in2.fader_db = db,
+            _ => pb_mut(m, strip).fader_db = db,
+        }
+        self.commit(new)
+    }
+
+    /// Sets a pan dial, on the app's 1 % grid (L100 … R100). A linked PB
+    /// strip's other dial mirrors it. While IN 1+2 is linked its dials
+    /// stay put: the link sets IN1 hard L and IN2 hard R.
+    fn set_pan(&mut self, strip: usize, ch: usize, pan: f64) -> Vec<Action> {
+        let pan = ((pan * 200.0).round() / 200.0).clamp(0.0, 1.0);
+        let mut new = self.state.clone();
+        let m = &mut new.mixes[self.mix];
+        if strip == 0 {
+            if m.link {
+                return Vec::new();
+            }
+            if ch == 0 {
+                m.in1.pan = pan;
+            } else {
+                m.in2.pan = pan;
+            }
+        } else {
+            let s = pb_mut(m, strip);
+            let (mine, other) = if ch == 0 {
+                (&mut s.pan_l, &mut s.pan_r)
+            } else {
+                (&mut s.pan_r, &mut s.pan_l)
+            };
+            *mine = pan;
+            if s.link {
+                *other = 1.0 - pan;
+            }
+        }
+        self.commit(new)
+    }
+
+    /// Flips a mixer switch: LINK, Ø, SOLO or MUTE.
+    fn toggle_mix(&mut self, strip: usize, ctl: MixControl) -> Vec<Action> {
+        let mut new = self.state.clone();
+        let m = &mut new.mixes[self.mix];
+        if ctl == MixControl::Link {
+            if strip == 0 {
+                m.link = !m.link;
+            } else {
+                let s = pb_mut(m, strip);
+                s.link = !s.link;
+            }
+            return self.commit(new);
+        }
+        let (mute, solo, phase) = match strip {
+            0 => {
+                let s = if channel(ctl) == 0 {
+                    &mut m.in1
+                } else {
+                    &mut m.in2
+                };
+                (&mut s.mute, &mut s.solo, &mut s.phase)
+            }
+            _ => {
+                let s = pb_mut(m, strip);
+                (&mut s.mute, &mut s.solo, &mut s.phase)
+            }
+        };
+        match ctl {
+            MixControl::Mute(_) => *mute = !*mute,
+            MixControl::Solo(_) => *solo = !*solo,
+            MixControl::Phase(_) => *phase = !*phase,
+            _ => return Vec::new(),
+        }
+        self.commit(new)
+    }
+
+    /// A key while a strip name is being edited: text, Backspace, Enter
+    /// keeps it (empty: back to the default name), Esc drops it.
+    fn edit_key(&mut self, code: KeyCode) -> Vec<Action> {
+        let Some((strip, text)) = self.editing.as_mut() else {
+            return Vec::new();
+        };
+        match code {
+            KeyCode::Char(c) if !c.is_control() => {
+                if text.chars().count() < NAME_MAX {
+                    text.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                text.pop();
+            }
+            KeyCode::Esc => self.editing = None,
+            KeyCode::Enter => {
+                let strip = *strip;
+                let name = text.trim().to_string();
+                self.editing = None;
+                let mut new = self.state.clone();
+                new.strip_names[strip] = (!name.is_empty()).then_some(name);
+                return self.commit(new);
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 
     /// The PHONE level switch (`11 02`): +17 dBu (`true`) or 0 dBu.
@@ -715,17 +1039,100 @@ impl App {
         self.focus = Panel::ALL[(i + step).rem_euclid(n) as usize].first();
     }
 
-    /// Up/Down: along an input's column, clamped at the ends.
+    /// Up/Down: along an input's column, or from a mixer strip's name
+    /// down through its controls; clamped at the ends.
     fn move_vertical(&mut self, step: isize) {
-        let Control::Input { ch, kind } = self.focus else {
-            return;
+        self.focus = match self.focus {
+            Control::Input { ch, kind } => {
+                let n = InputControl::ORDER.len() as isize;
+                let i = (kind.index() as isize + step).clamp(0, n - 1) as usize;
+                Control::Input {
+                    ch,
+                    kind: InputControl::ORDER[i],
+                }
+            }
+            Control::Mixer(strip) if step > 0 => Control::Mix {
+                strip,
+                ctl: MixControl::order(strip)[0],
+            },
+            Control::Mix { strip, ctl } => {
+                let order = MixControl::order(strip);
+                let i = order.iter().position(|&c| c == ctl).unwrap_or(0) as isize + step;
+                if i < 0 {
+                    Control::Mixer(strip)
+                } else {
+                    Control::Mix {
+                        strip,
+                        ctl: order[(i as usize).min(order.len() - 1)],
+                    }
+                }
+            }
+            other => other,
         };
-        let n = InputControl::ORDER.len() as isize;
-        let i = (kind.index() as isize + step).clamp(0, n - 1) as usize;
-        self.focus = Control::Input {
-            ch,
-            kind: InputControl::ORDER[i],
-        };
+    }
+}
+
+/// PB strip `strip` (1 ..= 3) of `m`.
+fn pb(m: &Mix, strip: usize) -> &PbStrip {
+    match strip {
+        1 => &m.pb12,
+        2 => &m.pb34,
+        _ => &m.pb56,
+    }
+}
+
+fn pb_mut(m: &mut Mix, strip: usize) -> &mut PbStrip {
+    match strip {
+        1 => &mut m.pb12,
+        2 => &mut m.pb34,
+        _ => &mut m.pb56,
+    }
+}
+
+/// The channel a mixer switch acts on.
+fn channel(ctl: MixControl) -> usize {
+    match ctl {
+        MixControl::Pan(c)
+        | MixControl::Fader(c)
+        | MixControl::Phase(c)
+        | MixControl::Solo(c)
+        | MixControl::Mute(c) => c,
+        MixControl::Link => 0,
+    }
+}
+
+/// A mix fader `delta` dB from `db`: −∞ steps up from −60 dB, and at or
+/// below −60 dB it snaps to −∞.
+pub fn step_fader(db: f64, delta: f64) -> f64 {
+    let base = if db.is_nan() || db <= MIX_FADER_FLOOR_DB {
+        MIX_FADER_FLOOR_DB
+    } else {
+        db
+    };
+    let new = base + delta;
+    if new <= MIX_FADER_FLOOR_DB {
+        f64::NEG_INFINITY
+    } else {
+        new.min(MIX_FADER_MAX_DB)
+    }
+}
+
+/// The mix fader value at `row` on a fader drawn over `track`: the top row
+/// is [`MIX_FADER_MAX_DB`], the bottom −∞, rows outside clamped; rounded
+/// to 0.1 dB.
+pub fn db_at_row(track: Rect, row: u16) -> f64 {
+    let h = track.height.max(1);
+    let row = row.clamp(track.y, track.y + h - 1) - track.y;
+    let frac = if h == 1 {
+        1.0
+    } else {
+        1.0 - f64::from(row) / f64::from(h - 1)
+    };
+    let db = db_at_frac(frac, MIX_FADER_MAX_DB);
+    if db.is_finite() {
+        (db * 10.0).round() / 10.0
+    } else {
+        db
     }
 }
 

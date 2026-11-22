@@ -1066,8 +1066,10 @@ fn panel_focus_reaches_every_strip() {
         assert!(app.handle_key(key(KeyCode::Right)).is_empty());
         assert_eq!(app.focus(), Control::Mixer(want));
     }
-    for k in [ch(' '), ch('0'), key(KeyCode::Up), key(KeyCode::Enter)] {
-        assert!(app.handle_key(k).is_empty(), "the mixer is not wired yet");
+    // On a strip's name (#14: Enter renames it, see tests/tui_mixer.rs)
+    // these change nothing.
+    for k in [ch(' '), ch('0'), key(KeyCode::Up)] {
+        assert!(app.handle_key(k).is_empty());
     }
     app.handle_key(ch('4'));
     app.handle_key(key(KeyCode::Right));
@@ -1106,7 +1108,8 @@ fn panel_focus_reaches_every_strip() {
     }
     for c in targets {
         let r = hits.rect(Hit::Focus(c)).unwrap_or_else(|| panic!("{c:?}"));
-        let a = app.handle_mouse(mouse(down, r.x + 2, r.bottom() - 2, none), &hits);
+        // On the strip's border: inside, the mixer's pills are controls (#14).
+        let a = app.handle_mouse(mouse(down, r.x, r.bottom() - 2, none), &hits);
         assert!(a.is_empty());
         assert_eq!(app.focus(), c);
     }

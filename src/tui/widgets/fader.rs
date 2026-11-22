@@ -48,6 +48,29 @@ pub fn fader_frac(db: f64, max_db: f64) -> f64 {
     0.0
 }
 
+/// The value at position `frac` (0 = bottom, 1 = top) on a fader topping
+/// out at `max_db`: the inverse of [`fader_frac`]. The bottom, and
+/// anything at or below −60 dB, is −∞.
+pub fn db_at_frac(frac: f64, max_db: f64) -> f64 {
+    let a = anchors(max_db);
+    let n = a.len() - 1;
+    if frac.is_nan() || frac <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if frac >= 1.0 {
+        return a[0];
+    }
+    let pos = (1.0 - frac) * n as f64;
+    let i = (pos.floor() as usize).min(n - 1);
+    let v = pos - i as f64;
+    let db = a[i] + (a[i + 1] - a[i]) * v;
+    if db <= FLOOR_DB {
+        f64::NEG_INFINITY
+    } else {
+        db
+    }
+}
+
 /// A fader value: `−0.0 dB` (0 dB reads −0, as in the official app),
 /// `−6.0 dB`, `+3.0 dB`, `−∞ dB`.
 pub fn fmt_db(db: f64) -> String {

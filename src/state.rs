@@ -98,6 +98,10 @@ pub struct State {
     /// Phone Out Gain (the device's gain button).
     pub phone_gain: bool,
     pub system: System,
+    /// The mixer strips' names (IN 1+2, PB 1/2, PB 3/4, PB 5/6) as the
+    /// user set them, the same in every mix; `None` is the default name.
+    /// Kept in the workspace, never sent to the device.
+    pub strip_names: [Option<String>; 4],
     /// What the device reports; not persisted.
     #[serde(skip)]
     pub readout: Readout,
@@ -295,6 +299,7 @@ impl Default for State {
             output: Output::default(),
             phone_gain: true,
             system: System::default(),
+            strip_names: Default::default(),
             readout: Readout::default(),
         }
     }

@@ -548,7 +548,11 @@ fn mouse_on_strips() {
         a.handle_mouse_at(mouse(DOWN, f.x + 1, cap, NONE), &hits, t0)
     });
     assert_eq!(app.focus(), mix(1, Fader(0)));
-    assert_eq!(app.state().mixes[0].pb12.fader_db, 0.0, "a press moves nothing");
+    assert_eq!(
+        app.state().mixes[0].pb12.fader_db,
+        0.0,
+        "a press moves nothing"
+    );
     let frames = step(&mut app, &dev, |a| {
         a.handle_mouse_at(mouse(DRAG, f.x + 1, f.y, NONE), &hits, t0)
     });
@@ -811,9 +815,15 @@ fn layout_is_content_sized() {
         let link = hits.rect(Hit::Control(mix(strip, Link))).unwrap();
         let fader = hits.rect(Hit::Control(mix(strip, Fader(0)))).unwrap();
         let mute = hits.rect(Hit::Control(mix(strip, Mute(0)))).unwrap();
-        assert!(link.y <= dial.bottom() + 1, "strip {strip}: {dial:?} {link:?}");
+        assert!(
+            link.y <= dial.bottom() + 1,
+            "strip {strip}: {dial:?} {link:?}"
+        );
         assert!(fader.y <= link.y + 3, "strip {strip}: {link:?} {fader:?}");
-        assert!(mute.y <= fader.bottom() + 3, "strip {strip}: {fader:?} {mute:?}");
+        assert!(
+            mute.y <= fader.bottom() + 3,
+            "strip {strip}: {fader:?} {mute:?}"
+        );
     }
     // An input's gain knob sits right under its switches.
     for c in 0..2 {
