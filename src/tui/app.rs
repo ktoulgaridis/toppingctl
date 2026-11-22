@@ -6,9 +6,11 @@
 //! it on needs the confirm modal and comes out as
 //! [`Action::SendConfirmedPhantom`].
 //!
-//! The input panel and the mixer (#14) take input; the mix tabs pick which
-//! mix the mixer shows and its controls act on. Loopback and output are
-//! drawn from the state; their controls come with #15.
+//! Every panel takes input: the inputs, the mixer (#14; the mix tabs pick
+//! which mix it shows and its controls act on), loopback and output (#15).
+//! LINK swaps a strip between the app's linked page (one fader, one of
+//! each switch, writing both channels) and its unlinked page (an L and an
+//! R of each); focus follows the page shown.
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +21,7 @@ use ratatui::text::Span;
 
 use crate::frame::Frame;
 use crate::rate::RATES;
-use crate::state::{Meters, Mix, PbStrip, State};
+use crate::state::{Meters, Source, State};
 use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
 use crate::tui::widgets::fader::db_at_frac;
@@ -33,6 +35,28 @@ pub const DEFAULT_GAIN_DB: u8 = 0;
 pub const MIX_FADER_MAX_DB: f64 = 6.0;
 /// A mix fader at or below this is at −∞.
 pub const MIX_FADER_FLOOR_DB: f64 = -60.0;
+/// A loopback or output fader's top, in dB (the app's slider: −90…0).
+pub const BUS_MAX_DB: f64 = 0.0;
+/// A loopback or output fader at or below this is at −∞ (the app's −90).
+pub const BUS_FLOOR_DB: f64 = -90.0;
+/// A loopback or output fader's page step (⇧), in dB, as the app's.
+pub const BUS_PAGE_DB: f64 = 5.0;
+/// The output's index among the buses ([`Control::Bus`]): after the two
+/// loopbacks.
+pub const OUT_BUS: usize = 2;
+/// The source menu of a loopback and of the output, in the app's order:
+/// Mixer (Mix A/B/C), Input (IN 1, IN 2, IN1+2), Playback (1/2, 3/4, 5/6).
+pub const SOURCE_MENU: [Source; 9] = [
+    Source::MixA,
+    Source::MixB,
+    Source::MixC,
+    Source::In1,
+    Source::In2,
+    Source::In12,
+    Source::Pb12,
+    Source::Pb34,
+    Source::Pb56,
+];
 /// One step of a pan dial: 5 % of its travel.
 pub const PAN_STEP: f64 = 0.05;
 /// The longest strip name, in characters.
@@ -86,9 +110,10 @@ impl InputControl {
     }
 }
 
-/// A control on a mixer strip. `usize` is the channel: on IN 1+2, IN1 (0)
-/// or IN2 (1); on a PB strip, the odd (0) or even (1) channel's pan dial,
-/// and 0 for its single fader and switches.
+/// A control on a mixer strip. `usize` is the channel: IN1 (0) / IN2 (1)
+/// on IN 1+2, the odd (0) / even (1) channel on a PB strip. On the linked
+/// page there is one fader and one of each switch, channel 0, writing
+/// both channels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MixControl {
     Pan(usize),
@@ -100,9 +125,9 @@ pub enum MixControl {
 }
 
 impl MixControl {
-    /// A PB strip's controls in focus order (↑↓): left dial, right dial,
-    /// fader, LINK, Ø, SOLO, MUTE.
-    pub const PB: [MixControl; 7] = [
+    /// A linked strip's controls in focus order (↑↓): left dial, right
+    /// dial, fader, LINK, Ø, SOLO, MUTE.
+    pub const LINKED: [MixControl; 7] = [
         MixControl::Pan(0),
         MixControl::Pan(1),
         MixControl::Fader(0),
@@ -111,9 +136,9 @@ impl MixControl {
         MixControl::Solo(0),
         MixControl::Mute(0),
     ];
-    /// IN 1+2's controls in focus order: the same, with IN1's and IN2's
-    /// fader and switches side by side.
-    pub const IN12: [MixControl; 11] = [
+    /// An unlinked strip's controls in focus order: the same, with the two
+    /// channels' fader and switches side by side.
+    pub const UNLINKED: [MixControl; 11] = [
         MixControl::Pan(0),
         MixControl::Pan(1),
         MixControl::Fader(0),
@@ -127,27 +152,122 @@ impl MixControl {
         MixControl::Mute(1),
     ];
 
-    /// The controls of mixer strip `strip`, in focus order.
-    pub fn order(strip: usize) -> &'static [MixControl] {
-        if strip == 0 {
-            &Self::IN12
+    /// A strip's controls on its linked or unlinked page, in focus order.
+    pub fn order(linked: bool) -> &'static [MixControl] {
+        if linked {
+            &Self::LINKED
         } else {
-            &Self::PB
+            &Self::UNLINKED
         }
     }
 
-    /// The same control on mixer strip `strip`: a PB strip has one fader
-    /// and one set of switches, so IN2's become its.
-    fn on_strip(self, strip: usize) -> MixControl {
-        if Self::order(strip).contains(&self) {
-            return self;
-        }
+    /// This control on the linked page: channel 1's become channel 0's.
+    fn linked(self) -> MixControl {
         match self {
             MixControl::Fader(_) => MixControl::Fader(0),
             MixControl::Phase(_) => MixControl::Phase(0),
             MixControl::Solo(_) => MixControl::Solo(0),
             MixControl::Mute(_) => MixControl::Mute(0),
             other => other,
+        }
+    }
+}
+
+/// A control on a loopback or the output strip. `usize` is the channel,
+/// L (0) or R (1); on the linked page there is one fader (and on a
+/// loopback one MUTE), channel 0, writing both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BusControl {
+    /// The source menu.
+    Source,
+    Link,
+    /// A loopback's MUTE.
+    Mute(usize),
+    /// The output's headphones switch (`34 01`).
+    Hp,
+    /// The output's line out switch (`34 02`).
+    Line,
+    Fader(usize),
+}
+
+impl BusControl {
+    const LOOP_LINKED: [BusControl; 4] = [
+        BusControl::Source,
+        BusControl::Link,
+        BusControl::Mute(0),
+        BusControl::Fader(0),
+    ];
+    const LOOP_UNLINKED: [BusControl; 6] = [
+        BusControl::Source,
+        BusControl::Link,
+        BusControl::Mute(0),
+        BusControl::Mute(1),
+        BusControl::Fader(0),
+        BusControl::Fader(1),
+    ];
+    const OUT_LINKED: [BusControl; 5] = [
+        BusControl::Source,
+        BusControl::Link,
+        BusControl::Hp,
+        BusControl::Line,
+        BusControl::Fader(0),
+    ];
+    const OUT_UNLINKED: [BusControl; 6] = [
+        BusControl::Source,
+        BusControl::Link,
+        BusControl::Hp,
+        BusControl::Line,
+        BusControl::Fader(0),
+        BusControl::Fader(1),
+    ];
+
+    /// Bus `bus`'s controls on its linked or unlinked page, in focus order
+    /// (top to bottom as drawn).
+    pub fn order(bus: usize, linked: bool) -> &'static [BusControl] {
+        match (bus == OUT_BUS, linked) {
+            (false, true) => &Self::LOOP_LINKED,
+            (false, false) => &Self::LOOP_UNLINKED,
+            (true, true) => &Self::OUT_LINKED,
+            (true, false) => &Self::OUT_UNLINKED,
+        }
+    }
+}
+
+/// A strip whose name the user can set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Name {
+    /// Mixer strip IN 1+2 (0), PB 1/2 (1), PB 3/4 (2), PB 5/6 (3).
+    Mixer(usize),
+    /// LOOP 1+2 (0), LOOP 3+4 (1).
+    Loopback(usize),
+    /// OUT 1+2.
+    Output,
+}
+
+impl Name {
+    /// The strip's name when the user has set none.
+    pub fn default_name(self) -> &'static str {
+        match self {
+            Name::Mixer(i) => ["IN 1+2", "PB 1/2", "PB 3/4", "PB 5/6"][i.min(3)],
+            Name::Loopback(i) => ["LOOP 1+2", "LOOP 3+4"][i.min(1)],
+            Name::Output => "OUT 1+2",
+        }
+    }
+
+    /// The name the user set, if any.
+    pub fn get(self, state: &State) -> Option<&str> {
+        match self {
+            Name::Mixer(i) => state.strip_names[i].as_deref(),
+            Name::Loopback(i) => state.loopback_names[i].as_deref(),
+            Name::Output => state.output_name.as_deref(),
+        }
+    }
+
+    fn slot(self, state: &mut State) -> &mut Option<String> {
+        match self {
+            Name::Mixer(i) => &mut state.strip_names[i],
+            Name::Loopback(i) => &mut state.loopback_names[i],
+            Name::Output => &mut state.output_name,
         }
     }
 }
@@ -163,10 +283,15 @@ pub enum Control {
     /// A control on mixer strip `strip` (numbered as in [`Control::Mixer`]),
     /// acting on the mix shown.
     Mix { strip: usize, ctl: MixControl },
-    /// LOOP 1+2 (0), LOOP 3+4 (1). Highlighted only until #15.
+    /// A loopback strip's name: LOOP 1+2 (0), LOOP 3+4 (1). Enter renames
+    /// it; ↓ goes into its controls.
     Loopback(usize),
-    /// OUT 1+2 (0), MONITOR MIX (1), PHONE (2). Highlighted only until #15.
+    /// OUT 1+2 (0; Enter renames it, ↓ goes into its controls), MONITOR
+    /// MIX (1), PHONE (2).
     Output(usize),
+    /// A control on loopback 1+2 (0), 3+4 (1) or the output
+    /// ([`OUT_BUS`]).
+    Bus { bus: usize, ctl: BusControl },
 }
 
 /// The four panels, in Tab order.
@@ -206,12 +331,15 @@ impl Control {
             Control::Input { .. } => Panel::Input,
             Control::Mixer(_) | Control::Mix { .. } => Panel::Mixer,
             Control::Loopback(_) => Panel::Loopback,
-            Control::Output(_) => Panel::Output,
+            Control::Bus { bus, .. } if bus < OUT_BUS => Panel::Loopback,
+            Control::Output(_) | Control::Bus { .. } => Panel::Output,
         }
     }
 
     /// The strip to the left (`step` −1) or right (+1) in the same panel,
-    /// clamped at the ends.
+    /// clamped at the ends: the same control there (see [`App::valid`] for
+    /// one the page there lacks). From the output's controls, → goes to
+    /// MONITOR MIX.
     fn beside(self, step: isize) -> Control {
         let mv = |i: usize, n: usize| (i as isize + step).clamp(0, n as isize - 1) as usize;
         match self {
@@ -220,15 +348,18 @@ impl Control {
                 kind,
             },
             Control::Mixer(i) => Control::Mixer(mv(i, 4)),
-            Control::Mix { strip, ctl } => {
-                let strip = mv(strip, 4);
-                Control::Mix {
-                    strip,
-                    ctl: ctl.on_strip(strip),
-                }
-            }
+            Control::Mix { strip, ctl } => Control::Mix {
+                strip: mv(strip, 4),
+                ctl,
+            },
             Control::Loopback(i) => Control::Loopback(mv(i, 2)),
             Control::Output(i) => Control::Output(mv(i, 3)),
+            Control::Bus { bus, ctl } if bus < OUT_BUS => Control::Bus {
+                bus: mv(bus, 2),
+                ctl,
+            },
+            Control::Bus { .. } if step > 0 => Control::Output(1),
+            bus @ Control::Bus { .. } => bus,
         }
     }
 }
@@ -245,6 +376,8 @@ pub enum Modal {
     Help,
     /// The sample-rate list ([`crate::rate::RATES`]), `sel` highlighted.
     Rate { sel: usize },
+    /// Bus `bus`'s source menu ([`SOURCE_MENU`]), item `sel` highlighted.
+    Source { bus: usize, sel: usize },
 }
 
 /// Where the session is.
@@ -262,12 +395,9 @@ pub enum Phase {
 enum Drag {
     /// An input's gain knob: where the press was, and the gain then.
     Gain { ch: usize, y: u16, gain: u8 },
-    /// A mix fader: its cap follows the pointer along `track`.
-    Fader {
-        strip: usize,
-        ch: usize,
-        track: Rect,
-    },
+    /// A mix, loopback or output fader (`ctl`): its cap follows the
+    /// pointer along `track`.
+    Fader { ctl: Control, track: Rect },
     /// A pan dial: one step a row from where the press was.
     Pan {
         strip: usize,
@@ -277,11 +407,14 @@ enum Drag {
     },
 }
 
-/// The meters' clip lights, in the shape of [`Meters`].
+/// The meters' clip lights, in the shape of [`Meters`]: IN on each
+/// reading, OUT after its fader (the app's `overload_IN` / `overload_OUT`).
 #[derive(Clone, Debug, Default)]
 pub struct Clips {
     holds: [ClipHold; 14],
     lit: [bool; 14],
+    holds_out: [ClipHold; 14],
+    lit_out: [bool; 14],
 }
 
 /// Which meter a clip light belongs to.
@@ -308,34 +441,47 @@ impl MeterId {
     }
 }
 
+/// `m`'s readings, in [`MeterId::index`] order.
+fn readings(m: &Meters) -> [f64; 14] {
+    [
+        m.inputs[0],
+        m.inputs[1],
+        m.playback[0][0],
+        m.playback[0][1],
+        m.playback[1][0],
+        m.playback[1][1],
+        m.playback[2][0],
+        m.playback[2][1],
+        m.output[0],
+        m.output[1],
+        m.loopbacks[0][0],
+        m.loopbacks[0][1],
+        m.loopbacks[1][0],
+        m.loopbacks[1][1],
+    ]
+}
+
 impl Clips {
-    /// Takes the latest readings at `now`.
-    pub fn update(&mut self, m: &Meters, now: Instant) {
-        let values = [
-            m.inputs[0],
-            m.inputs[1],
-            m.playback[0][0],
-            m.playback[0][1],
-            m.playback[1][0],
-            m.playback[1][1],
-            m.playback[2][0],
-            m.playback[2][1],
-            m.output[0],
-            m.output[1],
-            m.loopbacks[0][0],
-            m.loopbacks[0][1],
-            m.loopbacks[1][0],
-            m.loopbacks[1][1],
-        ];
-        for (i, db) in values.into_iter().enumerate() {
-            self.holds[i].update(db, now);
+    /// Takes the latest readings at `now`: `pre` as read, `post` after
+    /// the faders ([`Meters::post`]).
+    pub fn update(&mut self, pre: &Meters, post: &Meters, now: Instant) {
+        for (i, (a, b)) in readings(pre).into_iter().zip(readings(post)).enumerate() {
+            self.holds[i].update(a, now);
             self.lit[i] = self.holds[i].lit(now);
+            self.holds_out[i].update(b, now);
+            self.lit_out[i] = self.holds_out[i].lit(now);
         }
     }
 
-    /// Whether `id`'s clip light is on (as of the last update).
+    /// Whether `id`'s IN clip light (on the reading) is on, as of the last
+    /// update.
     pub fn lit(&self, id: MeterId) -> bool {
         self.lit[id.index()]
+    }
+
+    /// Whether `id`'s OUT clip light (after the fader) is on.
+    pub fn lit_out(&self, id: MeterId) -> bool {
+        self.lit_out[id.index()]
     }
 }
 
@@ -362,8 +508,8 @@ pub struct App {
     notice: Option<String>,
     /// The interface's sample rate (Hz), when the OS tells.
     sample_rate: Option<u32>,
-    /// A mixer strip's name being edited: the strip and the text so far.
-    editing: Option<(usize, String)>,
+    /// A strip's name being edited, and the text so far.
+    editing: Option<(Name, String)>,
 }
 
 /// The PHONE strip's index among the output strips.
@@ -410,8 +556,8 @@ impl App {
         self.mix
     }
 
-    /// The mixer strip whose name is being edited, and the text so far.
-    pub fn editing(&self) -> Option<(usize, &str)> {
+    /// The strip whose name is being edited, and the text so far.
+    pub fn editing(&self) -> Option<(Name, &str)> {
         self.editing.as_ref().map(|(i, s)| (*i, s.as_str()))
     }
 
@@ -422,7 +568,8 @@ impl App {
     /// The meters as of `now`: updates the clip lights, and whether the
     /// device has gone quiet.
     pub fn tick(&mut self, meters: &Meters, now: Instant) {
-        self.clips.update(meters, now);
+        let post = meters.post(&self.state, self.mix);
+        self.clips.update(meters, &post, now);
         if self.phase == Phase::Synced {
             let since = *self.synced_at.get_or_insert(now);
             let last = self.last_rx.map_or(since, |l| l.max(since));
@@ -492,6 +639,12 @@ impl App {
 
     /// Handles a key press.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let out = self.key(key);
+        self.focus = self.valid(self.focus);
+        out
+    }
+
+    fn key(&mut self, key: KeyEvent) -> Vec<Action> {
         if key.kind == KeyEventKind::Release {
             return Vec::new();
         }
@@ -506,7 +659,7 @@ impl App {
             ) {
                 // Moving focus away keeps the name and never gets eaten.
                 let mut out = self.finish_edit();
-                out.extend(self.handle_key(key));
+                out.extend(self.key(key));
                 return out;
             }
             return self.edit_key(key.code);
@@ -547,6 +700,28 @@ impl App {
                 }
                 return Vec::new();
             }
+            Some(Modal::Source { bus, sel }) => {
+                let last = SOURCE_MENU.len() - 1;
+                match key.code {
+                    KeyCode::Up => {
+                        self.modal = Some(Modal::Source {
+                            bus,
+                            sel: sel.saturating_sub(1),
+                        })
+                    }
+                    KeyCode::Down => {
+                        self.modal = Some(Modal::Source {
+                            bus,
+                            sel: (sel + 1).min(last),
+                        })
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => return self.pick_source(bus, sel),
+                    KeyCode::Esc => self.modal = None,
+                    KeyCode::Char('q') => return vec![Action::Quit],
+                    _ => {}
+                }
+                return Vec::new();
+            }
             Some(_) => return Vec::new(),
             None => {}
         }
@@ -568,6 +743,9 @@ impl App {
                 ..
             } | Control::Mix {
                 ctl: MixControl::Fader(_) | MixControl::Pan(_),
+                ..
+            } | Control::Bus {
+                ctl: BusControl::Fader(_),
                 ..
             }
         );
@@ -597,10 +775,10 @@ impl App {
             KeyCode::Char('0') => return self.reset(self.focus),
             KeyCode::Char('r') => self.open_rates(),
             KeyCode::Char(c @ ('a' | 'b' | 'c')) => self.mix = usize::from(c as u8 - b'a'),
-            KeyCode::Enter if matches!(self.focus, Control::Mixer(_)) => {
-                if let Control::Mixer(strip) = self.focus {
-                    let name = self.state.strip_names[strip].clone().unwrap_or_default();
-                    self.editing = Some((strip, name));
+            KeyCode::Enter if name_of(self.focus).is_some() => {
+                if let Some(name) = name_of(self.focus) {
+                    let text = name.get(&self.state).unwrap_or_default().to_string();
+                    self.editing = Some((name, text));
                     self.drag = None;
                 }
             }
@@ -608,11 +786,46 @@ impl App {
                 Control::Input { ch, kind } => return self.toggle(ch, kind),
                 Control::Output(PHONE) => return self.set_phone_level(!self.state.phone_gain),
                 Control::Mix { strip, ctl } => return self.toggle_mix(strip, ctl),
+                Control::Bus {
+                    bus,
+                    ctl: BusControl::Source,
+                } => self.open_source(bus),
+                Control::Bus { bus, ctl } => return self.toggle_bus(bus, ctl),
                 _ => {}
             },
             _ => {}
         }
         Vec::new()
+    }
+
+    /// `c`, or the same control on the page its strip shows now (LINK and
+    /// the mix shown swap pages): channel 1's control on a linked page is
+    /// channel 0's.
+    fn valid(&self, c: Control) -> Control {
+        match c {
+            Control::Mix { strip, ctl } => {
+                let linked = self.state.mixes[self.mix].linked(strip);
+                if MixControl::order(linked).contains(&ctl) {
+                    c
+                } else {
+                    Control::Mix {
+                        strip,
+                        ctl: ctl.linked(),
+                    }
+                }
+            }
+            Control::Bus { bus, ctl } => {
+                let order = BusControl::order(bus, self.bus_linked(bus));
+                let ctl = match ctl {
+                    _ if order.contains(&ctl) => ctl,
+                    BusControl::Fader(_) => BusControl::Fader(0),
+                    BusControl::Mute(_) if bus < OUT_BUS => BusControl::Mute(0),
+                    _ => order[0],
+                };
+                Control::Bus { bus, ctl }
+            }
+            other => other,
+        }
     }
 
     /// Handles a mouse event, using the hit map of the last render.
@@ -622,6 +835,12 @@ impl App {
 
     /// [`App::handle_mouse`] at time `now` (double-clicks are timed).
     pub fn handle_mouse_at(&mut self, ev: MouseEvent, hits: &HitMap, now: Instant) -> Vec<Action> {
+        let out = self.mouse(ev, hits, now);
+        self.focus = self.valid(self.focus);
+        out
+    }
+
+    fn mouse(&mut self, ev: MouseEvent, hits: &HitMap, now: Instant) -> Vec<Action> {
         let hit = hits.get(ev.column, ev.row);
         if let Some(modal) = self.modal {
             if ev.kind != MouseEventKind::Down(MouseButton::Left) {
@@ -635,11 +854,12 @@ impl App {
                     self.modal = None;
                     Vec::new()
                 }
-                (Modal::Help | Modal::Rate { .. }, Some(Hit::No)) => {
+                (Modal::Help | Modal::Rate { .. } | Modal::Source { .. }, Some(Hit::No)) => {
                     self.modal = None;
                     Vec::new()
                 }
                 (Modal::Rate { .. }, Some(Hit::RateOption(i))) => self.pick_rate(i),
+                (Modal::Source { bus, .. }, Some(Hit::SourceOption(i))) => self.pick_source(bus, i),
                 _ => Vec::new(),
             };
         }
@@ -671,6 +891,14 @@ impl App {
                             Control::Mix { strip, ctl } => match ctl {
                                 MixControl::Fader(_) | MixControl::Pan(_) => true,
                                 _ => return self.toggle_mix(strip, ctl),
+                            },
+                            Control::Bus { bus, ctl } => match ctl {
+                                BusControl::Fader(_) => true,
+                                BusControl::Source => {
+                                    self.open_source(bus);
+                                    return Vec::new();
+                                }
+                                _ => return self.toggle_bus(bus, ctl),
                             },
                             Control::Input { .. } => true,
                             _ => false,
@@ -764,7 +992,9 @@ impl App {
     }
 
     /// Turns a knob or moves a fader by `delta` steps: 1 dB of gain or
-    /// fader, [`PAN_STEP`] of pan.
+    /// fader, [`PAN_STEP`] of pan. ⇧ (`delta` ±10) on a loopback or output
+    /// fader is its page step, [`BUS_PAGE_DB`]. On a source, the wheel
+    /// walks the menu: down (`delta` < 0) to the next item.
     fn adjust(&mut self, c: Control, delta: i32) -> Vec<Action> {
         match c {
             Control::Input {
@@ -789,11 +1019,35 @@ impl App {
                 let pan = self.pan(strip, ch) + PAN_STEP * f64::from(delta);
                 self.set_pan(strip, ch, pan)
             }
+            Control::Bus {
+                bus,
+                ctl: BusControl::Fader(ch),
+            } => {
+                let d = if delta.abs() >= 10 {
+                    BUS_PAGE_DB * f64::from(delta.signum())
+                } else {
+                    f64::from(delta)
+                };
+                let db = step_bus_level(self.bus_level(bus, ch), d);
+                self.set_bus_level(bus, ch, db)
+            }
+            Control::Bus {
+                bus,
+                ctl: BusControl::Source,
+            } => {
+                let n = SOURCE_MENU.len() as i32;
+                let i = SOURCE_MENU
+                    .iter()
+                    .position(|&s| s == self.bus_source(bus))
+                    .unwrap_or(0) as i32;
+                let i = (i - delta.signum()).rem_euclid(n) as usize;
+                self.set_source(bus, SOURCE_MENU[i])
+            }
             _ => Vec::new(),
         }
     }
 
-    /// Puts a knob or fader back to its default: gain −0 dB, fader 0 dB,
+    /// Puts a knob or fader back to its default: gain −0 dB, a fader 0 dB,
     /// a pan dial where the app starts it (odd channel and IN1 hard L, even
     /// channel and IN2 hard R).
     fn reset(&mut self, c: Control) -> Vec<Action> {
@@ -810,6 +1064,10 @@ impl App {
                 strip,
                 ctl: MixControl::Pan(ch),
             } => self.set_pan(strip, ch, ch.min(1) as f64),
+            Control::Bus {
+                bus,
+                ctl: BusControl::Fader(ch),
+            } => self.set_bus_level(bus, ch, 0.0),
             _ => Vec::new(),
         }
     }
@@ -823,9 +1081,13 @@ impl App {
                 gain: self.state.inputs[ch].gain_db.min(MAX_GAIN_DB),
             }),
             Control::Mix {
-                strip,
-                ctl: MixControl::Fader(ch),
-            } => rect.map(|track| Drag::Fader { strip, ch, track }),
+                ctl: MixControl::Fader(_),
+                ..
+            }
+            | Control::Bus {
+                ctl: BusControl::Fader(_),
+                ..
+            } => rect.map(|track| Drag::Fader { ctl: c, track }),
             Control::Mix {
                 strip,
                 ctl: MixControl::Pan(ch),
@@ -847,10 +1109,23 @@ impl App {
                 let gain = (i32::from(gain) + rows).clamp(0, i32::from(MAX_GAIN_DB));
                 self.set_gain(ch, gain as u8)
             }
-            Drag::Fader { strip, ch, track } => {
-                let db = db_at_row(track, row);
-                self.set_fader(strip, ch, db)
-            }
+            Drag::Fader {
+                ctl:
+                    Control::Mix {
+                        strip,
+                        ctl: MixControl::Fader(ch),
+                    },
+                track,
+            } => self.set_fader(strip, ch, db_at_row(track, row)),
+            Drag::Fader {
+                ctl:
+                    Control::Bus {
+                        bus,
+                        ctl: BusControl::Fader(ch),
+                    },
+                track,
+            } => self.set_bus_level(bus, ch, bus_db_at_row(track, row)),
+            Drag::Fader { .. } => Vec::new(),
             Drag::Pan { strip, ch, y, pan } => {
                 let rows = f64::from(i32::from(y) - i32::from(row));
                 self.set_pan(strip, ch, pan + PAN_STEP * rows)
@@ -888,109 +1163,202 @@ impl App {
         self.commit(new)
     }
 
-    fn fader_db(&self, strip: usize, ch: usize) -> f64 {
-        let m = &self.state.mixes[self.mix];
-        match strip {
-            0 if ch == 0 => m.in1.fader_db,
-            0 => m.in2.fader_db,
-            _ => pb(m, strip).fader_l_db,
+    /// The channels a mixer control on channel `ch` of `strip` writes: both
+    /// on the linked page, else its own.
+    fn mix_channels(&self, strip: usize, ch: usize) -> Vec<usize> {
+        if self.state.mixes[self.mix].linked(strip) {
+            vec![0, 1]
+        } else {
+            vec![ch.min(1)]
         }
+    }
+
+    fn fader_db(&self, strip: usize, ch: usize) -> f64 {
+        self.state.mixes[self.mix].channel(strip, ch).fader_db
     }
 
     fn pan(&self, strip: usize, ch: usize) -> f64 {
-        let m = &self.state.mixes[self.mix];
-        match (strip, ch) {
-            (0, 0) => m.in1.pan,
-            (0, _) => m.in2.pan,
-            (_, 0) => pb(m, strip).pan_l,
-            _ => pb(m, strip).pan_r,
-        }
+        self.state.mixes[self.mix].pans(strip)[ch.min(1)]
     }
 
-    /// Sets a mix fader, clamped at [`MIX_FADER_MAX_DB`].
+    /// Sets a mix fader, clamped at [`MIX_FADER_MAX_DB`]; linked, both
+    /// channels.
     fn set_fader(&mut self, strip: usize, ch: usize, db: f64) -> Vec<Action> {
         let db = db.min(MIX_FADER_MAX_DB);
         let mut new = self.state.clone();
-        let m = &mut new.mixes[self.mix];
-        match strip {
-            0 if ch == 0 => m.in1.fader_db = db,
-            0 => m.in2.fader_db = db,
-            _ => pb_mut(m, strip).set_fader(db),
+        for c in self.mix_channels(strip, ch) {
+            *new.mixes[self.mix].channel_mut(strip, c).fader_db = db;
         }
         self.commit(new)
     }
 
-    /// Sets a pan dial, on the app's 1 % grid (L100 … R100). A linked PB
-    /// strip's other dial mirrors it. While IN 1+2 is linked its dials
-    /// stay put: the link sets IN1 hard L and IN2 hard R.
+    /// Sets a pan dial, on the app's 1 % grid (L100 … R100). Each dial is
+    /// its own channel's, linked or not (the app's `50−v`).
     fn set_pan(&mut self, strip: usize, ch: usize, pan: f64) -> Vec<Action> {
         let pan = ((pan * 200.0).round() / 200.0).clamp(0.0, 1.0);
         let mut new = self.state.clone();
-        let m = &mut new.mixes[self.mix];
-        if strip == 0 {
-            if m.link {
-                return Vec::new();
-            }
-            if ch == 0 {
-                m.in1.pan = pan;
-            } else {
-                m.in2.pan = pan;
-            }
-        } else {
-            let s = pb_mut(m, strip);
-            let (mine, other) = if ch == 0 {
-                (&mut s.pan_l, &mut s.pan_r)
-            } else {
-                (&mut s.pan_r, &mut s.pan_l)
-            };
-            *mine = pan;
-            if s.link {
-                *other = 1.0 - pan;
-            }
-        }
+        *new.mixes[self.mix].pan_mut(strip, ch.min(1)) = pan;
         self.commit(new)
     }
 
-    /// Flips a mixer switch: LINK, Ø, SOLO or MUTE.
+    /// Flips a mixer switch: LINK, Ø, SOLO or MUTE. A switch on the linked
+    /// page sets both channels. Linking with L ≠ R sets both faders to
+    /// their average, MUTE and SOLO on when either was, and Ø to L's.
     fn toggle_mix(&mut self, strip: usize, ctl: MixControl) -> Vec<Action> {
         let mut new = self.state.clone();
         let m = &mut new.mixes[self.mix];
         if ctl == MixControl::Link {
-            if strip == 0 {
-                m.link = !m.link;
-            } else {
-                let s = pb_mut(m, strip);
-                s.link = !s.link;
+            let link = !m.linked(strip);
+            if link {
+                let (l, r) = (m.channel(strip, 0), m.channel(strip, 1));
+                let fader = average_db(l.fader_db, r.fader_db, MIX_FADER_FLOOR_DB, 10.0);
+                for c in 0..2 {
+                    let ch = m.channel_mut(strip, c);
+                    *ch.fader_db = fader;
+                    *ch.mute = l.mute || r.mute;
+                    *ch.solo = l.solo || r.solo;
+                    *ch.phase = l.phase;
+                }
             }
+            *m.link_mut(strip) = link;
             return self.commit(new);
         }
-        let (mute, solo, phase) = match strip {
-            0 => {
-                let s = if channel(ctl) == 0 {
-                    &mut m.in1
-                } else {
-                    &mut m.in2
-                };
-                (&mut s.mute, &mut s.solo, &mut s.phase)
+        let ch = channel(ctl);
+        let now = m.channel(strip, ch);
+        for c in self.mix_channels(strip, ch) {
+            let target = new.mixes[self.mix].channel_mut(strip, c);
+            match ctl {
+                MixControl::Mute(_) => *target.mute = !now.mute,
+                MixControl::Solo(_) => *target.solo = !now.solo,
+                MixControl::Phase(_) => *target.phase = !now.phase,
+                _ => return Vec::new(),
             }
-            _ => {
-                let s = pb_mut(m, strip);
-                match ctl {
-                    MixControl::Mute(_) => (s.mute_l, s.mute_r) = (!s.mute_l, !s.mute_l),
-                    MixControl::Solo(_) => (s.solo_l, s.solo_r) = (!s.solo_l, !s.solo_l),
-                    MixControl::Phase(_) => (s.phase_l, s.phase_r) = (!s.phase_l, !s.phase_l),
-                    _ => return Vec::new(),
-                }
-                return self.commit(new);
+        }
+        self.commit(new)
+    }
+
+    /// Whether bus `bus` (a loopback, or [`OUT_BUS`]) is on its linked page.
+    fn bus_linked(&self, bus: usize) -> bool {
+        match bus {
+            OUT_BUS => self.state.output.link,
+            b => self.state.loopbacks[b.min(1)].link,
+        }
+    }
+
+    fn bus_level(&self, bus: usize, ch: usize) -> f64 {
+        let (l, r) = match bus {
+            OUT_BUS => (self.state.output.level_l_db, self.state.output.level_r_db),
+            b => {
+                let lb = &self.state.loopbacks[b.min(1)];
+                (lb.level_l_db, lb.level_r_db)
             }
         };
-        match ctl {
-            MixControl::Mute(_) => *mute = !*mute,
-            MixControl::Solo(_) => *solo = !*solo,
-            MixControl::Phase(_) => *phase = !*phase,
+        if ch == 0 {
+            l
+        } else {
+            r
+        }
+    }
+
+    fn bus_source(&self, bus: usize) -> Source {
+        match bus {
+            OUT_BUS => self.state.output.source,
+            b => self.state.loopbacks[b.min(1)].source,
+        }
+    }
+
+    /// Sets a loopback or output level on the app's grid: whole dB up to
+    /// 0, −90 and below is −∞. Linked, both channels.
+    fn set_bus_level(&mut self, bus: usize, ch: usize, db: f64) -> Vec<Action> {
+        let db = bus_db(db);
+        let linked = self.bus_linked(bus);
+        let mut new = self.state.clone();
+        let (l, r) = match bus {
+            OUT_BUS => (&mut new.output.level_l_db, &mut new.output.level_r_db),
+            b => {
+                let lb = &mut new.loopbacks[b.min(1)];
+                (&mut lb.level_l_db, &mut lb.level_r_db)
+            }
+        };
+        if linked || ch == 0 {
+            *l = db;
+        }
+        if linked || ch != 0 {
+            *r = db;
+        }
+        self.commit(new)
+    }
+
+    fn set_source(&mut self, bus: usize, src: Source) -> Vec<Action> {
+        let mut new = self.state.clone();
+        match bus {
+            OUT_BUS => new.output.source = src,
+            b => new.loopbacks[b.min(1)].source = src,
+        }
+        self.commit(new)
+    }
+
+    /// Flips a loopback or output switch: LINK, MUTE, HP or LINE. MUTE on
+    /// the linked page sets both channels. Linking with L ≠ R sets both
+    /// levels to their average (whole dB) and MUTE on when either was.
+    fn toggle_bus(&mut self, bus: usize, ctl: BusControl) -> Vec<Action> {
+        let mut new = self.state.clone();
+        let linked = self.bus_linked(bus);
+        match (bus, ctl) {
+            (OUT_BUS, BusControl::Link) => {
+                let out = &mut new.output;
+                if !linked {
+                    out.set_level(average_db(
+                        out.level_l_db,
+                        out.level_r_db,
+                        BUS_FLOOR_DB,
+                        1.0,
+                    ));
+                }
+                out.link = !linked;
+            }
+            (OUT_BUS, BusControl::Hp) => new.output.headphones = !new.output.headphones,
+            (OUT_BUS, BusControl::Line) => new.output.line = !new.output.line,
+            (b, BusControl::Link) if b < OUT_BUS => {
+                let lb = &mut new.loopbacks[b];
+                if !linked {
+                    lb.set_level(average_db(lb.level_l_db, lb.level_r_db, BUS_FLOOR_DB, 1.0));
+                    lb.set_mute(lb.mute_l || lb.mute_r);
+                }
+                lb.link = !linked;
+            }
+            (b, BusControl::Mute(ch)) if b < OUT_BUS => {
+                let lb = &mut new.loopbacks[b];
+                if linked {
+                    lb.set_mute(!lb.mute_l);
+                } else if ch == 0 {
+                    lb.mute_l = !lb.mute_l;
+                } else {
+                    lb.mute_r = !lb.mute_r;
+                }
+            }
             _ => return Vec::new(),
         }
         self.commit(new)
+    }
+
+    /// Opens bus `bus`'s source menu at its current source.
+    fn open_source(&mut self, bus: usize) {
+        let sel = SOURCE_MENU
+            .iter()
+            .position(|&s| s == self.bus_source(bus))
+            .unwrap_or(0);
+        self.modal = Some(Modal::Source { bus, sel });
+        self.drag = None;
+    }
+
+    /// Picks item `i` of bus `bus`'s source menu.
+    fn pick_source(&mut self, bus: usize, i: usize) -> Vec<Action> {
+        self.modal = None;
+        match SOURCE_MENU.get(i) {
+            Some(&src) => self.set_source(bus, src),
+            None => Vec::new(),
+        }
     }
 
     /// A key while a strip name is being edited: text, Backspace, Enter
@@ -1018,12 +1386,12 @@ impl App {
 
     /// Ends a name edit, keeping the text (empty: the default name).
     fn finish_edit(&mut self) -> Vec<Action> {
-        let Some((strip, text)) = self.editing.take() else {
+        let Some((name, text)) = self.editing.take() else {
             return Vec::new();
         };
-        let name = text.trim().to_string();
+        let text = text.trim().to_string();
         let mut new = self.state.clone();
-        new.strip_names[strip] = (!name.is_empty()).then_some(name);
+        *name.slot(&mut new) = (!text.is_empty()).then_some(text);
         self.commit(new)
     }
 
@@ -1060,8 +1428,8 @@ impl App {
         self.focus = Panel::ALL[(i + step).rem_euclid(n) as usize].first();
     }
 
-    /// Up/Down: along an input's column, or from a mixer strip's name
-    /// down through its controls; clamped at the ends.
+    /// Up/Down: along an input's column, or from a strip's name down
+    /// through its controls (as drawn on its page); clamped at the ends.
     fn move_vertical(&mut self, step: isize) {
         self.focus = match self.focus {
             Control::Input { ch, kind } => {
@@ -1074,10 +1442,10 @@ impl App {
             }
             Control::Mixer(strip) if step > 0 => Control::Mix {
                 strip,
-                ctl: MixControl::order(strip)[0],
+                ctl: MixControl::order(self.state.mixes[self.mix].linked(strip))[0],
             },
             Control::Mix { strip, ctl } => {
-                let order = MixControl::order(strip);
+                let order = MixControl::order(self.state.mixes[self.mix].linked(strip));
                 let i = order.iter().position(|&c| c == ctl).unwrap_or(0) as isize + step;
                 if i < 0 {
                     Control::Mixer(strip)
@@ -1088,38 +1456,97 @@ impl App {
                     }
                 }
             }
+            Control::Loopback(bus) if step > 0 => Control::Bus {
+                bus,
+                ctl: BusControl::Source,
+            },
+            Control::Output(0) if step > 0 => Control::Bus {
+                bus: OUT_BUS,
+                ctl: BusControl::Source,
+            },
+            Control::Bus { bus, ctl } => {
+                let order = BusControl::order(bus, self.bus_linked(bus));
+                let i = order.iter().position(|&c| c == ctl).unwrap_or(0) as isize + step;
+                match i {
+                    i if i >= 0 => Control::Bus {
+                        bus,
+                        ctl: order[(i as usize).min(order.len() - 1)],
+                    },
+                    _ if bus == OUT_BUS => Control::Output(0),
+                    _ => Control::Loopback(bus),
+                }
+            }
             other => other,
         };
     }
 }
 
-/// PB strip `strip` (1 ..= 3) of `m`.
-fn pb(m: &Mix, strip: usize) -> &PbStrip {
-    match strip {
-        1 => &m.pb12,
-        2 => &m.pb34,
-        _ => &m.pb56,
+/// The strip name a focus on `c` renames with Enter.
+fn name_of(c: Control) -> Option<Name> {
+    match c {
+        Control::Mixer(i) => Some(Name::Mixer(i)),
+        Control::Loopback(i) => Some(Name::Loopback(i)),
+        Control::Output(0) => Some(Name::Output),
+        _ => None,
     }
 }
 
-fn pb_mut(m: &mut Mix, strip: usize) -> &mut PbStrip {
-    match strip {
-        1 => &mut m.pb12,
-        2 => &mut m.pb34,
-        _ => &mut m.pb56,
-    }
-}
-
-/// The channel a mixer switch acts on.
+/// The channel a mixer control acts on.
 fn channel(ctl: MixControl) -> usize {
     match ctl {
         MixControl::Pan(c)
         | MixControl::Fader(c)
         | MixControl::Phase(c)
         | MixControl::Solo(c)
-        | MixControl::Mute(c) => c,
+        | MixControl::Mute(c) => c.min(1),
         MixControl::Link => 0,
     }
+}
+
+/// The mean of two fader values in dB, −∞ counted as `floor`, rounded to
+/// `1/per_db` dB; at or below `floor` it is −∞.
+pub fn average_db(a: f64, b: f64, floor: f64, per_db: f64) -> f64 {
+    let v = |x: f64| if x.is_nan() || x <= floor { floor } else { x };
+    let mean = ((v(a) + v(b)) / 2.0 * per_db).round() / per_db;
+    if mean <= floor {
+        f64::NEG_INFINITY
+    } else {
+        mean
+    }
+}
+
+/// A loopback or output level on the app's grid: whole dB, at most
+/// [`BUS_MAX_DB`]; at or below [`BUS_FLOOR_DB`] it is −∞.
+fn bus_db(db: f64) -> f64 {
+    if db.is_nan() || db <= BUS_FLOOR_DB {
+        f64::NEG_INFINITY
+    } else {
+        db.round().min(BUS_MAX_DB)
+    }
+}
+
+/// A loopback or output level `delta` dB from `db`: −∞ steps up from
+/// −90 dB, and at or below −90 dB it snaps to −∞.
+pub fn step_bus_level(db: f64, delta: f64) -> f64 {
+    let base = if db.is_nan() || db <= BUS_FLOOR_DB {
+        BUS_FLOOR_DB
+    } else {
+        db
+    };
+    bus_db(base + delta)
+}
+
+/// The loopback or output level at `row` on a fader drawn over `track`:
+/// the top row is 0 dB, the bottom −∞; whole dB.
+pub fn bus_db_at_row(track: Rect, row: u16) -> f64 {
+    let h = track.height.max(1);
+    let row = row.clamp(track.y, track.y + h - 1) - track.y;
+    let frac = if h == 1 {
+        1.0
+    } else {
+        1.0 - f64::from(row) / f64::from(h - 1)
+    };
+    bus_db(db_at_frac(frac, BUS_MAX_DB))
 }
 
 /// A mix fader `delta` dB from `db`: −∞ steps up from −60 dB, and at or
