@@ -540,7 +540,6 @@ impl Knob {
 
 /// A level meter as text, its bar and clip light recorded for the pixel
 /// layer (the clip light on the top row, as the text meter draws it).
-#[allow(clippy::too_many_arguments)]
 fn meter(
     buf: &mut Buffer,
     area: Rect,
@@ -568,7 +567,6 @@ fn meter(
 
 /// A fader as text, recorded for the pixel layer over the cells the text
 /// fader takes.
-#[allow(clippy::too_many_arguments)]
 fn fader(
     buf: &mut Buffer,
     area: Rect,
