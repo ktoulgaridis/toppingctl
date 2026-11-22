@@ -33,6 +33,7 @@ use std::f32::consts::PI;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::time::{Duration, Instant};
 
 use image::RgbaImage;
 use ratatui::buffer::Buffer;
@@ -278,7 +279,15 @@ pub struct PixelLayer {
     area: Option<Rect>,
     out: String,
     built: usize,
+    /// While resizing: text only until this time.
+    settle_until: Option<Instant>,
+    settle: Duration,
+    clock: Box<dyn Fn() -> Instant>,
 }
+
+/// How long the size must stay put after a resize before the images come
+/// back: a drag-resize fires a storm of resizes.
+pub const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 
 impl PixelLayer {
     /// Asks the terminal (after the alternate screen and raw mode are on,
@@ -308,7 +317,39 @@ impl PixelLayer {
             area: None,
             out: String::new(),
             built: 0,
+            settle_until: None,
+            settle: RESIZE_SETTLE,
+            clock: Box::new(Instant::now),
         }
+    }
+
+    /// The clock the settling time is measured on (tests use a fake one).
+    pub fn set_clock(&mut self, clock: impl Fn() -> Instant + 'static) {
+        self.clock = Box::new(clock);
+    }
+
+    /// How long to wait after the last resize ([`RESIZE_SETTLE`]).
+    pub fn set_resize_settle(&mut self, settle: Duration) {
+        self.settle = settle;
+    }
+
+    /// The terminal was resized at `now`, with `cell` its new cell size in
+    /// pixels when known (TIOCGWINSZ). The first resize of a storm frees
+    /// every image (the terminal's copies too, so nothing stays at old
+    /// coordinates or at an old scale, and no placement can refer to an
+    /// image from before); until the size has been still for the settling
+    /// time, frames are text only. Write [`PixelLayer::take_output`] before
+    /// the next frame.
+    pub fn begin_resize(&mut self, now: Instant, cell: Option<(u16, u16)>) {
+        if let Some((w, h)) = cell.filter(|&(w, h)| w > 0 && h > 0) {
+            self.cell = (w, h);
+        }
+        if self.settle_until.is_none() {
+            self.out.push_str(Self::FREE_ALL);
+            self.images.clear();
+            self.shown.clear();
+        }
+        self.settle_until = Some(now + self.settle);
     }
 
     /// Images the terminal holds (sent and cached).
@@ -334,20 +375,24 @@ impl PixelLayer {
 
     /// The kitty sequence that frees every image the terminal holds.
     pub const FREE_ALL: &'static str = "\x1b_Ga=d,d=A,q=2\x1b\\";
-    /// The kitty sequence that deletes every placement, keeping the images.
-    const DELETE_PLACEMENTS: &'static str = "\x1b_Ga=d,d=a,q=2\x1b\\";
 
     /// Brings the terminal's placements in line with `spots` on a screen
     /// of `area`: places what is new or changed, deletes what went.
     pub fn update(&mut self, spots: &[PixelSpot], area: Rect) {
+        let now = (self.clock)();
         if self.area != Some(area) {
-            // A resize (or the first frame): the terminal may have moved or
-            // cleared them, so every placement goes and is placed again.
+            // A resize the event loop did not report (or the first frame).
             if self.area.is_some() {
-                self.out.push_str(Self::DELETE_PLACEMENTS);
+                self.begin_resize(now, None);
             }
-            self.shown.clear();
             self.area = Some(area);
+        }
+        if let Some(until) = self.settle_until {
+            if now < until {
+                // Still resizing: text only.
+                return;
+            }
+            self.settle_until = None;
         }
         if self.images.len() > CACHE_LIMIT {
             self.out.push_str(Self::FREE_ALL);

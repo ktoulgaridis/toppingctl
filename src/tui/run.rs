@@ -165,11 +165,22 @@ pub fn run() -> Result<()> {
         let mut actions = Vec::new();
         if event::poll(TICK)? {
             // Everything already queued, without waiting again.
+            let mut resized = false;
             let mut queued = std::iter::from_fn(|| match event::poll(Duration::ZERO) {
                 Ok(true) => event::read().ok(),
                 _ => None,
-            });
+            })
+            .inspect(|ev| resized |= matches!(ev, Input::Resize(..)));
             actions = process_input(&mut app, &mut queued, &hits);
+            drop(queued);
+            if let (true, Some(layer)) = (resized, pixels.as_mut()) {
+                // Free the images before the next text frame, and take the
+                // new cell size from the terminal (TIOCGWINSZ).
+                layer.begin_resize(Instant::now(), cell_size());
+                let mut out = io::stdout();
+                out.write_all(layer.take_output().as_bytes())?;
+                out.flush()?;
+            }
         }
         actions.extend(drain_device(&events, &mut app, &mut meters)?);
         send_actions(&conn, &actions)?;
@@ -234,6 +245,14 @@ pub fn send_actions(conn: &Connection, actions: &[Action]) -> Result<(), SendErr
         }
     }
     Ok(())
+}
+
+/// The terminal's cell size in pixels, from its window size (TIOCGWINSZ),
+/// when it reports one.
+fn cell_size() -> Option<(u16, u16)> {
+    let w = terminal::window_size().ok()?;
+    (w.columns > 0 && w.rows > 0 && w.width > 0 && w.height > 0)
+        .then(|| (w.width / w.columns, w.height / w.rows))
 }
 
 /// Counts anything the device sent, its idle frames included, as a sign of

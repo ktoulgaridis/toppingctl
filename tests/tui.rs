@@ -1566,10 +1566,11 @@ fn pixel_widgets_redraw() {
     assert_eq!(layer.built(), built + 1);
     assert_eq!(count(&out, "t"), 1);
 
-    // Resize: every placement goes first, then all are placed again in
-    // the new cells.
+    // Resize (no settling time here; see pixel_resize_storm): every image
+    // is freed first, then all are sent and placed again in the new cells.
+    layer.set_resize_settle(Duration::ZERO);
     let (_, hits, out) = draw_pixels(&app, &meters, 100, 34, &mut layer);
-    assert!(out.starts_with("\x1b_Ga=d,d=a,q=2\x1b\\"), "{out:?}");
+    assert!(out.starts_with("\x1b_Ga=d,d=A,q=2\x1b\\"), "{out:?}");
     assert_eq!(placements(&out).len(), hits.pixels().len());
     assert!(placements(&out)
         .iter()
@@ -1578,7 +1579,7 @@ fn pixel_widgets_redraw() {
     // Too small: nothing placed, the old placements gone.
     let (_, hits, out) = draw_pixels(&app, &meters, 90, 30, &mut layer);
     assert!(hits.pixels().is_empty());
-    assert!(out.starts_with("\x1b_Ga=d,d=a,q=2\x1b\\"), "{out:?}");
+    assert!(out.starts_with("\x1b_Ga=d,d=A,q=2\x1b\\"), "{out:?}");
     assert!(placements(&out).is_empty());
 
     // Back to full size, then a modal: every placement is deleted so its
@@ -1649,8 +1650,14 @@ fn pixel_images_are_chunked() {
         open = m == Some("1");
     }
     assert!(!open, "the last chunk is m=0");
-    // Nothing but well-formed escapes: kitty commands and cursor moves.
-    let mut rest = out.as_str();
+    assert!(chunked > 0, "some image needed chunks");
+    assert_well_formed(&out);
+}
+
+/// `out` is nothing but well-formed escapes: kitty commands and cursor
+/// moves.
+fn assert_well_formed(out: &str) {
+    let mut rest = out;
     while !rest.is_empty() {
         if let Some(t) = rest.strip_prefix("\x1b_G") {
             rest = &t[t.find("\x1b\\").unwrap() + 2..];
@@ -1662,7 +1669,6 @@ fn pixel_images_are_chunked() {
             panic!("stray bytes: {:?}", &rest[..rest.len().min(40)]);
         }
     }
-    assert!(chunked > 0, "some image needed chunks");
 }
 
 /// Regression (hardware run on 0e04129: the frame stopped where the first
@@ -2067,4 +2073,126 @@ fn pan_knobs_are_bipolar() {
         .collect::<Vec<_>>();
     assert_eq!(pans.len(), 8);
     assert!(pans.iter().all(|k| k.2), "pans: from the top");
+}
+
+/// A drag-resize fires a storm of resizes. The layer frees every image
+/// once, draws text only until the size has been still for the settling
+/// time, then sends and places everything once, at the new cell size; no
+/// placement refers to an image not sent since the free.
+#[test]
+fn pixel_resize_storm() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let app = synced_app(Theme::color());
+    let meters = fake_meters();
+    let mut layer = kitty_layer();
+    let t0 = Instant::now();
+    let clock = Rc::new(Cell::new(t0));
+    let c = Rc::clone(&clock);
+    layer.set_clock(move || c.get());
+    draw_pixels(&app, &meters, 120, 40, &mut layer);
+
+    // The storm: resize events and frames at new sizes, 30 ms apart; the
+    // last one also reports a new cell size (12×24).
+    let mut storm = String::new();
+    for (i, (w, h)) in [(116, 39), (110, 37), (104, 35), (100, 34)]
+        .into_iter()
+        .enumerate()
+    {
+        clock.set(t0 + Duration::from_millis(30 * i as u64));
+        let cell = (i == 3).then_some((12, 24));
+        layer.begin_resize(clock.get(), cell);
+        storm.push_str(&layer.take_output());
+        let (buf, hits, out) = draw_pixels(&app, &meters, w, h, &mut layer);
+        assert!(placements(&out).is_empty(), "text only while resizing");
+        // The text widgets show meanwhile: the gain knob's Braille dots.
+        let knob = hits
+            .pixels()
+            .iter()
+            .find(|s| kind(&s.widget) == "knob")
+            .unwrap()
+            .rect;
+        let dots: String = (knob.left()..knob.right())
+            .flat_map(|x| (knob.top()..knob.bottom()).map(move |y| (x, y)))
+            .map(|p| buf[p].symbol().to_string())
+            .collect();
+        assert!(
+            dots.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)),
+            "{dots:?}"
+        );
+        storm.push_str(&out);
+    }
+    assert_eq!(storm.matches("a=d,d=A").count(), 1, "one free: {storm:?}");
+    assert!(storm.starts_with(toppingctl::tui::pixel::PixelLayer::FREE_ALL));
+    assert!(placements(&storm).is_empty());
+    assert_eq!(count(&storm, "t"), 0, "nothing sent while resizing");
+
+    // Still for long enough: one frame places everything again.
+    clock.set(t0 + Duration::from_millis(90 + 200));
+    let (_, hits, out) = draw_pixels(&app, &meters, 100, 34, &mut layer);
+    let placed = placements(&out);
+    assert_eq!(placed.len(), hits.pixels().len());
+    assert!(!out.contains("d=A") && !out.contains("d=a"));
+    // Laid out and placed for the new size, not a stale one.
+    assert!(placed
+        .iter()
+        .all(|p| p.x + p.cols <= 100 && p.y + p.rows <= 34));
+    assert!(
+        hits.pixels().iter().any(|s| s.rect.right() > 90),
+        "uses the full width"
+    );
+    // Every placed id was sent after the free, and at the new cell size.
+    let sent: Vec<(u32, u32, u32)> = commands(&out)
+        .iter()
+        .filter(|(_, c)| field(c, "a") == Some("t"))
+        .map(|(_, c)| {
+            (
+                field(c, "i").unwrap().parse().unwrap(),
+                field(c, "s").unwrap().parse().unwrap(),
+                field(c, "v").unwrap().parse().unwrap(),
+            )
+        })
+        .collect();
+    for p in &placed {
+        let (_, w, h) = sent
+            .iter()
+            .find(|(id, _, _)| *id == p.image)
+            .unwrap_or_else(|| panic!("placement of unsent image {}", p.image));
+        assert_eq!((*w, *h), (u32::from(p.cols) * 12, u32::from(p.rows) * 24));
+    }
+    assert_well_formed(&storm);
+    assert_well_formed(&out);
+    // And then quiet again.
+    let (_, _, out) = draw_pixels(&app, &meters, 100, 34, &mut layer);
+    assert_eq!(out, "");
+}
+
+/// Under the frame budget, a placement only ever refers to an image sent
+/// in full in the same frame or before: never to one still unsent.
+#[test]
+fn pixel_budget_never_places_unsent_images() {
+    use toppingctl::tui::pixel::PixelLayer;
+    let app = synced_app(Theme::color());
+    let meters = fake_meters();
+    let mut layer = PixelLayer::with_cell_size((40, 80));
+    let mut sent = std::collections::HashSet::new();
+    for _ in 0..30 {
+        let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+        assert_well_formed(&out);
+        let mut open = false;
+        for (_, c) in commands(&out) {
+            match field(&c, "a") {
+                Some("t") => {
+                    sent.insert(field(&c, "i").unwrap().parse::<u32>().unwrap());
+                    open = field(&c, "m") == Some("1");
+                }
+                Some("p") => {
+                    assert!(!open, "a placement in the middle of a transmission");
+                    let id: u32 = field(&c, "i").unwrap().parse().unwrap();
+                    assert!(sent.contains(&id), "image {id} placed before it was sent");
+                }
+                _ => open = field(&c, "m") == Some("1"),
+            }
+        }
+    }
 }
