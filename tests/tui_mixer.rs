@@ -734,6 +734,15 @@ fn rename_strip() {
     let (buf, _) = render(&app, &meters, 120, 40);
     assert!(text(&buf).contains("PB 1/2"));
 
+    // Names are one cell a character (the strip title is laid out by
+    // cells): wide characters are refused, and the length is capped.
+    app.handle_key(key(KeyCode::Enter));
+    for c in "漢😀ABCDEFGHIJKL".chars() {
+        app.handle_key(ch(c));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.state().strip_names[1].as_deref(), Some("ABCDEFGHIJ"));
+
     // An old saved state (no names) loads with the defaults.
     let old: State = serde_json::from_str("{}").unwrap();
     assert_eq!(old.strip_names, [None, None, None, None]);

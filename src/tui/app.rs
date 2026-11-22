@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton};
 use crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use ratatui::text::Span;
 
 use crate::frame::Frame;
 use crate::rate::RATES;
@@ -984,7 +985,8 @@ impl App {
             return Vec::new();
         };
         match code {
-            KeyCode::Char(c) if !c.is_control() => {
+            // One cell a character: the strip title is laid out by cells.
+            KeyCode::Char(c) if !c.is_control() && Span::raw(c.to_string()).width() == 1 => {
                 if text.chars().count() < NAME_MAX {
                     text.push(c);
                 }
