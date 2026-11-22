@@ -622,3 +622,59 @@ fn pixel_chip_rounded() {
     assert_eq!(px(&img, 59.0, 19.0)[3], 0, "round corner");
     assert!(near(px(&img, 5.0, 10.0), PX_CHIP), "the ends are filled");
 }
+
+// ------------------------------------------------------ bipolar pan knobs
+
+/// A pan knob lights its arc from 12 o'clock to the pointer: nothing at C,
+/// toward the left for L, toward the right for R. Gain knobs keep the arc
+/// from the minimum.
+#[test]
+fn pan_knobs_light_from_the_top() {
+    use toppingctl::tui::pixel::knob_image_arc;
+    // Pixel, solid arc (style K).
+    let c = knob_image_arc(120, 120, Some(0.5), 0, false, true);
+    for rel in [20.0, 100.0, 130.0, 140.0, 170.0, 250.0] {
+        assert!(
+            near(arc_pixel(&c, rel), KNOB_DIM_RGB),
+            "C: nothing lit at {rel}°"
+        );
+    }
+    let l = knob_image_arc(120, 120, Some(0.25), 0, false, true);
+    assert!(
+        near(arc_pixel(&l, 100.0), KNOB_ACCENT_RGB),
+        "L: lit between pointer and top"
+    );
+    assert!(
+        near(arc_pixel(&l, 30.0), KNOB_DIM_RGB),
+        "L: not below the pointer"
+    );
+    assert!(
+        near(arc_pixel(&l, 170.0), KNOB_DIM_RGB),
+        "L: not right of the top"
+    );
+    let r = knob_image_arc(120, 120, Some(0.75), 0, false, true);
+    assert!(near(arc_pixel(&r, 170.0), KNOB_ACCENT_RGB), "R: lit");
+    assert!(
+        near(arc_pixel(&r, 100.0), KNOB_DIM_RGB),
+        "R: not left of the top"
+    );
+    // Unipolar (gain) at 0.5: lit from the minimum.
+    let g = knob_image_arc(120, 120, Some(0.5), 0, false, false);
+    assert!(near(arc_pixel(&g, 30.0), KNOB_ACCENT_RGB));
+
+    // Braille: nothing lit at C; at L, fewer lit dots than a gain knob at
+    // the same value, all on the left half.
+    let dial = |v: f64, bipolar: bool| {
+        render(
+            Dial::new(Theme::color()).value(Some(v)).bipolar(bipolar),
+            12,
+            6,
+        )
+    };
+    assert_eq!(count(&dial(0.5, true), Theme::KNOB_ACCENT), 0);
+    let l = dial(0.25, true);
+    let lit = count(&l, Theme::KNOB_ACCENT);
+    assert!(lit > 0 && lit < count(&dial(0.25, false), Theme::KNOB_ACCENT) + 1);
+    let a = mean_angle(&l, 12, 6, Theme::KNOB_ACCENT).unwrap();
+    assert!(close(a, 112.0, 30.0), "lit between pointer and top: {a}°");
+}

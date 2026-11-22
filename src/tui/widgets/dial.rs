@@ -46,10 +46,24 @@ pub fn knob_rect(area: Rect, label: bool, max: (u16, u16)) -> Rect {
 pub struct Dial {
     value: Option<f64>,
     dimmed: bool,
+    bipolar: bool,
     focused: bool,
     label: Option<String>,
     max: (u16, u16),
     theme: Theme,
+}
+
+/// The lit part of the arc, in degrees along the sweep (`None`: nothing):
+/// from the minimum to the value, or for a bipolar knob (a pan) from the
+/// top (12 o'clock) to the value.
+pub fn lit_span(value: Option<f64>, dimmed: bool, bipolar: bool) -> Option<(f64, f64)> {
+    let v = value.filter(|_| !dimmed)?;
+    let at = SWEEP_DEG * v;
+    if !bipolar {
+        return Some((0.0, at));
+    }
+    let top = SWEEP_DEG / 2.0;
+    ((at - top).abs() > 1e-9).then(|| (at.min(top), at.max(top)))
 }
 
 /// What a pixel is: the parts of the knob, in drawing priority.
@@ -66,6 +80,7 @@ impl Dial {
         Dial {
             value: None,
             dimmed: false,
+            bipolar: false,
             focused: false,
             label: None,
             max: (12, 6),
@@ -83,6 +98,13 @@ impl Dial {
     /// gets its pointer.
     pub fn dimmed(mut self, dimmed: bool) -> Self {
         self.dimmed = dimmed;
+        self
+    }
+
+    /// Light the arc from the top to the value (a pan), not from the
+    /// minimum.
+    pub fn bipolar(mut self, bipolar: bool) -> Self {
+        self.bipolar = bipolar;
         self
     }
 
@@ -108,17 +130,15 @@ impl Dial {
         let mut g = vec![None; w * h];
         let (cx, cy) = ((w as f64 - 1.0) / 2.0, (h as f64 - 1.0) / 2.0);
         let r = w.min(h) as f64 / 2.0;
-        let lit_to = match (self.value, self.dimmed) {
-            (Some(v), false) => SWEEP_DEG * v,
-            _ => -1.0,
-        };
+        let lit = lit_span(self.value, self.dimmed, self.bipolar);
         for y in 0..h {
             for x in 0..w {
                 let (dx, dy) = (x as f64 - cx, cy - y as f64);
                 let d = dx.hypot(dy) / r;
                 let rel = (START_DEG - dy.atan2(dx).to_degrees()).rem_euclid(360.0);
                 g[y * w + x] = if (0.80..=1.0).contains(&d) && rel <= SWEEP_DEG {
-                    Some(if rel <= lit_to { Part::Lit } else { Part::Dim })
+                    let on = lit.is_some_and(|(a, b)| rel >= a && rel <= b);
+                    Some(if on { Part::Lit } else { Part::Dim })
                 } else if (0.58..0.68).contains(&d) {
                     Some(Part::Rim)
                 } else {

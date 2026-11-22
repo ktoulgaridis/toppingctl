@@ -45,7 +45,7 @@ use tiny_skia::{
 };
 
 use crate::tui::theme::Theme;
-use crate::tui::widgets::dial::{START_DEG, SWEEP_DEG};
+use crate::tui::widgets::dial::{lit_span, START_DEG, SWEEP_DEG};
 use crate::tui::widgets::fader::{fader_frac, fader_row, Fader};
 use crate::tui::widgets::meter::meter_frac;
 
@@ -100,6 +100,8 @@ pub enum PixelWidget {
         value: Option<f64>,
         ticks: u32,
         dimmed: bool,
+        /// Lit from the top (a pan), not from the minimum.
+        bipolar: bool,
     },
     /// A fader at `db` on a scale topping out at `max_db`; with `labels`
     /// its first and last 3 columns are the scale's text.
@@ -134,7 +136,7 @@ pub struct PixelSpot {
 /// quantised values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Key {
-    Knob(u16, u16, Option<u16>, u32, bool),
+    Knob(u16, u16, Option<u16>, u32, bool, bool),
     Fader(u16, u16, u16, i16, bool),
     Meter(u16, u16, u16),
     Clip(u16, u16, bool),
@@ -153,7 +155,15 @@ impl PixelSpot {
                 value,
                 ticks,
                 dimmed,
-            } => Key::Knob(w, h, value.map(|v| quantise(v, KNOB_STEPS)), ticks, dimmed),
+                bipolar,
+            } => Key::Knob(
+                w,
+                h,
+                value.map(|v| quantise(v, KNOB_STEPS)),
+                ticks,
+                dimmed,
+                bipolar,
+            ),
             PixelWidget::Fader { db, max_db, labels } => Key::Fader(
                 w,
                 h,
@@ -202,9 +212,10 @@ fn draw(key: Key, cell: (u16, u16)) -> RgbaImage {
         )
     };
     match key {
-        Key::Knob(c, r, q, ticks, dimmed) => {
+        Key::Knob(c, r, q, ticks, dimmed, bipolar) => {
             let (w, h) = px(c, r);
-            knob_image(w, h, q.map(|q| f64::from(q) / KNOB_STEPS), ticks, dimmed)
+            let v = q.map(|q| f64::from(q) / KNOB_STEPS);
+            knob_image_arc(w, h, v, ticks, dimmed, bipolar)
         }
         Key::Fader(c, r, q, max_db, labels) => fader_image_at(
             c,
@@ -887,16 +898,26 @@ fn to_rgba(pm: &Pixmap) -> RgbaImage {
 /// with 0) lit in the accent up to `value`, and a white pointer, centred on
 /// a see-through `w`×`h` image.
 pub fn knob_image(w: u32, h: u32, value: Option<f64>, ticks: u32, dimmed: bool) -> RgbaImage {
+    knob_image_arc(w, h, value, ticks, dimmed, false)
+}
+
+/// [`knob_image`], with the arc lit from the top to the value when
+/// `bipolar` (a pan knob: nothing lit at the centre).
+pub fn knob_image_arc(
+    w: u32,
+    h: u32,
+    value: Option<f64>,
+    ticks: u32,
+    dimmed: bool,
+    bipolar: bool,
+) -> RgbaImage {
     let Some(mut pm) = Pixmap::new(w.max(1), h.max(1)) else {
         return RgbaImage::new(w.max(1), h.max(1));
     };
     let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
     let r = w.min(h) as f32 / 2.0;
     let sweep = SWEEP_DEG as f32;
-    let lit_to = match (value, dimmed) {
-        (Some(v), false) => sweep * v as f32,
-        _ => -1.0,
-    };
+    let lit = lit_span(value, dimmed, bipolar).map(|(a, b)| (a as f32, b as f32));
     let id = Transform::identity();
     let band = stroke(0.18 * r, LineCap::Butt);
     let segments: Vec<(f32, f32)> = if ticks == 0 {
@@ -907,18 +928,22 @@ pub fn knob_image(w: u32, h: u32, value: Option<f64>, ticks: u32, dimmed: bool) 
             .map(|i| (i as f32 * p, i as f32 * p + 0.6 * p))
             .collect()
     };
+    let mut draw_arc = |a: f32, b: f32, c| {
+        if b > a {
+            if let Some(path) = arc(cx, cy, 0.87 * r, a, b) {
+                pm.stroke_path(&path, &solid(c), &band, id, None);
+            }
+        }
+    };
     for (a, b) in segments {
-        let split = lit_to.clamp(a, b);
-        if split > a {
-            if let Some(path) = arc(cx, cy, 0.87 * r, a, split) {
-                pm.stroke_path(&path, &solid(KNOB_ACCENT_RGB), &band, id, None);
-            }
-        }
-        if split < b {
-            if let Some(path) = arc(cx, cy, 0.87 * r, split, b) {
-                pm.stroke_path(&path, &solid(KNOB_DIM_RGB), &band, id, None);
-            }
-        }
+        // Each segment: dim, lit where it meets the lit span, dim again.
+        let (la, lb) = match lit {
+            Some((lo, hi)) if hi > a && lo < b => (lo.max(a), hi.min(b)),
+            _ => (b, b),
+        };
+        draw_arc(a, la, KNOB_DIM_RGB);
+        draw_arc(la, lb, KNOB_ACCENT_RGB);
+        draw_arc(lb, b, KNOB_DIM_RGB);
     }
     if let Some(body) = PathBuilder::from_circle(cx, cy, 0.61 * r) {
         let paint = vertical_gradient(

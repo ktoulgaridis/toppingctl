@@ -531,6 +531,8 @@ struct Knob {
     dimmed: bool,
     max: (u16, u16),
     ticks: u32,
+    /// A pan (or balance): lit from the top.
+    bipolar: bool,
 }
 
 impl Knob {
@@ -542,11 +544,13 @@ impl Knob {
                 value: self.value,
                 ticks: self.ticks,
                 dimmed: self.dimmed,
+                bipolar: self.bipolar,
             },
         });
         Dial::new(t)
             .value(self.value)
             .dimmed(self.dimmed)
+            .bipolar(self.bipolar)
             .focused(self.focused)
             .label(self.label)
             .max_cells(self.max.0, self.max.1)
@@ -724,6 +728,7 @@ fn draw_input_strip(
             dimmed: false,
             max: GAIN_KNOB,
             ticks: GAIN_TICKS,
+            bipolar: false,
         };
         k.draw(buf, knob, t, hits);
         hits.push(
@@ -830,6 +835,7 @@ fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2], rows: u16, 
             dimmed: false,
             max: PAN_KNOB,
             ticks: 0,
+            bipolar: true,
         };
         k.draw(buf, h, t, hits);
     }
@@ -1234,6 +1240,7 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
             dimmed: true,
             max: GAIN_KNOB,
             ticks: 0,
+            bipolar: true,
         };
         k.draw(buf, Rect::new(r.x, r.y, r.width, dial_h), t, hits);
         put_centered(

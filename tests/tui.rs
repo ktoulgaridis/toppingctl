@@ -1775,7 +1775,8 @@ fn monitor_mix_and_phone_level() {
         PixelWidget::Knob {
             value: Some(0.3),
             ticks: 0,
-            dimmed: true
+            dimmed: true,
+            bipolar: true
         }
     );
     // Its value in the strip, as the app shows it (v − 50).
@@ -2036,4 +2037,34 @@ fn hidsniff_meters_reach_the_pixel_meters() {
     assert_eq!(at(meters.output[1]), 1, "OUT 1+2 R");
     assert_eq!(at(meters.playback[0][0]), 1, "PB 1/2 L");
     assert_eq!(at(meters.playback[0][1]), 1, "PB 1/2 R");
+}
+
+/// Pan knobs (IN 1+2 and PB) are bipolar; gain knobs are not.
+#[test]
+fn pan_knobs_are_bipolar() {
+    use toppingctl::tui::pixel::PixelWidget;
+    let app = synced_app(Theme::color());
+    let (_, hits) = render(&app, &fake_meters(), 120, 40);
+    let knobs: Vec<_> = hits
+        .pixels()
+        .iter()
+        .filter_map(|s| match s.widget {
+            PixelWidget::Knob {
+                ticks,
+                dimmed,
+                bipolar,
+                ..
+            } => Some((ticks, dimmed, bipolar)),
+            _ => None,
+        })
+        .collect();
+    let gains = knobs.iter().filter(|k| k.0 > 0).collect::<Vec<_>>();
+    assert_eq!(gains.len(), 2);
+    assert!(gains.iter().all(|k| !k.2), "gain: from the minimum");
+    let pans = knobs
+        .iter()
+        .filter(|k| k.0 == 0 && !k.1)
+        .collect::<Vec<_>>();
+    assert_eq!(pans.len(), 8);
+    assert!(pans.iter().all(|k| k.2), "pans: from the top");
 }
