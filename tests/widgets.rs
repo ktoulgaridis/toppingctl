@@ -612,16 +612,17 @@ fn pixel_clip_light() {
     assert!(near(px(&narrow, 5.0, 10.0), PX_RED));
 }
 
-/// A chip (pill, tab, title): a rounded rect in its colour, corners
-/// see-through, under the label's cells.
+/// A chip (button, tab, title): a square cap under the label's cells
+/// (#37 review: Xone-style, no rounded pill ends), its cell corners
+/// see-through, its ends filled right out to the corners.
 #[test]
-fn pixel_chip_rounded() {
+fn pixel_chip_square() {
     let img = chip_image(6, 1, CELL, PX_CHIP);
     assert_eq!((img.width(), img.height()), (60, 20));
-    assert!(near(px(&img, 30.0, 10.0), PX_CHIP));
-    assert_eq!(px(&img, 0.0, 0.0)[3], 0, "round corner");
-    assert_eq!(px(&img, 59.0, 19.0)[3], 0, "round corner");
-    assert!(near(px(&img, 5.0, 10.0), PX_CHIP), "the ends are filled");
+    assert!(px(&img, 30.0, 10.0)[3] > 250, "a solid face");
+    assert_eq!(px(&img, 0.0, 0.0)[3], 0, "margin");
+    assert_eq!(px(&img, 59.0, 19.0)[3], 0, "margin");
+    assert!(px(&img, 4.0, 5.0)[3] > 250, "square: the corner is filled");
 }
 
 // ------------------------------------------------------ bipolar pan knobs

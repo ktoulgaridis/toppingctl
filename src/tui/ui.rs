@@ -640,6 +640,20 @@ fn meter(
     hits.pixel(bar, PixelWidget::Meter { db });
 }
 
+/// A meter's sunken box over `rect`: a darker background in the text form,
+/// and an inset image under the text for the pixel layer.
+fn inset(buf: &mut Buffer, rect: Rect, t: Theme, hits: &mut HitMap) {
+    let rect = rect.intersection(buf.area);
+    if t.is_color() {
+        for y in rect.top()..rect.bottom() {
+            for x in rect.left()..rect.right() {
+                buf[(x, y)].set_bg(Theme::INSET_BG);
+            }
+        }
+    }
+    hits.pixel(rect, PixelWidget::Inset);
+}
+
 /// A fader as text, recorded for the pixel layer over the cells the text
 /// fader takes.
 #[allow(clippy::too_many_arguments)]
@@ -730,21 +744,26 @@ fn draw_input_strip(
     }
     // The meter takes the strip's height; beside it the six switches and
     // the gain knob are spread evenly down to the meter's foot.
+    // The meter column, in its own sunken box: the peak readout on top,
+    // then the clip light over the bar, the scale beside it.
     let meter_h = r.height;
     let db = meters.inputs[ch];
     let x0 = r.x + 1;
     let lit = app.clips().lit(MeterId::Input(ch));
-    meter(
-        buf,
-        Rect::new(x0, r.y, 2, meter_h),
-        db,
-        2,
-        Some(lit),
-        t,
-        hits,
-    );
-    Scale::new(&INPUT_SCALE_DB, t).render(Rect::new(x0 + 2, r.y + 1, 3, meter_h - 1), buf);
-    put(buf, r, x0 + 3, r.y, &peak_text(db), t.peak(db));
+    put(buf, r, x0, r.y, &peak_text(db), t.peak(db));
+    if meter_h >= 3 {
+        meter(
+            buf,
+            Rect::new(x0, r.y + 1, 2, meter_h - 1),
+            db,
+            2,
+            Some(lit),
+            t,
+            hits,
+        );
+        Scale::new(&INPUT_SCALE_DB, t).render(Rect::new(x0 + 2, r.y + 2, 3, meter_h - 2), buf);
+    }
+    inset(buf, Rect::new(r.x, r.y, 7, meter_h), t, hits);
 
     // The switches, top to bottom, then the gain knob at the bottom.
     let right = Rect {
@@ -790,8 +809,8 @@ fn draw_input_strip(
     // then value.
     let knob_y = ys[6];
     if knob_rows > 0 && r.bottom() >= knob_y + knob_rows {
-        // From just right of the scale to the edge, the knob centred.
-        let kx = x0 + 5;
+        // From just right of the meter box to the edge, the knob centred.
+        let kx = x0 + 6;
         let knob = Rect::new(kx, knob_y, r.right().saturating_sub(kx), knob_rows);
         let gain = input.gain_db.min(MAX_GAIN_DB);
         let k = Knob {
@@ -991,6 +1010,7 @@ fn stereo_body(
         ..area
     };
     meter(buf, col(x, 1), levels[0], 1, Some(clips[0]), t, hits);
+    inset(buf, col(x, 1), t, hits);
     let f = col(x + 2, fw);
     fader(buf, f, db, max_db, true, focused, t, hits);
     meter(
@@ -1002,6 +1022,7 @@ fn stereo_body(
         t,
         hits,
     );
+    inset(buf, col(x + 3 + fw, 1), t, hits);
     Fader::rect(true, f)
 }
 
@@ -1198,6 +1219,7 @@ fn draw_in12_strip(
         {
             let lit = app.clips().lit(MeterId::Input(k));
             meter(buf, col(mx, 1), meters.inputs[k], 1, Some(lit), t, hits);
+            inset(buf, col(mx, 1), t, hits);
             let fc = mix_ctl(0, MixControl::Fader(k));
             fader(
                 buf,

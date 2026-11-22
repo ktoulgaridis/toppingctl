@@ -1329,6 +1329,7 @@ fn kind(w: &toppingctl::tui::pixel::PixelWidget) -> &'static str {
         W::Meter { .. } => "meter",
         W::ClipLight { .. } => "clip",
         W::Chip { .. } => "chip",
+        W::Inset => "inset",
     }
 }
 
@@ -1361,10 +1362,14 @@ fn pixel_widgets_in_kitty() {
     for s in spots {
         let p = placed
             .iter()
-            .find(|p| (p.x, p.y) == (s.rect.x, s.rect.y))
+            // A meter's box shares its corner with the clip light: match
+            // the size too.
+            .find(|p| {
+                (p.x, p.y, p.cols, p.rows) == (s.rect.x, s.rect.y, s.rect.width, s.rect.height)
+            })
             .unwrap_or_else(|| panic!("no placement for {s:?}"));
-        assert_eq!((p.cols, p.rows), (s.rect.width, s.rect.height), "{s:?}");
         let z = match kind(&s.widget) {
+            "inset" => -2,
             "chip" | "fader" => -1,
             _ => 0,
         };

@@ -4,19 +4,19 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭┤¹input├─╭ Help ────────────────────────────────────────────────────────────────────────╮─────────╮
 │╭───── IN│                                                                              │ 5/6 ───╮│
-││ ▔▔ −18 │   Tab  Shift-Tab   next / previous panel                                     │  ⣔⠙⠋⣢  ││
-││ ▕   0  │   1  2  3  4       input, mixer, loopback, output                            │  ⠫⠠⠕⠝  ││
-││ ▕  −6  │   ↑ ↓              move along an input, or into a mixer strip                │  R100  ││
-││ ▕ −12  │   ← →              next strip; on a knob or fader: 1 dB / 5 %                │INK     ││
-││ ▃▃     │   Shift ← →        the same ×10                                              │ dB     ││
-││ ██−24  │   0                reset the knob or fader (gain −0 dB, fader 0 dB)          │┃     ▔ ││
-││ ██     │   space            toggle the focused switch                                 │┃ 0   ▕ ││
+││ −18 pk │   Tab  Shift-Tab   next / previous panel                                     │  ⣔⠙⠋⣢  ││
+││ ▔▔     │   1  2  3  4       input, mixer, loopback, output                            │  ⠫⠠⠕⠝  ││
+││ ▕   0  │   ↑ ↓              move along an input, or into a mixer strip                │  R100  ││
+││ ▕  −6  │   ← →              next strip; on a knob or fader: 1 dB / 5 %                │INK     ││
+││ ▕ −12  │   Shift ← →        the same ×10                                              │ dB     ││
+││ ▅▅     │   0                reset the knob or fader (gain −0 dB, fader 0 dB)          │┃     ▔ ││
+││ ██−24  │   space            toggle the focused switch                                 │┃ 0   ▕ ││
 ││ ██     │   enter            on a mixer strip's name: rename it                        │┃ −6  ▕ ││
 ││ ██−36  │   a  b  c          show mix A / B / C                                        │┃     ▕ ││
-││ ██    ⢠│   r                sample rate list (sets it through PipeWire)               │┃ −12 ▕ ││
-││ ██−48 ⡇│   ?                this help                                                 │┃ −24 ▕ ││
-││ ██    ⠘│   q  Ctrl-C        quit                                                      │●━−∞  ▕ ││
-││ ██−60 +│                                                                              │S   M   ││
+││ ██     │   r                sample rate list (sets it through PipeWire)               │┃ −12 ▕ ││
+││ ██−48  │   ?                this help                                                 │┃ −24 ▕ ││
+││ ██     │   q  Ctrl-C        quit                                                      │●━−∞  ▕ ││
+││ ██−60  │                                                                              │S   M   ││
 │╰────────│   click            focus a strip; flip a switch; pick a mix                  │────────╯│
 ╰─────────│   wheel            turn a knob, move a fader (Shift ×10)                     │─────────╯
 ╭┤³loopbac│   drag             turn a knob, move a fader (up / down)                     │─────────╮

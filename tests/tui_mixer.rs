@@ -782,6 +782,7 @@ fn kind(w: &PixelWidget) -> &'static str {
         PixelWidget::Meter { .. } => "meter",
         PixelWidget::ClipLight { .. } => "clip",
         PixelWidget::Chip { .. } => "chip",
+        PixelWidget::Inset => "inset",
     }
 }
 
@@ -1105,4 +1106,106 @@ fn rename_never_traps_keys() {
     app.handle_key(key(KeyCode::Down));
     app.handle_key(key(KeyCode::Enter));
     assert!(app.editing().is_none());
+}
+
+// ------------------------------------------- buttons and meter bridges
+
+/// Every meter sits in its own sunken box (#37 review): the input's clip
+/// light, peak readout, bar and scale; the mixer, loopback and output
+/// meters beside their faders. In the text form the box is a darker
+/// background; in kitty an inset image under the text.
+#[test]
+fn meters_sit_in_inset_boxes() {
+    let app = app_with(fake_state());
+    let meters = fake_meters();
+    for (w, h) in [(100u16, 34u16), (120, 40), (250, 60)] {
+        let (buf, hits) = render(&app, &meters, w, h);
+        let insets: Vec<Rect> = hits
+            .pixels()
+            .iter()
+            .filter(|s| kind(&s.widget) == "inset")
+            .map(|s| s.rect)
+            .collect();
+        // 2 inputs, IN 1+2's two, three PB pairs, two loopback pairs, OUT.
+        assert_eq!(insets.len(), 2 + 2 + 6 + 4 + 2, "{w}x{h}");
+        for spot in hits.pixels() {
+            if matches!(kind(&spot.widget), "meter" | "clip") {
+                assert!(
+                    insets.iter().any(|b| b.union(spot.rect) == *b),
+                    "{w}x{h}: {spot:?} outside every box"
+                );
+            }
+        }
+        // The input boxes hold the peak readout and the scale too.
+        let t = text(&buf);
+        for (y, line) in t.lines().enumerate() {
+            let mut from = 0;
+            while let Some(i) = line[from..].find(" pk") {
+                let x = line[..from + i].chars().count() as u16 + 2;
+                let pos = ratatui::layout::Position { x, y: y as u16 };
+                assert!(
+                    insets.iter().any(|b| b.contains(pos)),
+                    "{w}x{h}: peak at {x},{y} outside a box"
+                );
+                from += i + 3;
+            }
+        }
+        // The text form: a darker background over each box.
+        for b in &insets {
+            for y in b.top()..b.bottom() {
+                for x in b.left()..b.right() {
+                    assert_eq!(buf[(x, y)].bg, Theme::INSET_BG, "{w}x{h} at {x},{y}");
+                }
+            }
+        }
+    }
+}
+
+/// Buttons are square, Xone-style lit caps: on, a square face in the
+/// button's colour with a soft glow around it and a top highlight; off, a
+/// dark recessed cap with a faint outline. No rounded pill ends.
+#[test]
+fn buttons_are_square_lit_caps() {
+    use toppingctl::tui::pixel::{chip_image, PX_ACCENT, PX_CHIP};
+    let cell = (10, 20);
+    let on = chip_image(6, 1, cell, PX_ACCENT);
+    let off = chip_image(6, 1, cell, PX_CHIP);
+    let (w, h) = on.dimensions();
+    let px = |img: &image::RgbaImage, x: u32, y: u32| img.get_pixel(x, y).0;
+    // The face: find its top-left corner from the middle row going left.
+    let mid = h / 2;
+    let left = (0..w).find(|&x| px(&on, x, mid)[3] > 200).unwrap();
+    let top = (0..h).find(|&y| px(&on, w / 2, y)[3] > 200).unwrap();
+    // Square: the corner pixel of the face is as solid as its edges.
+    let corner = px(&on, left, top);
+    assert!(corner[3] > 200, "square corner: {corner:?}");
+    // A glow outside the face: faint, not empty, not solid.
+    let glow = px(&on, left.saturating_sub(2), mid);
+    assert!(glow[3] > 0 && glow[3] < 160, "glow: {glow:?}");
+    // A top highlight: the face's top rows are lighter than its middle.
+    let (hi, body) = (px(&on, w / 2, top + 1), px(&on, w / 2, mid));
+    assert!(
+        hi[0] as u32 + hi[1] as u32 + hi[2] as u32
+            > body[0] as u32 + body[1] as u32 + body[2] as u32,
+        "highlight {hi:?} over {body:?}"
+    );
+    // Off: a dark cap, darker than the outline around it, no glow.
+    let oleft = (0..w).find(|&x| px(&off, x, mid)[3] > 200).unwrap();
+    let edge = px(&off, oleft, mid);
+    let face = px(&off, w / 2, mid);
+    assert!(
+        face[0] < 60 && face[1] < 60 && face[2] < 70,
+        "dark cap {face:?}"
+    );
+    assert!(
+        edge[0] as u32 + edge[1] as u32 > face[0] as u32 + face[1] as u32,
+        "outline"
+    );
+    assert_eq!(
+        px(&off, oleft.saturating_sub(2), mid)[3],
+        0,
+        "no glow when off"
+    );
+    let otop = (0..h).find(|&y| px(&off, w / 2, y)[3] > 200).unwrap();
+    assert!(px(&off, oleft, otop)[3] > 200, "square corner when off");
 }
