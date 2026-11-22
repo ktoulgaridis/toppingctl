@@ -4,8 +4,11 @@ use crate::device::{SelectError, PRODUCT_ID, VENDOR_ID};
 use hidapi::HidError;
 use std::io;
 
-/// The issue tracking the Linux udev rule for non-root hidraw access.
-pub const UDEV_RULE_ISSUE: &str = "https://github.com/ktoulgaridis/toppingctl/issues/19";
+/// The Linux udev rule that grants the seat user non-root hidraw access.
+pub const UDEV_RULE: &str = "70-toppingctl.rules";
+
+/// The install guide for [`UDEV_RULE`], relative to the repository root.
+pub const UDEV_README: &str = "packaging/linux/README.md";
 
 /// Operating system, for messages whose advice differs per platform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,8 +95,8 @@ pub fn message(failure: &OpenFailure, platform: Platform) -> String {
         ),
         OpenFailure::PermissionDenied { detail } if platform == Platform::Linux => format!(
             "permission denied opening the TOPPING E2x2 HID device ({detail}).\n\
-             Non-root access needs the udev rule tracked in {UDEV_RULE_ISSUE}; \
-             until it is installed, run hidsniff with sudo."
+             Non-root access needs the udev rule {UDEV_RULE}; \
+             see {UDEV_README} to install it, then replug the device."
         ),
         OpenFailure::PermissionDenied { detail } => {
             format!("permission denied opening the TOPPING E2x2 HID device ({detail})")

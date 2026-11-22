@@ -90,16 +90,19 @@ fn missing_device_message_names_the_device() {
 }
 
 #[test]
-fn linux_permission_message_points_at_udev_rule_and_sudo() {
+fn linux_permission_message_points_at_udev_rule_and_docs() {
     let failure = OpenFailure::PermissionDenied {
         detail: "Permission denied (os error 13)".into(),
     };
     let msg = message(&failure, Platform::Linux);
     assert!(msg.contains("permission denied"), "{msg}");
     assert!(msg.contains("udev rule"), "{msg}");
-    assert!(msg.contains(UDEV_RULE_ISSUE), "{msg}");
-    assert!(msg.contains("sudo"), "{msg}");
+    assert!(msg.contains("70-toppingctl.rules"), "{msg}");
+    assert!(msg.contains("packaging/linux/README.md"), "{msg}");
     assert!(msg.contains("os error 13"), "{msg}");
+    // The hint is the rule, not root: no issue link, no sudo workaround.
+    assert!(!msg.contains("issues/19"), "{msg}");
+    assert!(!msg.contains("sudo"), "{msg}");
 }
 
 #[test]
