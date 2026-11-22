@@ -18,12 +18,12 @@ pub fn db_from_level(level: i32) -> f64 {
 
 /// Splits `level` across L and R for `pan` from `0.0` (left) to `1.0`
 /// (right): a linear split, so the centre gives each side half the level.
-/// `pan` outside `0.0..=1.0` is clamped.
+/// `pan` outside `0.0..=1.0` is clamped. `left + right == level` always.
 pub fn pan_split(level: i32, pan: f64) -> (i32, i32) {
     let pan = pan.clamp(0.0, 1.0);
+    // |right| <= |level| with the same sign, so the subtraction cannot overflow.
     let right = (f64::from(level) * pan).round() as i32;
-    let left = (f64::from(level) * (1.0 - pan)).round() as i32;
-    (left, right)
+    (level - right, right)
 }
 
 /// `level` with the phase inverted (negated) when `inverted`.

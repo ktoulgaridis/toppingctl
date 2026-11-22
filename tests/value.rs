@@ -39,6 +39,17 @@ fn pan_and_phase() {
     let (left, right) = pan_split(odd, 0.5);
     assert_near(left, odd / 2, 1);
     assert_near(right, odd / 2, 1);
+    // The split never creates or loses level.
+    for pan in [0.0, 0.1, 0.25, 0.5, 0.7, 1.0] {
+        for level in [3, odd, -odd, i32::MAX] {
+            let (left, right) = pan_split(level, pan);
+            assert_eq!(
+                i64::from(left) + i64::from(right),
+                i64::from(level),
+                "{level} at {pan}"
+            );
+        }
+    }
 
     assert_eq!(phase(l, true), -l);
     assert_eq!(phase(l, false), l);
