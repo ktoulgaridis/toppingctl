@@ -18,13 +18,13 @@ use toppingctl::frame::{Crc, Dir, Frame};
 use toppingctl::open::open_e2x2;
 
 const USAGE: &str = "\
-Usage: hidsend [--crc] [--listen <ms>] [--all] [--allow-48v] <GG:PP=VALUE>...
+Usage: hidsend [--zero-crc] [--listen <ms>] [--all] [--allow-48v] <GG:PP=VALUE>...
 
 Sends one frame per GG:PP=VALUE to the TOPPING E2x2 (GG, PP hex; VALUE
 decimal or 0x-hex, may be negative) and prints the device's replies.
 
 Options:
-  --crc          fill bytes 11-12 with the CRC16 (default: 00 00, like the app)
+  --zero-crc     send 00 00 in bytes 11-12, like the app (default: the CRC16)
   --listen <ms>  how long to listen after each frame (default 500)
   --all          also print meter and idle reports
   --allow-48v    allow frames that turn 48V phantom power on
@@ -38,7 +38,7 @@ const REPORT_BUFFER_LEN: usize = 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
-    crc: bool,
+    crc: Crc,
     listen: Duration,
     all: bool,
     sets: Vec<Frame>,
@@ -83,7 +83,7 @@ fn parse_set(s: &str) -> Result<Frame, String> {
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
     let mut opts = Options {
-        crc: false,
+        crc: Crc::default(),
         listen: Duration::from_millis(DEFAULT_LISTEN_MS),
         all: false,
         sets: Vec::new(),
@@ -96,7 +96,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             .map_err(|a| format!("unexpected argument {a:?}"))?;
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
-            "--crc" => opts.crc = true,
+            "--zero-crc" => opts.crc = Crc::Zero,
             "--all" => opts.all = true,
             "--allow-48v" => allow_48v = true,
             "--listen" => {
@@ -164,8 +164,7 @@ fn run(opts: &Options) -> Result<()> {
     let device = open_e2x2().map_err(|failure| anyhow!(message(&failure, Platform::current())))?;
     let start = Instant::now();
     for set in &opts.sets {
-        let crc = if opts.crc { Crc::Fill } else { Crc::Zero };
-        let report = set.encode(crc);
+        let report = set.encode(opts.crc);
         // No report IDs on this device: hidapi wants a leading 0 byte.
         let mut out = Vec::with_capacity(report.len() + 1);
         out.push(0);
@@ -267,7 +266,7 @@ mod tests {
     #[test]
     fn needs_at_least_one_set() {
         assert!(parse(&[]).is_err());
-        assert!(parse(&["--crc"]).is_err());
+        assert!(parse(&["--zero-crc"]).is_err());
     }
 
     #[test]
@@ -280,13 +279,19 @@ mod tests {
 
     #[test]
     fn parses_options() {
-        match parse(&["--crc", "--all", "--listen", "200", "21:01=1"]).unwrap() {
+        match parse(&["21:01=1"]).unwrap() {
+            Command::Send(o) => assert_eq!(o.crc, Crc::Fill),
+            Command::Help => panic!("expected Send"),
+        }
+        match parse(&["--zero-crc", "--all", "--listen", "200", "21:01=1"]).unwrap() {
             Command::Send(o) => {
-                assert!(o.crc && o.all);
+                assert_eq!(o.crc, Crc::Zero);
+                assert!(o.all);
                 assert_eq!(o.listen, Duration::from_millis(200));
             }
             Command::Help => panic!("expected Send"),
         }
+        assert!(parse(&["--crc", "21:01=1"]).is_err());
         assert!(parse(&["--listen"]).is_err());
         assert!(parse(&["--listen", "x", "21:01=1"]).is_err());
         assert_eq!(parse(&["-h"]), Ok(Command::Help));
