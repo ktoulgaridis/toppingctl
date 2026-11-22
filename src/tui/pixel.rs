@@ -111,8 +111,10 @@ pub enum PixelWidget {
     Meter { db: f64 },
     /// A clip light.
     ClipLight { lit: bool },
-    /// A rounded chip under a label: a pill, a mix tab, a strip title.
+    /// A square lit cap under a label: a button, a mix tab, a strip title.
     Chip { rgb: (u8, u8, u8) },
+    /// A meter's sunken box, under its bar, clip light and labels.
+    Inset,
 }
 
 impl PixelWidget {
@@ -120,6 +122,7 @@ impl PixelWidget {
     /// else 0.
     pub fn z(&self) -> i32 {
         match self {
+            PixelWidget::Inset => -2,
             PixelWidget::Chip { .. } | PixelWidget::Fader { .. } => -1,
             _ => 0,
         }
@@ -142,6 +145,7 @@ enum Key {
     Meter(u16, u16, u16),
     Clip(u16, u16, bool),
     Chip(u16, u16, (u8, u8, u8)),
+    Inset(u16, u16),
 }
 
 fn quantise(v: f64, steps: f64) -> u16 {
@@ -175,6 +179,7 @@ impl PixelSpot {
             PixelWidget::Meter { db } => Key::Meter(w, h, quantise(meter_frac(db), METER_STEPS)),
             PixelWidget::ClipLight { lit } => Key::Clip(w, h, lit),
             PixelWidget::Chip { rgb } => Key::Chip(w, h, rgb),
+            PixelWidget::Inset => Key::Inset(w, h),
         }
     }
 
@@ -184,7 +189,7 @@ impl PixelSpot {
     fn clear(&self, buf: &mut Buffer) {
         let r = self.rect.intersection(buf.area);
         let (x0, x1) = match self.widget {
-            PixelWidget::Chip { .. } => {
+            PixelWidget::Chip { .. } | PixelWidget::Inset => {
                 for y in r.top()..r.bottom() {
                     for x in r.left()..r.right() {
                         buf[(x, y)].set_bg(TermColor::Reset);
@@ -229,6 +234,7 @@ fn draw(key: Key, cell: (u16, u16)) -> RgbaImage {
         Key::Meter(c, r, q) => meter_image_at(c, r, cell, f64::from(q) / METER_STEPS),
         Key::Clip(c, r, lit) => clip_image(c, r, cell, lit),
         Key::Chip(c, r, rgb) => chip_image(c, r, cell, rgb),
+        Key::Inset(c, r) => inset_image(c, r, cell),
     }
 }
 
@@ -754,22 +760,65 @@ pub fn clip_image(cols: u16, rows: u16, cell: (u16, u16), lit: bool) -> RgbaImag
     cv.into_image()
 }
 
-/// A chip in `cols`×`rows` cells: a rounded rect in `rgb`, under a label.
+/// An unlit cap's face and its faint outline.
+const PX_CAP_OFF: Rgb = (26, 28, 39);
+const PX_CAP_EDGE: Rgb = (62, 68, 92);
+/// A meter box's border.
+const PX_INSET_EDGE: Rgb = (44, 47, 64);
+/// A meter box's face (the text form's [`Theme::INSET_BG`]).
+const PX_INSET: Rgb = (20, 21, 30);
+
+/// A button cap in `cols`×`rows` cells, square like an Allen & Heath Xone
+/// lit button. Unlit (`rgb` is [`PX_CHIP`]): a dark recessed cap with a
+/// faint 1-px outline and a shadow under its top edge. Lit: the face in
+/// `rgb` with a soft glow of a few px around it and a highlight along its
+/// top. The label goes on top (z −1).
 pub fn chip_image(cols: u16, rows: u16, cell: (u16, u16), rgb: Rgb) -> RgbaImage {
     let (mut cv, _, ch) = canvas(cols, rows, cell);
     let sy = ch / 24.0;
     let (w, h) = (cv.w as f32, cv.h as f32);
-    cv.fill(
-        Shape::RRect {
-            x0: 1.5,
-            y0: 3.0 * sy,
-            x1: w - 1.5,
-            y1: h - 3.0 * sy,
-            rad: 7.0 * sy,
-        },
-        rgb,
-        1.0,
-    );
+    let (x0, y0, x1, y1) = (3.5, 4.0 * sy + 0.5, w - 3.5, h - 4.0 * sy - 0.5);
+    let rect = |d: f32, top: Option<f32>| Shape::RRect {
+        x0: x0 - d,
+        y0: y0 - d,
+        x1: x1 + d,
+        y1: top.unwrap_or(y1 + d),
+        rad: 0.5 + d.max(0.0),
+    };
+    if rgb == PX_CHIP {
+        cv.fill(rect(1.0, None), PX_CAP_EDGE, 1.0);
+        cv.fill(rect(0.0, None), PX_CAP_OFF, 1.0);
+        cv.fill(rect(0.0, Some(y0 + 2.0 * sy)), (0, 0, 0), 0.4);
+    } else {
+        for k in (1..=3).rev() {
+            cv.fill(rect(k as f32, None), rgb, 0.16);
+        }
+        cv.fill(rect(0.0, None), rgb, 1.0);
+        cv.fill(rect(0.0, Some(y0 + 2.5 * sy)), (255, 255, 255), 0.3);
+    }
+    cv.into_image()
+}
+
+/// A meter's sunken box in `cols`×`rows` cells: a face darker than the
+/// strip, a subtle 1-px border, square but for a 1-px corner, and a shadow
+/// inside its top edge, like a meter bridge set into the panel.
+pub fn inset_image(cols: u16, rows: u16, cell: (u16, u16)) -> RgbaImage {
+    let (mut cv, _, ch) = canvas(cols, rows, cell);
+    let sy = ch / 24.0;
+    let (w, h) = (cv.w as f32, cv.h as f32);
+    let rect = |d: f32, y1: f32| Shape::RRect {
+        x0: 0.5 + d,
+        y0: 0.5 + d,
+        x1: w - 0.5 - d,
+        y1,
+        rad: 1.0,
+    };
+    cv.fill(rect(0.0, h - 0.5), PX_INSET_EDGE, 1.0);
+    cv.fill(rect(1.0, h - 1.5), PX_INSET, 1.0);
+    for k in 0..3 {
+        let y = 1.5 + (k as f32 + 1.0) * 1.5 * sy;
+        cv.fill(rect(1.0, y), (0, 0, 0), 0.18);
+    }
     cv.into_image()
 }
 

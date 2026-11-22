@@ -34,6 +34,8 @@ impl Theme {
     /// 48V, MUTE, clips, a peak near 0.
     pub const WARN: Color = Color::Rgb(236, 110, 96);
     /// The sync dot.
+    /// A meter's sunken box (its "bridge"), a shade under the strip.
+    pub const INSET_BG: Color = Color::Rgb(20, 21, 30);
     pub const OK: Color = Color::Rgb(80, 200, 120);
     /// The knobs' palette (docs/design/knobs): lit arc, unlit arc, rim,
     /// pointer.

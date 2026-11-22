@@ -4,9 +4,13 @@
 //! The screen follows the design reference (docs/design, #34): a header
 //! with the wordmark, then four panels placed like the official app's —
 //! input and mixer on top, loopback and output below — and a line of key
-//! hints. Everything is drawn from the [`State`](crate::state::State); only the input panel and
-//! the mix tabs are clickable in this version (the mixer, loopback and
-//! output controls come with #14 and #15).
+//! hints. Everything is drawn from the [`State`](crate::state::State).
+//! The input panel, the mix tabs and the mixer are clickable; the loopback
+//! and output controls come with #15. The layout scales with the window
+//! (#14): panels, strips, faders, meters and knobs grow and shrink in the
+//! app's proportions, each strip's content one compact group with spare
+//! rows spread evenly. Only absurd sizes (past [`MAX_WIDTH`]×[`MAX_HEIGHT`])
+//! stop growing, centred.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -17,7 +21,10 @@ use ratatui::Frame;
 
 use crate::rate::{format_khz, RATES};
 use crate::state::{Meters, Mix, PbStrip, Source};
-use crate::tui::app::{App, Control, InputControl, MeterId, Modal, Panel, Phase, MAX_GAIN_DB};
+use crate::tui::app::{
+    App, Control, InputControl, MeterId, MixControl, Modal, Panel, Phase, MAX_GAIN_DB,
+    MIX_FADER_MAX_DB,
+};
 use crate::tui::pixel::{chip_rgb, clear_under, PixelLayer, PixelSpot, PixelWidget, GAIN_TICKS};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::dial::{knob_rect, Dial};
@@ -28,10 +35,12 @@ use crate::tui::widgets::pill::{pill, PillKind};
 /// The smallest terminal the full screen is drawn in.
 pub const MIN_WIDTH: u16 = 100;
 pub const MIN_HEIGHT: u16 = 34;
+/// The console grows with the window up to this, a size no real screen
+/// needs; past it the console is centred.
+pub const MAX_WIDTH: u16 = 320;
+pub const MAX_HEIGHT: u16 = 100;
 /// From this header width up, the header shows its long labels.
 const WIDE_HEADER: u16 = 128;
-/// A mix fader's top, in dB.
-const MIX_FADER_MAX_DB: f64 = 6.0;
 
 /// Something clickable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +70,8 @@ pub struct HitMap {
     entries: Vec<(Hit, Rect)>,
     /// The pixel widgets the last render placed (see [`draw_with`]).
     pixels: Vec<PixelSpot>,
+    /// The open modal's box, from the last render.
+    modal: Option<Rect>,
 }
 
 impl HitMap {
@@ -87,6 +98,11 @@ impl HitMap {
             .rev()
             .find(|(h, _)| *h == hit)
             .map(|&(_, r)| r)
+    }
+
+    /// The open modal's box, when one was drawn.
+    pub fn modal_rect(&self) -> Option<Rect> {
+        self.modal
     }
 
     pub fn is_empty(&self) -> bool {
@@ -123,8 +139,9 @@ pub fn draw(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
 /// [`draw`], then, with a pixel layer, the pixel widgets: the layer queues
 /// the kitty commands for what changed (the caller writes them after the
 /// frame, see [`PixelLayer::take_output`]) and the text form under each
-/// placed widget is blanked, labels kept. Not while a modal is open: every
-/// placement goes, so the modal's text stays on top.
+/// placed widget is blanked, labels kept. While a modal is open only the
+/// widgets under its box go, so its text stays on top and the rest of the
+/// screen neither flickers nor gets sent again.
 pub fn draw_with(
     f: &mut Frame,
     app: &App,
@@ -133,13 +150,18 @@ pub fn draw_with(
 ) -> HitMap {
     let hits = draw_text(f, app, meters);
     if let Some(layer) = pixels {
-        let spots = if app.modal().is_none() {
-            hits.pixels()
-        } else {
-            &[]
+        let spots: Vec<PixelSpot> = match hits.modal_rect() {
+            None if app.modal().is_none() => hits.pixels().to_vec(),
+            None => Vec::new(),
+            Some(m) => hits
+                .pixels()
+                .iter()
+                .filter(|s| !s.rect.intersects(m))
+                .cloned()
+                .collect(),
         };
-        layer.update(spots, f.area());
-        clear_under(layer, spots, f.buffer_mut());
+        layer.update(&spots, f.area());
+        clear_under(layer, &spots, f.buffer_mut());
     }
     hits
 }
@@ -266,9 +288,11 @@ fn too_small(buf: &mut Buffer, area: Rect, t: Theme) {
         .render(centered(area, area.width, 2), buf);
 }
 
-/// The full screen: header, the four panels, key hints.
+/// The full screen: header, the four panels, key hints; at most
+/// [`MAX_WIDTH`]×[`MAX_HEIGHT`], centred.
 fn console(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut HitMap) {
     let t = app.theme();
+    let area = centered(area, MAX_WIDTH, MAX_HEIGHT);
     let header = Rect { height: 4, ..area };
     let footer = row(area, area.height - 1);
     let body_h = area.height - 5;
@@ -413,14 +437,50 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut Hit
 }
 
 fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
+    if let Some((strip, _)) = app.editing() {
+        // Renaming takes the keyboard: say so, and how to leave.
+        let mut spans = vec![
+            Span::raw(" "),
+            Span::styled(
+                format!(" rename {} ", MIX_STRIPS[strip]),
+                t.fg_bg(Theme::PILL_ON_FG, Theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+        ];
+        for (k, what) in [("type", "the name"), ("enter", "keep"), ("esc", "cancel")] {
+            spans.push(Span::styled(k, t.focus()));
+            spans.push(Span::styled(format!(" {what}   "), t.dim()));
+        }
+        Line::from(spans).render(area, buf);
+        return;
+    }
     if let Some(notice) = app.notice() {
         Line::from(vec![Span::raw(" "), Span::styled(notice, t.heading())]).render(area, buf);
+        return;
+    }
+    if let Control::Mixer(_) = app.focus() {
+        // On a strip's name nothing adjusts: point at the controls.
+        let mut spans = vec![Span::raw(" ")];
+        for (k, what) in [
+            ("↓", "into the strip's controls"),
+            ("←→", "strip"),
+            ("enter", "rename"),
+            ("tab 1-4", "panel"),
+            ("a b c", "mix"),
+            ("?", "help"),
+            ("q", "quit"),
+        ] {
+            spans.push(Span::styled(k, t.focus()));
+            spans.push(Span::styled(format!(" {what}   "), t.dim()));
+        }
+        Line::from(spans).render(area, buf);
         return;
     }
     let hints = [
         ("tab 1-4", "panel"),
         ("↑↓←→", "move"),
-        ("←→", "gain ⇧×10"),
+        ("←→", "adjust ⇧×10"),
         ("space", "toggle"),
         ("0", "reset"),
         ("a b c", "mix"),
@@ -517,10 +577,18 @@ fn columns(area: Rect, n: u16) -> Vec<Rect> {
         .collect()
 }
 
-/// The largest input gain and Monitor Mix knob, in cells (about 12×6).
-const GAIN_KNOB: (u16, u16) = (12, 6);
-/// The largest pan knob, in cells (about 8×4).
-const PAN_KNOB: (u16, u16) = (8, 4);
+/// A round knob (two columns a row) about `cols` wide, at most `rows`
+/// tall and at least 2: its (cols, rows).
+fn knob_size(cols: u16, rows: u16) -> (u16, u16) {
+    let r = (cols / 2).min(rows).max(2);
+    (r * 2, r)
+}
+
+/// A pan knob for a dial column `half` wide: about 78 % of it (#34's
+/// filled the column), and at most a fifth of the strip's `height`.
+fn pan_knob(half: u16, height: u16) -> (u16, u16) {
+    knob_size(half * 39 / 50, height / 5)
+}
 
 /// A knob to draw: the Braille knob as text, and its cells recorded for
 /// the pixel layer.
@@ -585,18 +653,37 @@ fn meter(
     hits.pixel(bar, PixelWidget::Meter { db });
 }
 
+/// A meter's sunken box over `rect`: a darker background in the text form,
+/// and an inset image under the text for the pixel layer.
+fn inset(buf: &mut Buffer, rect: Rect, t: Theme, hits: &mut HitMap) {
+    let rect = rect.intersection(buf.area);
+    if t.is_color() {
+        for y in rect.top()..rect.bottom() {
+            for x in rect.left()..rect.right() {
+                buf[(x, y)].set_bg(Theme::INSET_BG);
+            }
+        }
+    }
+    hits.pixel(rect, PixelWidget::Inset);
+}
+
 /// A fader as text, recorded for the pixel layer over the cells the text
 /// fader takes.
+#[allow(clippy::too_many_arguments)]
 fn fader(
     buf: &mut Buffer,
     area: Rect,
     db: f64,
     max_db: f64,
     labels: bool,
+    focused: bool,
     t: Theme,
     hits: &mut HitMap,
 ) {
-    Fader::new(db, max_db, t).labels(labels).render(area, buf);
+    Fader::new(db, max_db, t)
+        .labels(labels)
+        .focused(focused)
+        .render(area, buf);
     hits.pixel(
         Fader::rect(labels, area),
         PixelWidget::Fader { db, max_db, labels },
@@ -668,20 +755,28 @@ fn draw_input_strip(
     if r.height < 2 || r.width < 8 {
         return;
     }
+    // The meter takes the strip's height; beside it the six switches and
+    // the gain knob are spread evenly down to the meter's foot.
+    // The meter column, in its own sunken box: the peak readout on top,
+    // then the clip light over the bar, the scale beside it.
+    let meter_h = r.height;
     let db = meters.inputs[ch];
     let x0 = r.x + 1;
     let lit = app.clips().lit(MeterId::Input(ch));
-    meter(
-        buf,
-        Rect::new(x0, r.y, 2, r.height),
-        db,
-        2,
-        Some(lit),
-        t,
-        hits,
-    );
-    Scale::new(&INPUT_SCALE_DB, t).render(Rect::new(x0 + 2, r.y + 1, 3, r.height - 1), buf);
-    put(buf, r, x0 + 3, r.y, &peak_text(db), t.peak(db));
+    put(buf, r, x0, r.y, &peak_text(db), t.peak(db));
+    if meter_h >= 3 {
+        meter(
+            buf,
+            Rect::new(x0, r.y + 1, 2, meter_h - 1),
+            db,
+            2,
+            Some(lit),
+            t,
+            hits,
+        );
+        Scale::new(&INPUT_SCALE_DB, t).render(Rect::new(x0 + 2, r.y + 2, 3, meter_h - 2), buf);
+    }
+    inset(buf, Rect::new(r.x, r.y, 7, meter_h), t, hits);
 
     // The switches, top to bottom, then the gain knob at the bottom.
     let right = Rect {
@@ -702,31 +797,41 @@ fn draw_input_strip(
         (InputControl::Mute, "MUTE", input.mute, PillKind::Danger),
         (InputControl::Phase, "Ø", input.phase, PillKind::Normal),
     ];
+    // The gain knob: about 0.49 of the strip's width (78 % of #34's
+    // 0.63), round, leaving rows for the switches.
+    let avail = r.height.saturating_sub(1);
+    let (kc, kr) = knob_size(r.width * 49 / 100, avail.saturating_sub(7));
+    let knob_rows = if avail >= 6 + 3 { kr + 1 } else { 0 };
+    // Spare rows go evenly into the six gaps after each switch (the
+    // remainder to the last ones, so the knob never crowds the switches).
+    let spare = avail.saturating_sub(6 + knob_rows);
+    let gap = |i: u16| spare / 6 + u16::from(i >= 6 - spare % 6);
+    let mut ys = Vec::with_capacity(7);
+    let mut y = r.y + 1;
+    for i in 0..7 {
+        ys.push(y);
+        y += 1 + gap(i);
+    }
     for (i, (kind, label, on, pk)) in switches.into_iter().enumerate() {
-        let y = r.y + 1 + i as u16;
+        let y = ys[i];
         let span = pill(&format!("{label:^4}"), on, pk, focused(kind), t);
         let rects = put_centered(buf, right, y, &[span], hits);
         hits.push(Hit::Control(Control::Input { ch, kind }), rects[0]);
     }
-    // The gain knob takes every row under the switches: dial, then value.
-    let knob_y = r.y + 7;
-    if r.bottom() >= knob_y + 4 {
-        // From just right of the scale to the edge: as wide as the strip
-        // allows (about 12×6 cells at 120 columns).
-        let kx = x0 + 5;
-        let knob = Rect::new(
-            kx,
-            knob_y,
-            r.right().saturating_sub(kx),
-            r.bottom() - knob_y,
-        );
+    // The gain knob after the last switch, at the same spacing: dial,
+    // then value.
+    let knob_y = ys[6];
+    if knob_rows > 0 && r.bottom() >= knob_y + knob_rows {
+        // From just right of the meter box to the edge, the knob centred.
+        let kx = x0 + 6;
+        let knob = Rect::new(kx, knob_y, r.right().saturating_sub(kx), knob_rows);
         let gain = input.gain_db.min(MAX_GAIN_DB);
         let k = Knob {
             value: Some(f64::from(gain) / f64::from(MAX_GAIN_DB)),
             label: Some(gain_text(gain)),
             focused: focused(InputControl::Gain),
             dimmed: false,
-            max: GAIN_KNOB,
+            max: (kc, kr),
             ticks: GAIN_TICKS,
             bipolar: false,
         };
@@ -793,6 +898,30 @@ fn draw_mixer_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hi
     }
 }
 
+/// Mixer strip `strip`'s name: the user's, else the default; while it is
+/// being edited, the text so far and a cursor.
+fn strip_name(app: &App, strip: usize) -> String {
+    if let Some((i, text)) = app.editing() {
+        if i == strip {
+            return format!("{text}▏");
+        }
+    }
+    app.state().strip_names[strip]
+        .clone()
+        .unwrap_or_else(|| MIX_STRIPS[strip].to_string())
+}
+
+/// The mixer strips' default names.
+const MIX_STRIPS: [&str; 4] = ["IN 1+2", "PB 1/2", "PB 3/4", "PB 5/6"];
+
+/// Whether mixer strip `strip` (its name or one of its controls) has focus.
+fn strip_focused(app: &App, strip: usize) -> bool {
+    match app.focus() {
+        Control::Mixer(i) | Control::Mix { strip: i, .. } => i == strip,
+        _ => false,
+    }
+}
+
 /// The dB value of a strip: `muted` in red when muted.
 fn value_span(db: f64, mute: bool, t: Theme, unit: bool) -> Span<'static> {
     if mute {
@@ -807,19 +936,41 @@ fn value_span(db: f64, mute: bool, t: Theme, unit: bool) -> Span<'static> {
     Span::styled(s, t.heading())
 }
 
-/// Rows for a mix strip's two pan dials and their values: more when the
-/// strip is tall.
+/// Rows for a mix strip's two pan dials and their values: the pan knob
+/// (it scales with the strip) and the label.
 fn dial_rows(r: Rect) -> u16 {
-    if r.height >= 16 {
-        5
-    } else {
-        4
+    pan_knob(r.width / 2, r.height).1 + 1
+}
+
+/// A mix strip's content, top to bottom: the dials (`d` rows), LINK, the
+/// value, the fader (every row left) and the switches (`rows`). Returns
+/// the group's area and the fader's height.
+fn mix_group(r: Rect, d: u16, rows: u16) -> (Rect, u16) {
+    (r, r.height.saturating_sub(d + 2 + rows))
+}
+
+/// `r` cut to `h` rows, centred vertically.
+fn centered_rows(r: Rect, h: u16) -> Rect {
+    let h = h.min(r.height);
+    Rect {
+        y: r.y + (r.height - h) / 2,
+        height: h,
+        ..r
     }
 }
 
-/// Two pan dials side by side with their values under them, in the top
-/// `rows` rows of `area`.
-fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2], rows: u16, hits: &mut HitMap) {
+/// Mixer strip `strip`'s two pan dials side by side with their values
+/// under them, in the top `rows` rows of `area`; each is a click target.
+#[allow(clippy::too_many_arguments)]
+fn pan_dials(
+    buf: &mut Buffer,
+    area: Rect,
+    app: &App,
+    strip: usize,
+    pans: [f64; 2],
+    rows: u16,
+    hits: &mut HitMap,
+) {
     let halves = columns(
         Rect {
             height: rows,
@@ -827,21 +978,27 @@ fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2], rows: u16, 
         },
         2,
     );
-    for (h, p) in halves.into_iter().zip(pans) {
+    for (ch, (h, p)) in halves.into_iter().zip(pans).enumerate() {
+        let c = Control::Mix {
+            strip,
+            ctl: MixControl::Pan(ch),
+        };
         let k = Knob {
             value: Some(p),
             label: Some(pan_text(p)),
-            focused: false,
+            focused: app.focus() == c,
             dimmed: false,
-            max: PAN_KNOB,
+            max: pan_knob(h.width, area.height),
             ticks: 0,
             bipolar: true,
         };
-        k.draw(buf, h, t, hits);
+        k.draw(buf, h, app.theme(), hits);
+        hits.push(Hit::Control(c), h);
     }
 }
 
-/// L meter · fader · R meter, centred in `area`.
+/// L meter · fader · R meter, centred in `area`. Returns the fader's
+/// cells.
 #[allow(clippy::too_many_arguments)]
 fn stereo_body(
     buf: &mut Buffer,
@@ -851,12 +1008,13 @@ fn stereo_body(
     max_db: f64,
     levels: [f64; 2],
     clips: [bool; 2],
+    focused: bool,
     hits: &mut HitMap,
-) {
+) -> Rect {
     let fw = Fader::width(true, area.width.saturating_sub(4));
     let total = fw + 4;
     if area.width < total || area.height == 0 {
-        return;
+        return Rect::default();
     }
     let x = area.x + (area.width - total) / 2;
     let col = |x: u16, w: u16| Rect {
@@ -865,7 +1023,9 @@ fn stereo_body(
         ..area
     };
     meter(buf, col(x, 1), levels[0], 1, Some(clips[0]), t, hits);
-    fader(buf, col(x + 2, fw), db, max_db, true, t, hits);
+    inset(buf, col(x, 1), t, hits);
+    let f = col(x + 2, fw);
+    fader(buf, f, db, max_db, true, focused, t, hits);
     meter(
         buf,
         col(x + 3 + fw, 1),
@@ -875,6 +1035,13 @@ fn stereo_body(
         t,
         hits,
     );
+    inset(buf, col(x + 3 + fw, 1), t, hits);
+    Fader::rect(true, f)
+}
+
+/// The control of mixer strip `strip`.
+fn mix_ctl(strip: usize, ctl: MixControl) -> Control {
+    Control::Mix { strip, ctl }
 }
 
 fn draw_pb_strip(
@@ -887,33 +1054,44 @@ fn draw_pb_strip(
     hits: &mut HitMap,
 ) {
     let t = app.theme();
-    let name = ["PB 1/2", "PB 3/4", "PB 5/6"][i];
-    let me = Control::Mixer(i + 1);
-    hits.push(Hit::Focus(me), area);
-    let r = strip_box(buf, area, t, name, app.focus() == me, hits);
+    let strip = i + 1;
+    let focus = app.focus();
+    hits.push(Hit::Focus(Control::Mixer(strip)), area);
+    let r = strip_box(
+        buf,
+        area,
+        t,
+        &strip_name(app, strip),
+        strip_focused(app, strip),
+        hits,
+    );
     if r.height < 8 {
         return;
     }
     let d = dial_rows(r);
-    pan_dials(buf, r, t, [s.pan_l, s.pan_r], d, hits);
-    put_centered(
+    let rows = switch_rows(r);
+    let (g, fader_h) = mix_group(r, d, rows);
+    pan_dials(buf, g, app, strip, [s.pan_l, s.pan_r], d, hits);
+    let link = mix_ctl(strip, MixControl::Link);
+    let rects = put_centered(
         buf,
-        r,
-        r.y + d,
-        &[pill("LINK", s.link, PillKind::Normal, false, t)],
+        g,
+        g.y + d,
+        &[pill("LINK", s.link, PillKind::Normal, focus == link, t)],
         hits,
     );
+    hits.push(Hit::Control(link), rects[0]);
     put_centered(
         buf,
-        r,
-        r.y + d + 1,
+        g,
+        g.y + d + 1,
         &[value_span(s.fader_db, s.mute, t, true)],
         hits,
     );
-    let rows = switch_rows(r);
-    let body = Rect::new(r.x, r.y + d + 2, r.width, r.height - d - 2 - rows);
+    let body = Rect::new(g.x, g.y + d + 2, g.width, fader_h);
     let clips = [0, 1].map(|c| app.clips().lit(MeterId::Playback(i, c)));
-    stereo_body(
+    let fc = mix_ctl(strip, MixControl::Fader(0));
+    let f = stereo_body(
         buf,
         body,
         t,
@@ -921,9 +1099,11 @@ fn draw_pb_strip(
         MIX_FADER_MAX_DB,
         meters.playback[i],
         clips,
+        focus == fc,
         hits,
     );
-    strip_switches(buf, r, t, [s.phase, s.solo, s.mute], rows, hits);
+    hits.push(Hit::Control(fc), f);
+    strip_switches(buf, g, app, strip, 0, [s.phase, s.solo, s.mute], rows, hits);
 }
 
 /// Rows for a mix strip's Ø / SOLO / MUTE: stacked when the strip is tall
@@ -936,38 +1116,54 @@ fn switch_rows(r: Rect) -> u16 {
     }
 }
 
-/// Ø / SOLO / MUTE (`on` in that order) at the bottom of `r`, in `rows`
-/// rows (3 or 1).
+/// Channel `ch`'s Ø / SOLO / MUTE of mixer strip `strip` (`on` in that
+/// order) at the bottom of `r`, in `rows` rows (3 or 1); each is a click
+/// target.
+#[allow(clippy::too_many_arguments)]
 fn strip_switches(
     buf: &mut Buffer,
     r: Rect,
-    t: Theme,
+    app: &App,
+    strip: usize,
+    ch: usize,
     on: [bool; 3],
     rows: u16,
     hits: &mut HitMap,
 ) {
+    let t = app.theme();
     let kinds = [PillKind::Normal, PillKind::Normal, PillKind::Danger];
+    let ctls = [
+        MixControl::Phase(ch),
+        MixControl::Solo(ch),
+        MixControl::Mute(ch),
+    ];
+    let focused = |k: usize| app.focus() == mix_ctl(strip, ctls[k]);
     if rows >= 3 {
         for (k, label) in ["Ø", "SOLO", "MUTE"].into_iter().enumerate() {
-            let span = pill(&format!("{label:^4}"), on[k], kinds[k], false, t);
-            put_centered(buf, r, r.bottom() - 3 + k as u16, &[span], hits);
+            let span = pill(&format!("{label:^4}"), on[k], kinds[k], focused(k), t);
+            let rects = put_centered(buf, r, r.bottom() - 3 + k as u16, &[span], hits);
+            hits.push(Hit::Control(mix_ctl(strip, ctls[k])), rects[0]);
         }
         return;
     }
+    // One row: tight pills on a narrow IN 1+2 half, padded ones else.
+    let narrow = strip == 0;
     let mut spans = Vec::new();
     for (k, label) in ["Ø", "S", "M"].into_iter().enumerate() {
         if k > 0 {
             spans.push(Span::raw(" "));
         }
-        spans.push(pill(label, on[k], kinds[k], false, t));
+        let p = pill(label, on[k], kinds[k], focused(k), t);
+        spans.push(if narrow {
+            Span::styled(label.to_string(), p.style)
+        } else {
+            p
+        });
     }
-    put_centered(buf, r, r.bottom() - 1, &spans, hits);
-}
-
-/// A pill with no padding, for tight rows.
-fn tight(label: &str, on: bool, kind: PillKind, t: Theme) -> Span<'static> {
-    let p = pill(label, on, kind, false, t);
-    Span::styled(label.to_string(), p.style)
+    let rects = put_centered(buf, r, r.bottom() - 1, &spans, hits);
+    for k in 0..3 {
+        hits.push(Hit::Control(mix_ctl(strip, ctls[k])), rects[2 * k]);
+    }
 }
 
 fn draw_in12_strip(
@@ -979,25 +1175,36 @@ fn draw_in12_strip(
     hits: &mut HitMap,
 ) {
     let t = app.theme();
+    let focus = app.focus();
     let (link, in1, in2) = (mix.link, &mix.in1, &mix.in2);
-    let me = Control::Mixer(0);
-    hits.push(Hit::Focus(me), area);
-    let r = strip_box(buf, area, t, "IN 1+2", app.focus() == me, hits);
+    hits.push(Hit::Focus(Control::Mixer(0)), area);
+    let r = strip_box(
+        buf,
+        area,
+        t,
+        &strip_name(app, 0),
+        strip_focused(app, 0),
+        hits,
+    );
     if r.height < 8 {
         return;
     }
     // Link puts IN1 hard L and IN2 hard R: show what is in effect.
     let pans = if link { [0.0, 1.0] } else { [in1.pan, in2.pan] };
     let d = dial_rows(r);
-    pan_dials(buf, r, t, pans, d, hits);
-    put_centered(
+    let rows = switch_rows(r);
+    let (g, fader_h) = mix_group(r, d, rows);
+    pan_dials(buf, g, app, 0, pans, d, hits);
+    let lc = mix_ctl(0, MixControl::Link);
+    let rects = put_centered(
         buf,
-        r,
-        r.y + d,
-        &[pill("LINK", link, PillKind::Disabled, false, t)],
+        g,
+        g.y + d,
+        &[pill("LINK", link, PillKind::Disabled, focus == lc, t)],
         hits,
     );
-    let halves = columns(row(r, d + 1), 2);
+    hits.push(Hit::Control(lc), rects[0]);
+    let halves = columns(row(g, d + 1), 2);
     for (h, s) in halves.iter().zip([in1, in2]) {
         put_centered(
             buf,
@@ -1010,8 +1217,7 @@ fn draw_in12_strip(
 
     // M1 · F1 · scale · F2 · M2: one scale between two mono faders, tick
     // marks on both sides of each.
-    let rows = switch_rows(r);
-    let body = Rect::new(r.x, r.y + d + 2, r.width, r.height - d - 2 - rows);
+    let body = Rect::new(g.x, g.y + d + 2, g.width, fader_h);
     let total = 13;
     if body.width >= total && body.height > 0 {
         let x = body.x + (body.width - total) / 2;
@@ -1026,15 +1232,19 @@ fn draw_in12_strip(
         {
             let lit = app.clips().lit(MeterId::Input(k));
             meter(buf, col(mx, 1), meters.inputs[k], 1, Some(lit), t, hits);
+            inset(buf, col(mx, 1), t, hits);
+            let fc = mix_ctl(0, MixControl::Fader(k));
             fader(
                 buf,
                 col(fx, 3),
                 s.fader_db,
                 MIX_FADER_MAX_DB,
                 false,
+                focus == fc,
                 t,
                 hits,
             );
+            hits.push(Hit::Control(fc), Fader::rect(false, col(fx, 3)));
         }
         for (y, label) in Fader::ticks(MIX_FADER_MAX_DB, body.height) {
             put(
@@ -1047,33 +1257,13 @@ fn draw_in12_strip(
             );
         }
     }
-    for (h, s) in halves.iter().zip([in1, in2]) {
-        if rows >= 3 {
-            let col = Rect {
-                y: r.y,
-                height: r.height,
-                ..*h
-            };
-            strip_switches(buf, col, t, [s.phase, s.solo, s.mute], rows, hits);
-            continue;
-        }
-        let h = Rect {
-            y: r.bottom() - 1,
+    for (k, (h, s)) in halves.iter().zip([in1, in2]).enumerate() {
+        let col = Rect {
+            y: g.y,
+            height: g.height,
             ..*h
         };
-        put_centered(
-            buf,
-            h,
-            h.y,
-            &[
-                tight("Ø", s.phase, PillKind::Normal, t),
-                Span::raw(" "),
-                tight("S", s.solo, PillKind::Normal, t),
-                Span::raw(" "),
-                tight("M", s.mute, PillKind::Danger, t),
-            ],
-            hits,
-        );
+        strip_switches(buf, col, app, 0, k, [s.phase, s.solo, s.mute], rows, hits);
     }
 }
 
@@ -1132,6 +1322,7 @@ fn draw_loopback_panel(
             0.0,
             meters.loopbacks[i],
             clips,
+            false,
             hits,
         );
     }
@@ -1221,6 +1412,7 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
             0.0,
             meters.output,
             clips,
+            false,
             hits,
         );
     }
@@ -1230,15 +1422,18 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
     // click target.
     let r = strip_box(buf, mon_area, t, "MONITOR MIX", focused(1), hits);
     if r.height >= 6 {
-        // The dial takes what the two text rows leave.
-        let dial_h = r.height - 3;
+        // The dial, about 0.47 of the box's width (78 % of #34's), and
+        // its two text rows, centred.
+        let (kc, kr) = knob_size(r.width * 47 / 100, r.height - 3);
+        let dial_h = kr;
+        let r = centered_rows(r, dial_h + 3);
         let balance = state.readout.monitor_mix;
         let k = Knob {
             value: balance.map(|v| f64::from(v.clamp(0, 100)) / 100.0),
             label: None,
             focused: false,
             dimmed: true,
-            max: GAIN_KNOB,
+            max: (kc, kr),
             ticks: 0,
             bipolar: true,
         };
@@ -1267,11 +1462,12 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
     // that software never sets.
     let r = strip_box(buf, phone_area, t, "PHONE", focused(2), hits);
     if r.height >= 4 {
-        put_centered(buf, r, r.y + 1, &[Span::styled("level", t.dim())], hits);
+        let r = centered_rows(r, 2);
+        put_centered(buf, r, r.y, &[Span::styled("level", t.dim())], hits);
         let rects = put_centered(
             buf,
             r,
-            r.y + 2,
+            r.y + 1,
             &[
                 pill("+17 dBu", state.phone_gain, PillKind::Normal, false, t),
                 Span::raw(" "),
@@ -1296,8 +1492,16 @@ pub fn monitor_mix_text(balance: Option<i32>) -> String {
 }
 
 /// A centred modal box; returns its inner area.
-fn modal_box(buf: &mut Buffer, area: Rect, t: Theme, title: &str, w: u16, h: u16) -> Rect {
+fn modal_box(
+    buf: &mut Buffer,
+    area: Rect,
+    t: Theme,
+    title: &str,
+    (w, h): (u16, u16),
+    hits: &mut HitMap,
+) -> Rect {
     let r = centered(area, w, h);
+    hits.modal = Some(r);
     Clear.render(r, buf);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -1321,7 +1525,7 @@ fn confirm(
     let text_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
     let w = (text_w + 8).max(40);
     let h = lines.len() as u16 + 6;
-    let inner = modal_box(buf, area, t, title, w, h);
+    let inner = modal_box(buf, area, t, title, (w, h), hits);
     for (i, line) in lines.iter().enumerate() {
         put(
             buf,
@@ -1362,7 +1566,7 @@ fn rate_list(
     hits: &mut HitMap,
 ) {
     let h = RATES.len() as u16 + 6;
-    let inner = modal_box(buf, area, t, " Sample rate ", 30, h);
+    let inner = modal_box(buf, area, t, " Sample rate ", (30, h), hits);
     for (i, &r) in RATES.iter().enumerate() {
         let mark = if current == Some(r) { "●" } else { " " };
         let line = format!(" {mark} {:<10}", format_khz(Some(r)));
@@ -1392,26 +1596,27 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
     let keys: &[(&str, &str)] = &[
         ("Tab  Shift-Tab", "next / previous panel"),
         ("1  2  3  4", "input, mixer, loopback, output"),
-        ("↑ ↓", "move along an input"),
-        ("← →", "next strip; on a gain knob −1 / +1 dB"),
-        ("Shift ← →", "gain −10 / +10 dB"),
-        ("0", "reset the gain to −0 dB"),
+        ("↑ ↓", "move along an input, or into a mixer strip"),
+        ("← →", "next strip; on a knob or fader: 1 dB / 5 %"),
+        ("Shift ← →", "the same ×10"),
+        ("0", "reset the knob or fader (gain −0 dB, fader 0 dB)"),
         ("space", "toggle the focused switch"),
+        ("enter", "on a mixer strip's name: rename it"),
         ("a  b  c", "show mix A / B / C"),
         ("r", "sample rate list (sets it through PipeWire)"),
         ("?", "this help"),
         ("q  Ctrl-C", "quit"),
         ("", ""),
         ("click", "focus a strip; flip a switch; pick a mix"),
-        ("wheel", "turn a knob (Shift ×10)"),
-        ("drag", "turn a knob (up / down)"),
-        ("double-click", "reset a knob"),
+        ("wheel", "turn a knob, move a fader (Shift ×10)"),
+        ("drag", "turn a knob, move a fader (up / down)"),
+        ("double-click", "reset a knob or fader"),
         ("", ""),
         ("", "PHONE: space or a click sets the level switch"),
-        ("", "mixer, loopback, output: shown, set in a later version"),
+        ("", "loopback, output: shown, set in a later version"),
     ];
     let h = keys.len() as u16 + 6;
-    let inner = modal_box(buf, area, t, " Help ", 80, h);
+    let inner = modal_box(buf, area, t, " Help ", (80, h), hits);
     for (i, (k, what)) in keys.iter().enumerate() {
         let y = inner.y + 1 + i as u16;
         put(buf, inner, inner.x + 3, y, k, t.heading());

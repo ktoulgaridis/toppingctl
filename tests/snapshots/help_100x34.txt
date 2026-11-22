@@ -4,31 +4,31 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭┤¹input├─╭ Help ────────────────────────────────────────────────────────────────────────╮─────────╮
 │╭───── IN│                                                                              │ 5/6 ───╮│
-││ ▔▔ −18 │   Tab  Shift-Tab   next / previous panel                                     │ ⢠⢖⠭⠭⡲⡄ ││
-││ ▕   0  │   1  2  3  4       input, mixer, loopback, output                            │ ⡇⡇ ⢄⢸⢸ ││
-││ ▕  −6  │   ↑ ↓              move along an input                                       │ ⠘⠊⠒⠒⠑⠃ ││
-││ ▕ −12  │   ← →              next strip; on a gain knob −1 / +1 dB                     │  R100  ││
-││ ▃▃     │   Shift ← →        gain −10 / +10 dB                                         │INK     ││
-││ ██−24  │   0                reset the gain to −0 dB                                   │ dB     ││
-││ ██     │   space            toggle the focused switch                                 │┃     ▔ ││
-││ ██   ⢀⡴│   a  b  c          show mix A / B / C                                        │┃ 0   ▕ ││
-││ ██−36⣾⠱│   r                sample rate list (sets it through PipeWire)               │┃ −6  ▕ ││
-││ ██   ⢿⡰│   ?                this help                                                 │┃ −12 ▕ ││
-││ ██−48⠈⠃│   q  Ctrl-C        quit                                                      │┃ −24 ▕ ││
-││ ██     │                                                                              │●━−∞  ▕ ││
-││ ██−60 +│   click            focus a strip; flip a switch; pick a mix                  │S   M   ││
-│╰────────│   wheel            turn a knob (Shift ×10)                                   │────────╯│
-╰─────────│   drag             turn a knob (up / down)                                   │─────────╯
-╭┤³loopbac│   double-click     reset a knob                                              │─────────╮
-│╭── LOOP │                                                                              │NE ─────╮│
-││   PB 3/│                    PHONE: space or a click sets the level switch             │        ││
-││  LINK  │                    mixer, loopback, output: shown, set in a later version    │el      ││
-││    −0.0│                                                                              │  0 dBu ││
-││▔   0━━●│                                 [Esc] close                                  │        ││
-││▕  −6  ┃│                                                                              │        ││
-││▄ −12  ┃╰──────────────────────────────────────────────────────────────────────────────╯        ││
-││█ −24  ┃  −24 █││▕ −24  ┃  −24 ▕││││   █ −24  ┃  −24 █    ││                 ││                 ││
-││█  −∞  ┃  −∞  █││▕  −∞  ┃  −∞  ▕││││   █  −∞  ┃  −∞  █    ││       +23       ││                 ││
+││ −18 pk │   Tab  Shift-Tab   next / previous panel                                     │  ⣔⠙⠋⣢  ││
+││ ▔▔     │   1  2  3  4       input, mixer, loopback, output                            │  ⠫⠠⠕⠝  ││
+││ ▕   0  │   ↑ ↓              move along an input, or into a mixer strip                │  R100  ││
+││ ▕  −6  │   ← →              next strip; on a knob or fader: 1 dB / 5 %                │INK     ││
+││ ▕ −12  │   Shift ← →        the same ×10                                              │ dB     ││
+││ ▅▅     │   0                reset the knob or fader (gain −0 dB, fader 0 dB)          │┃     ▔ ││
+││ ██−24  │   space            toggle the focused switch                                 │┃ 0   ▕ ││
+││ ██     │   enter            on a mixer strip's name: rename it                        │┃ −6  ▕ ││
+││ ██−36  │   a  b  c          show mix A / B / C                                        │┃     ▕ ││
+││ ██     │   r                sample rate list (sets it through PipeWire)               │┃ −12 ▕ ││
+││ ██−48  │   ?                this help                                                 │┃ −24 ▕ ││
+││ ██     │   q  Ctrl-C        quit                                                      │●━−∞  ▕ ││
+││ ██−60  │                                                                              │S   M   ││
+│╰────────│   click            focus a strip; flip a switch; pick a mix                  │────────╯│
+╰─────────│   wheel            turn a knob, move a fader (Shift ×10)                     │─────────╯
+╭┤³loopbac│   drag             turn a knob, move a fader (up / down)                     │─────────╮
+│╭── LOOP │   double-click     reset a knob or fader                                     │NE ─────╮│
+││   PB 3/│                                                                              │        ││
+││  LINK  │                    PHONE: space or a click sets the level switch             │        ││
+││    −0.0│                    loopback, output: shown, set in a later version           │        ││
+││▔   0━━●│                                                                              │el      ││
+││▕  −6  ┃│                                 [Esc] close                                  │  0 dBu ││
+││▄ −12  ┃│                                                                              │        ││
+││█ −24  ┃╰──────────────────────────────────────────────────────────────────────────────╯        ││
+││█  −∞  ┃  −∞  █││▕  −∞  ┃  −∞  ▕││││   █  −∞  ┃  −∞  █    ││                 ││                 ││
 │╰───────────────╯╰───────────────╯││╰──────────────────────╯╰─────────────────╯╰─────────────────╯│
 ╰──────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯
- tab 1-4 panel   ↑↓←→ move   ←→ gain ⇧×10   space toggle   0 reset   a b c mix   ? help   q quit
+ tab 1-4 panel   ↑↓←→ move   ←→ adjust ⇧×10   space toggle   0 reset   a b c mix   ? help   q quit

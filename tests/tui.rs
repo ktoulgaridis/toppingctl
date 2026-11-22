@@ -1066,8 +1066,10 @@ fn panel_focus_reaches_every_strip() {
         assert!(app.handle_key(key(KeyCode::Right)).is_empty());
         assert_eq!(app.focus(), Control::Mixer(want));
     }
-    for k in [ch(' '), ch('0'), key(KeyCode::Up), key(KeyCode::Enter)] {
-        assert!(app.handle_key(k).is_empty(), "the mixer is not wired yet");
+    // On a strip's name (#14: Enter renames it, see tests/tui_mixer.rs)
+    // these change nothing.
+    for k in [ch(' '), ch('0'), key(KeyCode::Up)] {
+        assert!(app.handle_key(k).is_empty());
     }
     app.handle_key(ch('4'));
     app.handle_key(key(KeyCode::Right));
@@ -1106,7 +1108,8 @@ fn panel_focus_reaches_every_strip() {
     }
     for c in targets {
         let r = hits.rect(Hit::Focus(c)).unwrap_or_else(|| panic!("{c:?}"));
-        let a = app.handle_mouse(mouse(down, r.x + 2, r.bottom() - 2, none), &hits);
+        // On the strip's border: inside, the mixer's pills are controls (#14).
+        let a = app.handle_mouse(mouse(down, r.x, r.bottom() - 2, none), &hits);
         assert!(a.is_empty());
         assert_eq!(app.focus(), c);
     }
@@ -1326,6 +1329,7 @@ fn kind(w: &toppingctl::tui::pixel::PixelWidget) -> &'static str {
         W::Meter { .. } => "meter",
         W::ClipLight { .. } => "clip",
         W::Chip { .. } => "chip",
+        W::Inset => "inset",
     }
 }
 
@@ -1358,10 +1362,14 @@ fn pixel_widgets_in_kitty() {
     for s in spots {
         let p = placed
             .iter()
-            .find(|p| (p.x, p.y) == (s.rect.x, s.rect.y))
+            // A meter's box shares its corner with the clip light: match
+            // the size too.
+            .find(|p| {
+                (p.x, p.y, p.cols, p.rows) == (s.rect.x, s.rect.y, s.rect.width, s.rect.height)
+            })
             .unwrap_or_else(|| panic!("no placement for {s:?}"));
-        assert_eq!((p.cols, p.rows), (s.rect.width, s.rect.height), "{s:?}");
         let z = match kind(&s.widget) {
+            "inset" => -2,
             "chip" | "fader" => -1,
             _ => 0,
         };
@@ -1582,18 +1590,26 @@ fn pixel_widgets_redraw() {
     assert!(out.starts_with("\x1b_Ga=d,d=A,q=2\x1b\\"), "{out:?}");
     assert!(placements(&out).is_empty());
 
-    // Back to full size, then a modal: every placement is deleted so its
-    // text stays on top, and the text widgets are drawn under it.
+    // Back to full size, then a modal: only the placements under its box
+    // are deleted so its text stays on top (#37: the rest no longer
+    // flickers); nothing new is placed or sent.
     draw_pixels(&app, &meters, 120, 40, &mut layer);
     let built = layer.built();
     app.handle_key(ch('?'));
-    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let (_, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let modal = hits.modal_rect().unwrap();
+    let under = hits
+        .pixels()
+        .iter()
+        .filter(|s| s.rect.intersects(modal))
+        .count();
+    assert!(under > 0 && under < all);
     assert!(placements(&out).is_empty());
-    assert_eq!(count(&out, "d"), all);
-    // Closed: placed again from the cache.
+    assert_eq!(count(&out, "d"), under);
+    // Closed: those placed again from the cache.
     app.handle_key(key(KeyCode::Esc));
     let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
-    assert_eq!(placements(&out).len(), all);
+    assert_eq!(placements(&out).len(), under);
     assert_eq!(count(&out, "t"), 0);
     assert_eq!(layer.built(), built);
 
