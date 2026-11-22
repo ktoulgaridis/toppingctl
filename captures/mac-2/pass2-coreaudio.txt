@@ -1,0 +1,7 @@
+1795353965.303000 ca obj=117 sel=nsrt scope=glob el=0 data=00 00 00 00 80 88 e5 40
+1795353966.984000 ca obj=117 sel=nsrt scope=glob el=0 data=00 00 00 00 00 70 e7 40
+1795353968.780000 ca obj=117 sel=nsrt scope=glob el=0 data=00 00 00 00 80 88 f5 40
+1795353970.787000 ca obj=117 sel=nsrt scope=glob el=0 data=00 00 00 00 00 70 f7 40
+1795353972.830000 ca obj=117 sel=nsrt scope=glob el=0 data=00 00 00 00 80 88 05 41
+1795353974.460000 ca obj=117 sel=nsrt scope=glob el=0 data=00 00 00 00 00 70 07 41
+1795353977.009000 ca obj=117 sel=nsrt scope=glob el=0 data=00 00 00 00 00 70 e7 40

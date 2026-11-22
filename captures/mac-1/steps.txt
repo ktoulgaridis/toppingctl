@@ -1,0 +1,38 @@
+1795351706.231910000 START clicking (user)
+1795351752.724020000 END clicking (user)
+1795351800.054802000 user note: clicked controls left to right (pass 1, only HID hooked, 0 frames)
+1795351831.708256000 probe: IN1 MON was ON -> off, then on; then Mix A IN1+2 fader drag
+1795351850.376446000 NOTE: all clicking so far (START..END + MON probe) was on the DEVICE hardware, not the app; tx empty as expected. Device MON IN1 now off.
+1795351873.914897000 app: IN1 MON click (off->on)
+1795351927.951257000 CHUNK1 start: Input IN1 then IN2 — MON,48V,INST,SOLO,MUTE,Ø each on->off, then gain min->max->back. Pre-state per screenshot: IN1 gain +2, IN2 +0, all toggles off
+1795351990.210689000 CHUNK1 end
+1795352019.980274000 CHUNK1 decoded: 2x01 MON, 2x02 48V, 2x03 INST, 2x04 signed linear gain (0x02000000=+0dB..0x14000000=+20dB); SOLO/MUTE/Ø fold into 2x04. IN2 Ø missing -> re-click requested
+1795352020.004128000 CHUNK1b start: IN2 Ø on->off
+1795352045.192290000 CHUNK1b end
+1795352051.063979000 CHUNK2 start: Mixer Mix A — strips IN1+2, PB1/2, PB3/4, PB5/6: fader, pans L-C-R, link, Ø/SOLO/MUTE on->off
+1795352197.121348000 CHUNK2 IN1+2 end
+1795352233.866696000 CHUNK2 Mix A decoded (all 4 strips): 51 <out 1=L,2=R><src 1..8 = IN1,IN2,PB1..PB6>, linear gain 0x1ffffe0≈0dB, pan linear split, Ø negate, mute 0, solo = app rewrites all 16 crosspoints. IN1+2 Link: no frames seen
+1795352233.892568000 CHUNK2b start: IN1+2 Link on->off re-click
+1795352271.214888000 CHUNK2b end
+1795352280.269774000 CHUNK2b decoded: Link on = IN1 hard L/IN2 hard R (app-side rewrite of 51 11/21/12/22), off = both centre. Then IN1 gain bumped +2->+3 (stray)
+1795352280.292852000 CHUNK3 start: Mix B then Mix C: IN1+2 left fader drag + left pan full left
+1795352359.561850000 CHUNK3 end
+1795352403.280692000 CHUNK3 decoded: Mix B = 52, Mix C = 53, same <out><src> layout; fader max 0x3fb2784 (~+6dB). Pans not captured (skipped, pattern known)
+1795352403.303694000 CHUNK4 start: Loopback 1+2 then 3+4: every source option (end on original), fader, mute
+1795352454.719324000 CHUNK4 end
+1795352528.084065000 CHUNK4 decoded: Loopback 1+2 = 32, 3+4 = 33; 01/02 L/R level 0x2000000=0dB, mute=0; 05 = source select (seen 0x10,0x200,0x1000,0x300). Menu: Mixer{A,B,C} Input{IN1+2} Playback{1/2,3/4,5/6}
+1795352528.107020000 CHUNK4b start: LB1+2 source order: MixA, MixB, MixC, IN1+2, PB1/2, PB3/4
+1795352575.947624000 CHUNK4b end
+1795352594.330777000 CHUNK4b decoded: 3x05 source = Mixer A/B/C 0x10/0x20/0x30, Input(3 entries) 0x1000/0x2000/0x3000, Playback 1/2,3/4,5/6 0x100/0x200/0x300
+1795352594.347421000 CHUNK5 start: Output: source each->MixA, fader, HP off/on, line off/on, Monitor Mix knob In->PB->back, Phone Gain x2
+1795352624.093716000 CHUNK4b menu confirmed: Input = IN1 0x1000, IN2 0x2000, IN1+2 0x3000 (bitmask); LB1+2 ended on PB5/6 (0x300)
+1795352675.719715000 CHUNK5 end (user: back to Mix A)
+1795352682.380148000 CHUNK5 decoded: Output 1+2 = 31, 31 05 source same encoding; LB1+2 restored PB3/4
+1795352682.403412000 CHUNK5b start: Output fader, HP off/on, line off/on, Monitor Mix knob, Phone Gain x2
+1795352740.716352000 CHUNK5b end (Monitor Mix not app-controllable; did gain, HP, line)
+1795352751.860600000 CHUNK5b decoded: 34 01 HP on/off, 34 02 line on/off (each also resends 31 01/02 =0dB), 11 02 Phone Gain 0/1; Monitor Mix device-only (=11 01 on linux)
+1795352751.884198000 CHUNK6 start: workspace save + reload, download/store-to-device icon, gear (look only)
+1795352861.939305000 CHUNK6 so far: only 1a 03=0 at 2805.27 (store-to-device or a device setting?). Settings window: Brightness dropdown, Automatic standby, Mobile applications
+1795352861.960683000 CHUNK6b start: brightness each->Normal, standby on/off, mobile apps on/off, then store-to-device once
+1795352910.940109000 CHUNK6b end
+1795352924.100848000 CHUNK6b decoded: 10 0a brightness 0/1/2 (1=Normal), 10 0b auto standby, 10 0c mobile apps, 1a 03 store-to-device. Workspace save/load: no frames (app-side). Quitting app.
