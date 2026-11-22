@@ -34,7 +34,10 @@ header          grp par value         crc    trailer pad
 | meter | signed, in tenths of a dB: `-299` ≈ −29.9 dBFS (peak). Floor ≈ `-960` |
 
 The app computes SOLO, MUTE, Ø, pan and Link itself and writes the resulting levels: those controls have
-no registers of their own.
+no registers of their own. LINK swaps a strip between the app's linked page (one fader, one MUTE / SOLO /
+Ø for both channels) and its unlinked page (an L and an R of each). Linking with L ≠ R, the app copies a value
+across (`Interface_Switch*`); toppingctl sets both to their average. Each pan stays its own channel's
+(static RE of app V1.09; medium confidence).
 
 ## Echo
 
@@ -76,7 +79,7 @@ Dir: **w** = host→device write, **r** = device→host report.
 | param | meaning | encoding | range | dir | verified |
 |---|---|---|---|---|---|
 | `01` | Monitor Mix balance (input ↔ playback) | int, 50 = centre | 0…100 (seen `0x23`…`0x4d`) | r | reply (knob turned on the device); RE of app V1.09 (see below) |
-| `02` | phone out level switch: +17 dBu / 0 dBu (the device's gain button) | bool | | w, r | echo; RE of app V1.09 for the labels |
+| `02` | phone out level switch: `1` = +17 dBu, `0` = 0 dBu (the device's gain button) | bool | | w, r | echo; RE of app V1.09 for the labels and the mapping |
 
 ## Group `1a`: commands
 
@@ -98,15 +101,15 @@ Dir: **w** = host→device write, **r** = device→host report.
 
 | param | meaning | encoding | range | dir | verified |
 |---|---|---|---|---|---|
-| `01` / `02` | output level L / R (the app's fader writes both) | level | `0`…`0x02000000` (0 dB max) | w | app (drives the line outs, which were not monitored) |
+| `01` / `02` | output level L / R (linked, the app's one fader writes both; unlinked, an L and an R fader) | level | `0`…`0x02000000` (0 dB max; the app's slider runs −90…0 dB, −90 = muted) | w | app (drives the line outs, which were not monitored) |
 | `03` / `04` | output meter L / R, before the output level | meter | | r | meter |
-| `05` | output source | source | Mix A/B/C | w | meter |
+| `05` | output source | source | any (the app's menu offers all nine: Mix A/B/C, IN1, IN2, IN1+2, PB1/2, PB3/4, PB5/6) | w | meter; RE of app V1.09 for the menu |
 
 ## Groups `32` / `33`: Loopback 1+2 / 3+4
 
 | param | meaning | encoding | range | dir | verified |
 |---|---|---|---|---|---|
-| `01` / `02` | loopback level L / R (MUTE = 0) | level | `0`…`0x02000000` | w | rec (`32 01` → LB1, `33 02` → LB4, exactly −6.0 dB) |
+| `01` / `02` | loopback level L / R (MUTE = 0; linked, one fader and one MUTE write both; unlinked, each channel has its own) | level | `0`…`0x02000000` (the app's slider runs −90…0 dB, −90 = muted) | w | rec (`32 01` → LB1, `33 02` → LB4, exactly −6.0 dB) |
 | `03` / `04` | loopback meter L / R, before the level; sent only while the source has signal | meter | | r | meter |
 | `05` | loopback source | source | any | w | meter (PB1/2, PB3/4, PB5/6) |
 
@@ -141,8 +144,8 @@ From a read-only look at the official app V1.09 (class and method names and UI s
 - `11 01` is the **Monitor Mix balance**, not the volume knob. The device reports it when its Monitor
   Mix knob turns (0…100, 50 = centre). The app shows it read-only: `Balance_big::setValue(v-50)`,
   with the mouse disabled and no write.
-- `11 02` is the phone out level switch, labelled "+17dBu" / "0dBu". Which bool value is which label
-  is not confirmed by a capture; toppingctl shows `1` as +17 dBu.
+- `11 02` is the phone out level switch, labelled "+17dBu" / "0dBu". `1` is +17 dBu: the app's
+  handler (`on_pushButton_clicked`) writes `1` when it shows +17 dBu.
 - The HP and LINE buttons (`34 01/02`) resend `31 01/02`, so the OUT 1+2 fader is the shared output
   level.
 

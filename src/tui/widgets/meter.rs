@@ -18,8 +18,9 @@ pub const METER_RANGE_DB: f64 = 60.0;
 pub const INPUT_SCALE_DB: [f64; 7] = [0.0, -6.0, -12.0, -24.0, -36.0, -48.0, -60.0];
 /// A reading at or above this lights the clip light.
 pub const CLIP_DB: f64 = -0.1;
-/// How long the clip light stays on after the last clip.
-pub const CLIP_HOLD: Duration = Duration::from_secs(1);
+/// How long the clip light stays on after the last clip (the app holds its
+/// `overload_IN` / `overload_OUT` lights 5 s).
+pub const CLIP_HOLD: Duration = Duration::from_secs(5);
 /// At or above this the peak readout turns red.
 pub const PEAK_HOT_DB: f64 = -3.0;
 

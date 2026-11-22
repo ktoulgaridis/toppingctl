@@ -3,8 +3,10 @@
 //!
 //! The ticks are spread evenly up the track (as on the app's faders), with
 //! the position in between linear in dB; below −24 dB it runs linearly to
-//! −60 dB at the bottom, where −∞ sits. A mix fader tops out at +6 dB (an
-//! unlabelled position above 0), a loopback or output fader at 0 dB.
+//! the bottom, where −∞ sits. A mix fader tops out at +6 dB (an unlabelled
+//! position above 0) and runs down to −60 dB; a loopback or output fader
+//! tops out at 0 dB, labelled −0 as in the app, and runs down to −90 dB
+//! (the app's slider range).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -15,16 +17,28 @@ use crate::tui::theme::Theme;
 
 /// The labelled ticks, top to bottom.
 pub const FADER_TICKS_DB: [f64; 5] = [0.0, -6.0, -12.0, -24.0, f64::NEG_INFINITY];
-/// The bottom of the scale: at or below this the fader is at −∞.
+/// The bottom of a mix fader's scale: at or below this it is at −∞.
 const FLOOR_DB: f64 = -60.0;
+/// The bottom of a loopback or output fader's scale (the app's −90).
+const BUS_FLOOR_DB: f64 = -90.0;
+
+/// The bottom of the scale of a fader topping out at `max_db`.
+pub fn floor_db(max_db: f64) -> f64 {
+    if max_db > 0.0 {
+        FLOOR_DB
+    } else {
+        BUS_FLOOR_DB
+    }
+}
 
 /// The ticks' dB values, top to bottom, for a fader topping out at `max_db`.
 fn anchors(max_db: f64) -> Vec<f64> {
+    let floor = floor_db(max_db);
     let mut a = Vec::with_capacity(6);
     if max_db > 0.0 {
         a.push(max_db);
     }
-    a.extend(FADER_TICKS_DB.iter().map(|&d| d.max(FLOOR_DB)));
+    a.extend(FADER_TICKS_DB.iter().map(|&d| d.max(floor)));
     a
 }
 
@@ -32,7 +46,7 @@ fn anchors(max_db: f64) -> Vec<f64> {
 pub fn fader_frac(db: f64, max_db: f64) -> f64 {
     let a = anchors(max_db);
     let n = (a.len() - 1) as f64;
-    if db.is_nan() || db <= FLOOR_DB {
+    if db.is_nan() || db <= floor_db(max_db) {
         return 0.0;
     }
     if db >= a[0] {
@@ -50,7 +64,7 @@ pub fn fader_frac(db: f64, max_db: f64) -> f64 {
 
 /// The value at position `frac` (0 = bottom, 1 = top) on a fader topping
 /// out at `max_db`: the inverse of [`fader_frac`]. The bottom, and
-/// anything at or below −60 dB, is −∞.
+/// anything at or below the scale's floor, is −∞.
 pub fn db_at_frac(frac: f64, max_db: f64) -> f64 {
     let a = anchors(max_db);
     let n = a.len() - 1;
@@ -64,7 +78,7 @@ pub fn db_at_frac(frac: f64, max_db: f64) -> f64 {
     let i = (pos.floor() as usize).min(n - 1);
     let v = pos - i as f64;
     let db = a[i] + (a[i + 1] - a[i]) * v;
-    if db <= FLOOR_DB {
+    if db <= floor_db(max_db) {
         f64::NEG_INFINITY
     } else {
         db
@@ -85,12 +99,25 @@ pub fn fmt_db(db: f64) -> String {
     }
 }
 
-/// The tick label for `db`.
-fn tick_label(db: f64) -> String {
+/// The tick label for `db` on a fader topping out at `max_db`: a loopback
+/// or output fader's top reads −0, as in the app.
+fn tick_label(db: f64, max_db: f64) -> String {
     if db == f64::NEG_INFINITY {
         "−∞".into()
+    } else if db == 0.0 && max_db <= 0.0 {
+        "−0".into()
     } else {
         format!("{}", db as i32).replace('-', "−")
+    }
+}
+
+/// A loopback or output level as the app reads it (`−%d`): `−6`, `−0`,
+/// `−∞`.
+pub fn level_text(db: f64) -> String {
+    if db.is_nan() || db <= BUS_FLOOR_DB {
+        "−∞".into()
+    } else {
+        format!("−{}", (-db.round()).max(0.0) as i32)
     }
 }
 
@@ -159,7 +186,7 @@ impl Fader {
         for db in FADER_TICKS_DB {
             let row = fader_row(fader_frac(db, max_db), h);
             if !out.iter().any(|(r, _)| *r == row) {
-                out.push((row, tick_label(db)));
+                out.push((row, tick_label(db, max_db)));
             }
         }
         out

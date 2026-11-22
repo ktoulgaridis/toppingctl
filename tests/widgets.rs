@@ -11,7 +11,7 @@ use ratatui::widgets::Widget;
 use toppingctl::tui::pixel::{knob_image, KNOB_ACCENT_RGB, KNOB_DIM_RGB, KNOB_POINTER_RGB};
 use toppingctl::tui::theme::Theme;
 use toppingctl::tui::widgets::dial::{knob_rect, Dial};
-use toppingctl::tui::widgets::fader::{fader_frac, fmt_db, Fader};
+use toppingctl::tui::widgets::fader::{db_at_frac, fader_frac, fmt_db, level_text, Fader};
 use toppingctl::tui::widgets::meter::{
     peak_text, ClipHold, Meter, Scale, CLIP_HOLD, INPUT_SCALE_DB, PEAK_HOT_DB,
 };
@@ -313,12 +313,13 @@ fn fader_ticks_and_cap() {
     ));
     assert_eq!(r[5], " −∞━━●━━−∞ ");
 
-    // Loopback and output faders top out at 0 dB.
+    // Loopback and output faders top out at 0 dB, labelled −0 as in the
+    // app (#15).
     let r = rows(&render(Fader::new(-6.0, 0.0, Theme::color()), 11, 5));
     assert_eq!(
         r,
         [
-            "  0  ┃  0  ",
+            " −0  ┃  −0 ",
             " −6━━●━━−6 ",
             "−12  ┃  −12",
             "−24  ┃  −24",
@@ -341,7 +342,7 @@ fn fader_ticks_and_cap() {
     // Taller: the ticks spread out, the cap follows.
     let r = rows(&render(Fader::new(-24.0, 0.0, Theme::color()), 11, 9));
     let at = |label: &str| r.iter().position(|l| l.trim_start().starts_with(label));
-    assert_eq!(at("0"), Some(0));
+    assert_eq!(at("−0"), Some(0));
     assert_eq!(at("−∞"), Some(8));
     assert!(r[6].contains('●'), "{r:?}");
 }
@@ -355,6 +356,16 @@ fn fader_scale_and_value_text() {
     assert!(fader_frac(-3.0, 0.0) > fader_frac(-6.0, 0.0));
     assert!(fader_frac(-40.0, 0.0) > 0.0 && fader_frac(-40.0, 0.0) < fader_frac(-24.0, 0.0));
     assert_eq!(fader_frac(9.0, 6.0), 1.0, "clamped");
+    // A loopback or output fader runs down to the app's −90 (#15); a mix
+    // fader to −60.
+    assert!(fader_frac(-75.0, 0.0) > 0.0);
+    assert_eq!(fader_frac(-75.0, 6.0), 0.0);
+    assert_eq!(db_at_frac(0.0, 0.0), f64::NEG_INFINITY);
+    assert!(db_at_frac(0.05, 0.0) < -60.0 && db_at_frac(0.05, 0.0) > -90.0);
+    assert_eq!(level_text(-6.0), "−6");
+    assert_eq!(level_text(0.0), "−0");
+    assert_eq!(level_text(-89.0), "−89");
+    assert_eq!(level_text(f64::NEG_INFINITY), "−∞");
 
     // 0 dB reads −0, as in the official app.
     assert_eq!(fmt_db(0.0), "−0.0 dB");
@@ -408,10 +419,11 @@ fn meter_fills_height_with_gradient() {
     assert_eq!(rows(&lit)[1..], ["█", "█", "█", "█"]);
 }
 
-/// The clip light stays on about a second after the last clip.
+/// The clip light stays on 5 s after the last clip, as the app's
+/// `overload_IN` / `overload_OUT` lights (#15).
 #[test]
 fn clip_hold_with_fake_clock() {
-    assert!(CLIP_HOLD >= Duration::from_millis(900) && CLIP_HOLD <= Duration::from_millis(1100));
+    assert_eq!(CLIP_HOLD, Duration::from_secs(5));
     let t0 = Instant::now();
     let ms = |n| t0 + Duration::from_millis(n);
     let mut hold = ClipHold::default();
@@ -422,13 +434,13 @@ fn clip_hold_with_fake_clock() {
     hold.update(0.0, ms(100));
     assert!(hold.lit(ms(100)));
     hold.update(-30.0, ms(600));
-    assert!(hold.lit(ms(1000)), "held after the signal drops");
-    assert!(!hold.lit(ms(1101)), "off a second after the clip");
+    assert!(hold.lit(ms(5000)), "held after the signal drops");
+    assert!(!hold.lit(ms(5101)), "off 5 s after the clip");
 
     // A new clip restarts the hold.
     hold.update(0.0, ms(800));
-    assert!(hold.lit(ms(1700)));
-    assert!(!hold.lit(ms(1801)));
+    assert!(hold.lit(ms(5700)));
+    assert!(!hold.lit(ms(5801)));
 }
 
 /// The input meter's scale: 0 … −60 in the steps the app shows.

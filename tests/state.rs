@@ -90,12 +90,12 @@ fn matches_app_launch_frames() {
         }
         // The app's stereo default: the odd channel hard L, the even hard R.
         for strip in [&mut mix.pb12, &mut mix.pb34, &mut mix.pb56] {
-            strip.fader_db = 0.0;
+            strip.set_fader(0.0);
             strip.pan_l = 0.0;
             strip.pan_r = 1.0;
-            strip.mute = false;
-            strip.solo = false;
-            strip.phase = false;
+            (strip.mute_l, strip.mute_r) = (false, false);
+            (strip.solo_l, strip.solo_r) = (false, false);
+            (strip.phase_l, strip.phase_r) = (false, false);
         }
         mix.link = false;
     }
@@ -109,7 +109,7 @@ fn matches_app_launch_frames() {
     for lb in &mut state.loopbacks {
         lb.level_l_db = 0.0;
         lb.level_r_db = 0.0;
-        lb.mute = false;
+        lb.set_mute(false);
     }
     state.phone_gain = true;
 
@@ -156,22 +156,13 @@ fn diff_is_minimal() {
     s.inputs[0].phase = true;
     assert_eq!(diff_regs(&base, &s), vec![frame(0x21, 0x04, -0x0200_0000)]);
 
-    // Link: the 4 IN crosspoints, IN1 hard L, IN2 hard R (from centred
-    // pans; the default pans are already hard L / R).
+    // Link (#15): a UI coupling only, no frames; the pans stay their own.
     let mut centred = base.clone();
     centred.mixes[0].in1.pan = 0.5;
     centred.mixes[0].in2.pan = 0.5;
     let mut s = centred.clone();
     s.mixes[0].link = true;
-    assert_eq!(
-        diff_regs(&centred, &s),
-        vec![
-            frame(0x51, 0x11, 0x01ff_ffe0),
-            frame(0x51, 0x21, 0),
-            frame(0x51, 0x12, 0),
-            frame(0x51, 0x22, 0x01ff_ffe0),
-        ]
-    );
+    assert_eq!(diff_regs(&centred, &s), vec![]);
 
     // Input gain uses the app's values: +2 dB.
     let mut s = base.clone();
@@ -193,7 +184,7 @@ fn diff_is_minimal() {
 
     // Stereo PB strip at -1 dB: odd → L, even → R, full level each.
     let mut s = base.clone();
-    s.mixes[0].pb12.fader_db = -1.0;
+    s.mixes[0].pb12.set_fader(-1.0);
     assert_eq!(
         diff_regs(&base, &s),
         vec![
@@ -215,7 +206,7 @@ fn diff_is_minimal() {
 
     // Mix strip phase: both sides negated.
     let mut s = base.clone();
-    s.mixes[0].pb12.phase = true;
+    (s.mixes[0].pb12.phase_l, s.mixes[0].pb12.phase_r) = (true, true);
     assert_eq!(
         diff_regs(&base, &s),
         vec![
@@ -259,7 +250,7 @@ fn diff_is_minimal() {
 
     // Loopback mute: L and R to 0.
     let mut s = base.clone();
-    s.loopbacks[1].mute = true;
+    s.loopbacks[1].set_mute(true);
     assert_eq!(
         diff_regs(&base, &s),
         vec![frame(0x33, 0x01, 0), frame(0x33, 0x02, 0)]
@@ -439,7 +430,7 @@ fn loopback_and_output_levels_per_channel() {
     // Mute still silences both channels.
     let mut s = base.clone();
     s.loopbacks[0].level_l_db = -3.0;
-    s.loopbacks[0].mute = true;
+    s.loopbacks[0].set_mute(true);
     assert_eq!(
         base.diff(&s),
         vec![frame(0x32, 0x01, 0), frame(0x32, 0x02, 0)]
@@ -488,8 +479,8 @@ fn loads_issue11_saved_state() {
     assert_eq!((s.mixes[0].pb12.pan_l, s.mixes[0].pb12.pan_r), (0.5, 1.0));
     assert_eq!((s.mixes[1].pb34.pan_l, s.mixes[1].pb34.pan_r), (0.0, 0.5));
     assert_eq!((s.mixes[2].pb56.pan_l, s.mixes[2].pb56.pan_r), (0.0, 1.0));
-    assert_eq!(s.mixes[1].pb34.fader_db, -12.0);
-    assert_eq!(s.mixes[2].pb56.fader_db, f64::NEG_INFINITY);
+    assert_eq!(s.mixes[1].pb34.fader_l_db, -12.0);
+    assert_eq!(s.mixes[2].pb56.fader_l_db, f64::NEG_INFINITY);
     assert!(s.mixes[0].pb12.link, "missing link → the default");
     assert_eq!(s.mixes[0].in1.pan, 0.3);
     assert!(s.mixes[2].link);

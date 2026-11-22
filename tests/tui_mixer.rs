@@ -100,20 +100,20 @@ fn fake_state() -> State {
     a.in1.pan = 0.3;
     a.in2.pan = 0.7;
     a.in2.mute = true;
-    a.pb34.fader_db = -12.0;
+    a.pb34.set_fader(-12.0);
     a.pb34.pan_l = 0.2;
     a.pb34.pan_r = 0.8;
-    a.pb34.solo = true;
-    a.pb56.fader_db = f64::NEG_INFINITY;
+    (a.pb34.solo_l, a.pb34.solo_r) = (true, true);
+    a.pb56.set_fader(f64::NEG_INFINITY);
     a.pb56.link = false;
     let b = &mut s.mixes[1];
     b.link = true;
     b.in1.fader_db = -6.0;
-    b.pb12.fader_db = 4.0;
-    b.pb12.phase = true;
+    b.pb12.set_fader(4.0);
+    (b.pb12.phase_l, b.pb12.phase_r) = (true, true);
     let c = &mut s.mixes[2];
     c.in2.mute = true;
-    c.pb56.fader_db = -24.0;
+    c.pb56.set_fader(-24.0);
     c.pb56.pan_l = 0.5;
     c.pb56.pan_r = 0.5;
     s
@@ -329,24 +329,17 @@ fn controls_send_expected_frames() {
     assert_eq!(frames, [frame(0x51, 0x15, zero), frame(0x51, 0x25, 0)]);
     assert_eq!(dev.written(), frames);
 
-    // The same with LINK on: both pans move, mirrored.
+    // The same with LINK on (#15): the app moves each pan on its own
+    // (`50−v`), so the right pan stays.
     s.mixes[0].pb34.link = true;
     let mut app = app_with(s);
     let dev = Device::new();
     focus(&mut app, mix(2, Pan(0)));
     let frames = step(&mut app, &dev, |a| a.handle_key(shift(KeyCode::Left)));
     let pb = &app.state().mixes[0].pb34;
-    assert_eq!((pb.pan_l, pb.pan_r), (0.0, 1.0));
-    assert_eq!(
-        frames,
-        [
-            frame(0x51, 0x15, zero),
-            frame(0x51, 0x25, 0),
-            frame(0x51, 0x16, 0),
-            frame(0x51, 0x26, zero),
-        ]
-    );
-    // And the right dial drives the left one.
+    assert_eq!((pb.pan_l, pb.pan_r), (0.0, 0.5));
+    assert_eq!(frames, [frame(0x51, 0x15, zero), frame(0x51, 0x25, 0)]);
+    // And the right dial moves only the right pan.
     let frames = step(&mut app, &dev, |a| {
         a.handle_key(key(KeyCode::Up));
         a.handle_key(key(KeyCode::Down));
@@ -355,8 +348,8 @@ fn controls_send_expected_frames() {
         a.handle_key(key(KeyCode::Left))
     });
     let pb = &app.state().mixes[0].pb34;
-    assert!((pb.pan_r - 0.95).abs() < 1e-9 && (pb.pan_l - 0.05).abs() < 1e-9);
-    assert_eq!(frames.len(), 4, "{frames:?}");
+    assert!((pb.pan_r - 0.45).abs() < 1e-9 && pb.pan_l == 0.0, "{pb:?}");
+    assert_eq!(frames.len(), 2, "{frames:?}");
     dev.written();
 
     // Mix C IN2 mute: IN2 is hard R, so only `53 22` drops to 0.
@@ -374,7 +367,7 @@ fn controls_send_expected_frames() {
     let dev = Device::new();
     focus(&mut app, mix(1, Solo(0)));
     let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
-    assert!(app.state().mixes[0].pb12.solo);
+    assert!(app.state().mixes[0].pb12.solo_l);
     assert_eq!(
         frames,
         [
@@ -392,7 +385,7 @@ fn controls_send_expected_frames() {
     assert!(back.iter().all(|f| f.value == zero));
     dev.written();
 
-    // IN 1+2 LINK on: IN1 hard L, IN2 hard R, whatever their pans.
+    // IN 1+2 LINK (#15): no frames of its own; the pans stay their own.
     let mut s = State::default();
     s.mixes[0].in1.pan = 0.5;
     s.mixes[0].in2.pan = 0.5;
@@ -401,19 +394,8 @@ fn controls_send_expected_frames() {
     focus(&mut app, mix(0, Link));
     let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
     assert!(app.state().mixes[0].link);
-    assert_eq!(
-        frames,
-        [
-            frame(0x51, 0x11, zero),
-            frame(0x51, 0x21, 0),
-            frame(0x51, 0x12, 0),
-            frame(0x51, 0x22, zero),
-        ]
-    );
-    // While linked, the IN dials don't move (the link overrides them).
-    focus(&mut app, mix(0, Pan(0)));
-    assert!(step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Right))).is_empty());
-    assert_eq!(dev.written(), frames);
+    assert!(frames.is_empty(), "{frames:?}");
+    assert!(dev.written().is_empty());
 
     // PB LINK has no frames of its own: only a save.
     let mut app = app_with(State::default());
@@ -433,16 +415,16 @@ fn controls_send_expected_frames() {
     for _ in 0..8 {
         step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Right)));
     }
-    assert_eq!(app.state().mixes[0].pb12.fader_db, 6.0, "clamped at +6");
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, 6.0, "clamped at +6");
     for _ in 0..7 {
         step(&mut app, &dev, |a| a.handle_key(shift(KeyCode::Left)));
     }
-    assert_eq!(app.state().mixes[0].pb12.fader_db, f64::NEG_INFINITY);
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, f64::NEG_INFINITY);
     let up = step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Right)));
-    assert_eq!(app.state().mixes[0].pb12.fader_db, -59.0, "−∞ +1 dB");
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, -59.0, "−∞ +1 dB");
     assert_eq!(up[0], frame(0x51, 0x13, -xp(-59.0)));
     step(&mut app, &dev, |a| a.handle_key(ch('0')));
-    assert_eq!(app.state().mixes[0].pb12.fader_db, 0.0);
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, 0.0);
     // `0` on a dial: its default pan (PB odd channel hard L).
     focus(&mut app, mix(1, Pan(0)));
     step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Right)));
@@ -549,14 +531,14 @@ fn mouse_on_strips() {
     });
     assert_eq!(app.focus(), mix(1, Fader(0)));
     assert_eq!(
-        app.state().mixes[0].pb12.fader_db,
+        app.state().mixes[0].pb12.fader_l_db,
         0.0,
         "a press moves nothing"
     );
     let frames = step(&mut app, &dev, |a| {
         a.handle_mouse_at(mouse(DRAG, f.x + 1, f.y, NONE), &hits, t0)
     });
-    assert_eq!(app.state().mixes[0].pb12.fader_db, 6.0);
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, 6.0);
     assert!(!frames.is_empty());
     let frames = step(&mut app, &dev, |a| {
         a.handle_mouse_at(mouse(DRAG, f.x + 1, f.y.saturating_sub(3), NONE), &hits, t0)
@@ -566,7 +548,7 @@ fn mouse_on_strips() {
     step(&mut app, &dev, |a| {
         a.handle_mouse_at(mouse(DRAG, f.x + 1, f.bottom() + 2, NONE), &hits, t0)
     });
-    assert_eq!(app.state().mixes[0].pb12.fader_db, f64::NEG_INFINITY);
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, f64::NEG_INFINITY);
     step(&mut app, &dev, |a| {
         a.handle_mouse_at(mouse(UP, f.x + 1, f.bottom(), NONE), &hits, t0)
     });
@@ -586,10 +568,10 @@ fn mouse_on_strips() {
             out
         });
     }
-    assert_eq!(app.state().mixes[0].pb12.fader_db, 0.0);
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, 0.0);
 
     // The wheel on the PB 3/4 left dial: 5 %, ⇧ ×10. LINK is on by
-    // default, so the right dial mirrors it.
+    // default; the right dial stays (#15: no mirror).
     let d = hits.rect(Hit::Control(mix(2, Pan(0)))).unwrap();
     let up = MouseEventKind::ScrollUp;
     step(&mut app, &dev, |a| {
@@ -597,7 +579,7 @@ fn mouse_on_strips() {
     });
     let pb = app.state().mixes[0].pb34.clone();
     assert!((pb.pan_l - 0.05).abs() < 1e-9, "{pb:?}");
-    assert!((pb.pan_r - 0.95).abs() < 1e-9, "{pb:?}");
+    assert_eq!(pb.pan_r, 1.0, "{pb:?}");
     step(&mut app, &dev, |a| {
         a.handle_mouse_at(mouse(up, d.x + 1, d.y + 1, KeyModifiers::SHIFT), &hits, t1)
     });
@@ -611,7 +593,7 @@ fn mouse_on_strips() {
         out
     });
     assert!((app.state().mixes[0].pb34.pan_l - 0.65).abs() < 1e-9);
-    // Double-click resets the dial (and, linked, its partner).
+    // Double-click resets the dial (its partner was never moved).
     let t3 = t2 + Duration::from_secs(5);
     for dt in [0, 150] {
         step(&mut app, &dev, |a| {
@@ -635,15 +617,17 @@ fn mouse_on_strips() {
     });
     assert_eq!(app.state().mixes[0].in2.fader_db, -10.0);
 
-    // Clicks on the pills: LINK, Ø, SOLO, MUTE of every strip.
+    // Clicks on the pills: Ø, SOLO, MUTE of every strip, then LINK (last:
+    // it swaps the strip's page, #15).
     let t4 = t3 + Duration::from_secs(5);
     let mut i = 0u64;
     for strip in 0..4 {
         let chans = if strip == 0 { 2 } else { 1 };
-        let mut ctls = vec![Link];
+        let mut ctls = vec![];
         for c in 0..chans {
             ctls.extend([Phase(c), Solo(c), Mute(c)]);
         }
+        ctls.push(Link);
         for ctl in ctls {
             let r = hits
                 .rect(Hit::Control(mix(strip, ctl)))
@@ -1015,7 +999,7 @@ fn event_loop_stays_responsive() {
             Event::Key(key(KeyCode::Right)),
         ];
         let sent = feed(&mut app, &hits, keys);
-        assert_eq!(app.state().mixes[0].pb12.fader_db, 1.0, "{w}x{h}");
+        assert_eq!(app.state().mixes[0].pb12.fader_l_db, 1.0, "{w}x{h}");
         assert!(!sent.is_empty());
         let (hits, _) = tick(&app);
 
@@ -1036,8 +1020,8 @@ fn event_loop_stays_responsive() {
                 at(solo, UP),
             ],
         );
-        assert!(app.state().mixes[0].pb34.mute, "{w}x{h}");
-        assert!(app.state().mixes[0].pb56.solo, "{w}x{h}");
+        assert!(app.state().mixes[0].pb34.mute_l, "{w}x{h}");
+        assert!(app.state().mixes[0].pb56.solo_l, "{w}x{h}");
         assert!(!sent.is_empty());
         // A drag after the releases moves nothing.
         let none = feed(&mut app, &hits, vec![at(fader, DRAG)]);
@@ -1290,4 +1274,175 @@ fn modals_keep_the_pixels_around_them() {
             "{name}: idle after"
         );
     }
+}
+
+// ------------------------------------------ the LINK page swap (#15)
+
+/// The fader hit rects of mixer strip `strip` on the last render.
+fn faders_of(hits: &HitMap, strip: usize) -> Vec<MixControl> {
+    [MixControl::Fader(0), MixControl::Fader(1)]
+        .into_iter()
+        .filter(|&c| hits.rect(Hit::Control(mix(strip, c))).is_some())
+        .collect()
+}
+
+/// Every mixer strip swaps pages on LINK, as in the app (#15 audit):
+/// unlinked, L/R faders and SOLO/MUTE/Ø per channel; linked, one of each
+/// writing both channels. Linking with L ≠ R averages the faders. LINK
+/// itself sends nothing.
+#[test]
+fn link_swaps_every_mixer_strip() {
+    use MixControl::*;
+    let meters = fake_meters();
+    let mut app = app_with(State::default());
+    let dev = Device::new();
+
+    // The defaults: IN 1+2 unlinked (two faders), every PB linked (one).
+    let (_, hits) = render(&app, &meters, 120, 40);
+    assert_eq!(faders_of(&hits, 0), [Fader(0), Fader(1)]);
+    for strip in 1..4 {
+        assert_eq!(faders_of(&hits, strip), [Fader(0)], "PB {strip}");
+        assert!(hits.rect(Hit::Control(mix(strip, Mute(1)))).is_none());
+    }
+
+    // Unlink PB 1/2: only a save; now an L and an R of everything.
+    focus(&mut app, mix(1, Link));
+    assert_eq!(app.handle_key(ch(' ')), [Action::Save]);
+    assert!(!app.state().mixes[0].pb12.link);
+    let (buf, hits) = render(&app, &meters, 120, 40);
+    assert_eq!(faders_of(&hits, 1), [Fader(0), Fader(1)], "{}", text(&buf));
+    for ctl in [Phase(1), Solo(1), Mute(1)] {
+        let r = hits.rect(Hit::Control(mix(1, ctl))).unwrap();
+        assert_eq!(hits.get(r.x, r.y), Some(Hit::Control(mix(1, ctl))));
+    }
+    // Its focus order is IN 1+2's.
+    let mut seen = vec![];
+    for _ in 0..12 {
+        app.handle_key(key(KeyCode::Up));
+    }
+    assert_eq!(app.focus(), Control::Mixer(1));
+    for _ in 0..11 {
+        app.handle_key(key(KeyCode::Down));
+        seen.push(app.focus());
+    }
+    assert_eq!(seen, MixControl::UNLINKED.map(|c| mix(1, c)));
+
+    // The even channel alone: PB2 is hard R, so only 51 24 moves.
+    focus(&mut app, mix(1, Fader(1)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left)));
+    assert_eq!(frames, [frame(0x51, 0x24, xp(-1.0))]);
+    assert_eq!(app.state().mixes[0].pb12.fader_l_db, 0.0);
+    focus(&mut app, mix(1, Mute(1)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
+    assert_eq!(frames, [frame(0x51, 0x24, 0)]);
+    assert!(!app.state().mixes[0].pb12.mute_l);
+    step(&mut app, &dev, |a| a.handle_key(ch(' ')));
+    focus(&mut app, mix(1, Phase(0)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
+    assert_eq!(frames, [frame(0x51, 0x13, -xp(0.0))]);
+    step(&mut app, &dev, |a| a.handle_key(ch(' ')));
+
+    // L −6, R −1; link: both to the average, −3.5 dB.
+    focus(&mut app, mix(1, Fader(0)));
+    for _ in 0..6 {
+        step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left)));
+    }
+    focus(&mut app, mix(1, Link));
+    let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
+    let pb = &app.state().mixes[0].pb12;
+    assert!(pb.link);
+    assert_eq!((pb.fader_l_db, pb.fader_r_db), (-3.5, -3.5));
+    assert_eq!(
+        frames,
+        [frame(0x51, 0x13, xp(-3.5)), frame(0x51, 0x24, xp(-3.5))]
+    );
+    // Linked: one fader and one MUTE for both channels.
+    focus(&mut app, mix(1, Fader(0)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Right)));
+    assert_eq!(
+        frames,
+        [frame(0x51, 0x13, xp(-2.5)), frame(0x51, 0x24, xp(-2.5))]
+    );
+    focus(&mut app, mix(1, Mute(0)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
+    assert_eq!(frames, [frame(0x51, 0x13, 0), frame(0x51, 0x24, 0)]);
+    let pb = &app.state().mixes[0].pb12;
+    assert!(pb.mute_l && pb.mute_r);
+
+    // IN 1+2 linked: one fader; focus on IN2's fader falls back to it.
+    focus(&mut app, mix(0, Fader(1)));
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.focus(), mix(0, Fader(0)));
+    for _ in 0..3 {
+        app.handle_key(key(KeyCode::Down));
+    }
+    assert_eq!(app.focus(), mix(0, Phase(0)));
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.focus(), mix(0, Link));
+    let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
+    assert!(frames.is_empty() && app.state().mixes[0].link);
+    let (buf, hits) = render(&app, &meters, 120, 40);
+    assert_eq!(faders_of(&hits, 0), [Fader(0)], "{}", text(&buf));
+    // IN1 hard L, IN2 hard R: the fader writes 51 11 and 51 22.
+    focus(&mut app, mix(0, Fader(0)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left)));
+    assert_eq!(
+        frames,
+        [frame(0x51, 0x11, xp(-1.0)), frame(0x51, 0x22, xp(-1.0))]
+    );
+    // A mix where IN 1+2 is unlinked: focus on IN2's fader stays valid
+    // there, and comes back to the single fader in Mix A.
+    app.handle_key(ch('b'));
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.focus(), mix(0, Fader(1)));
+    app.handle_key(ch('a'));
+    assert_eq!(app.focus(), mix(0, Fader(0)));
+    dev.written();
+}
+
+/// Linked pans move independently (the app's `50−v`): no mirror on a PB
+/// strip, and IN 1+2's dials still turn while linked.
+#[test]
+fn linked_pans_move_independently() {
+    use MixControl::*;
+    let mut s = State::default();
+    s.mixes[0].link = true;
+    let mut app = app_with(s);
+    let dev = Device::new();
+    let zero = xp(0.0);
+
+    // PB 3/4 linked: the left dial alone.
+    focus(&mut app, mix(2, Pan(0)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(shift(KeyCode::Right)));
+    let pb = &app.state().mixes[0].pb34;
+    assert!((pb.pan_l - 0.5).abs() < 1e-9 && pb.pan_r == 1.0, "{pb:?}");
+    assert_eq!(
+        frames,
+        [
+            frame(0x51, 0x15, zero - zero / 2),
+            frame(0x51, 0x25, zero / 2)
+        ]
+    );
+
+    // IN 1+2 linked: IN1's dial turns, IN2's stays.
+    focus(&mut app, mix(0, Pan(0)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(shift(KeyCode::Right)));
+    let m = &app.state().mixes[0];
+    assert!((m.in1.pan - 0.5).abs() < 1e-9 && m.in2.pan == 1.0);
+    assert_eq!(
+        frames,
+        [
+            frame(0x51, 0x11, zero - zero / 2),
+            frame(0x51, 0x21, zero / 2)
+        ]
+    );
+    // Shown as it is (no override to hard L / R).
+    let (_, hits) = render(&app, &fake_meters(), 120, 40);
+    let dial = hits.rect(Hit::Control(mix(0, Pan(0)))).unwrap();
+    let value = hits.pixels().iter().find_map(|s| match s.widget {
+        PixelWidget::Knob { value, .. } if dial.contains(s.rect.as_position()) => Some(value),
+        _ => None,
+    });
+    assert_eq!(value, Some(Some(0.5)), "IN1's dial shows its own pan");
+    dev.written();
 }

@@ -92,11 +92,11 @@ fn fake_state() -> State {
     a.in1.pan = 0.3;
     a.in2.pan = 0.7;
     a.in2.mute = true;
-    a.pb34.fader_db = -12.0;
+    a.pb34.set_fader(-12.0);
     a.pb34.pan_l = 0.2;
     a.pb34.pan_r = 0.8;
-    a.pb34.solo = true;
-    a.pb56.fader_db = f64::NEG_INFINITY;
+    (a.pb34.solo_l, a.pb34.solo_r) = (true, true);
+    a.pb56.set_fader(f64::NEG_INFINITY);
     a.pb56.link = false;
     s.loopbacks[1].set_level(-6.0);
     s.output.source = Source::MixA;
@@ -419,7 +419,7 @@ fn pill_colours() {
     assert_eq!(buf[(in12.0 + 1, in12.1)].bg, Theme::PILL_OFF_BG);
 }
 
-/// The clip lights hold about a second after a clip (fake clock).
+/// The clip lights hold 5 s after a clip, as the app's (#15; fake clock).
 #[test]
 fn clip_lights_hold() {
     let mut app = synced_app(Theme::color());
@@ -434,9 +434,9 @@ fn clip_lights_hold() {
     app.tick(&hot, t0);
     let lit = lamps(&app, &hot);
     assert!(lit >= none + 2, "IN1 and PB2 lamps light: {none} → {lit}");
-    app.tick(&quiet, t0 + Duration::from_millis(900));
+    app.tick(&quiet, t0 + Duration::from_millis(4900));
     assert_eq!(lamps(&app, &quiet), lit, "held");
-    app.tick(&quiet, t0 + Duration::from_millis(1100));
+    app.tick(&quiet, t0 + Duration::from_millis(5100));
     assert_eq!(lamps(&app, &quiet), none, "released");
 }
 
@@ -1346,12 +1346,14 @@ fn pixel_widgets_in_kitty() {
     let n = |k: &str| spots.iter().filter(|s| kind(&s.widget) == k).count();
     // Two gain knobs, eight pans, Monitor Mix.
     assert_eq!(n("knob"), 11);
-    // IN1, IN2 in IN 1+2, three PB strips, two loopbacks, the output.
-    assert_eq!(n("fader"), 8);
-    // Input 2 (2 wide), IN 1+2 2, PB 6, loopback 4, output 2; each has a
-    // clip light.
-    assert_eq!(n("meter"), 16);
-    assert_eq!(n("clip"), 16);
+    // IN1, IN2 in IN 1+2, PB 1/2 and 3/4 (linked), PB 5/6's L and R
+    // (unlinked), two loopbacks, the output.
+    assert_eq!(n("fader"), 9);
+    // The input panel 2; a pre- and a post-fader bar for each of the 8
+    // mixer channels, 4 loopback channels and 2 output channels (#15);
+    // each has a clip light (IN or OUT).
+    assert_eq!(n("meter"), 2 + 2 * (8 + 4 + 2));
+    assert_eq!(n("clip"), 2 + 2 * (8 + 4 + 2));
     assert!(n("chip") >= 30, "pills, titles, the mix tab: {}", n("chip"));
 
     // Each widget is placed once, at its cells, with its size in cells.
@@ -1556,7 +1558,7 @@ fn pixel_widgets_redraw() {
     assert_eq!(lit, 2, "IN1 in the input panel and in IN 1+2");
     assert!(placements(&out).len() >= 4, "2 meters, 2 lamps");
     meters.inputs[0] = -18.4;
-    app.tick(&meters, t0 + Duration::from_millis(1100));
+    app.tick(&meters, t0 + Duration::from_millis(5100));
     let (_, hits, _) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     assert!(hits.pixels().iter().all(|s| !matches!(
         s.widget,
@@ -2055,8 +2057,10 @@ fn hidsniff_meters_reach_the_pixel_meters() {
             .count()
     };
     assert_eq!(at(meters.inputs[0]), 2, "input panel and IN 1+2");
-    assert_eq!(at(meters.output[0]), 1, "OUT 1+2 L");
-    assert_eq!(at(meters.output[1]), 1, "OUT 1+2 R");
+    // Pre- and post-fader bars (#15): at 0 dB both read the same.
+    assert_eq!(at(meters.output[0]), 2, "OUT 1+2 L, pre and post");
+    assert_eq!(at(meters.output[1]), 2, "OUT 1+2 R, pre and post");
+    // PB 3/4 is soloed, so PB 1/2's post-fader bars sit at the floor.
     assert_eq!(at(meters.playback[0][0]), 1, "PB 1/2 L");
     assert_eq!(at(meters.playback[0][1]), 1, "PB 1/2 R");
 }
