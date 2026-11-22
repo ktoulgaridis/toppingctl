@@ -1,5 +1,5 @@
 //! Protocol-spike tool (#8): sends E2x2 frames and prints what the device
-//! reports back.
+//! reports back, over a [`Connection`].
 //!
 //! Each `GG:PP=VALUE` argument becomes one frame (group `GG`, param `PP`, both
 //! hex; `VALUE` decimal or `0x`-hex, optionally negative). After each frame it
@@ -9,12 +9,13 @@
 
 use std::ffi::OsString;
 use std::process::ExitCode;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use hidapi::HidDevice;
-use toppingctl::error::{is_interrupted, message, Platform};
-use toppingctl::frame::{Crc, Dir, Frame};
+use toppingctl::conn::{Connection, Event, HidTransport, SendError};
+use toppingctl::error::{message, Platform};
+use toppingctl::frame::{Crc, Frame};
 use toppingctl::open::open_e2x2;
 
 const USAGE: &str = "\
@@ -26,21 +27,20 @@ decimal or 0x-hex, may be negative) and prints the device's replies.
 Options:
   --zero-crc     send 00 00 in bytes 11-12, like the app (default: the CRC16)
   --listen <ms>  how long to listen after each frame (default 500)
-  --all          also print meter and idle reports
+  --all          also print meter reports (idle reports are never printed)
   --allow-48v    allow frames that turn 48V phantom power on
   -h, --help     show this help
 
 Example: hidsend 21:01=1 21:01=0     (IN1 MON on, then off)";
 
 const DEFAULT_LISTEN_MS: u64 = 500;
-const READ_TIMEOUT_MS: i32 = 50;
-const REPORT_BUFFER_LEN: usize = 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
     crc: Crc,
     listen: Duration,
     all: bool,
+    allow_48v: bool,
     sets: Vec<Frame>,
 }
 
@@ -86,9 +86,9 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         crc: Crc::default(),
         listen: Duration::from_millis(DEFAULT_LISTEN_MS),
         all: false,
+        allow_48v: false,
         sets: Vec::new(),
     };
-    let mut allow_48v = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let arg = arg
@@ -98,7 +98,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             "-h" | "--help" => return Ok(Command::Help),
             "--zero-crc" => opts.crc = Crc::Zero,
             "--all" => opts.all = true,
-            "--allow-48v" => allow_48v = true,
+            "--allow-48v" => opts.allow_48v = true,
             "--listen" => {
                 let ms = args
                     .next()
@@ -116,7 +116,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
     if opts.sets.is_empty() {
         return Err("give at least one GG:PP=VALUE".into());
     }
-    if !allow_48v {
+    if !opts.allow_48v {
         if let Some(set) = opts.sets.iter().find(|s| s.turns_on_phantom_power()) {
             return Err(format!(
                 "{:02x}:{:02x}={} turns 48V phantom power on: unplug mics and pass --allow-48v",
@@ -162,49 +162,56 @@ fn line(start: Instant, dir: &str, data: &[u8]) -> String {
 
 fn run(opts: &Options) -> Result<()> {
     let device = open_e2x2().map_err(|failure| anyhow!(message(&failure, Platform::current())))?;
+    let (conn, events) = Connection::spawn_with_crc(HidTransport::new(device), opts.crc);
     let start = Instant::now();
-    for set in &opts.sets {
-        let report = set.encode(opts.crc);
-        // No report IDs on this device: hidapi wants a leading 0 byte.
-        let mut out = Vec::with_capacity(report.len() + 1);
-        out.push(0);
-        out.extend_from_slice(&report);
-        device
-            .write(&out)
-            .map_err(|e| anyhow!("writing to the TOPPING E2x2 failed: {e}"))?;
-        println!("{}", line(start, "tx", &report));
-        listen(&device, start, opts)?;
+    for &set in &opts.sets {
+        send_set(&conn, set, opts.allow_48v)
+            .map_err(|e| anyhow!("sending to the TOPPING E2x2 failed: {e}"))?;
+        println!("{}", line(start, "tx", &set.encode(opts.crc)));
+        listen(&events, start, opts)?;
     }
     Ok(())
 }
 
-fn listen(device: &HidDevice, start: Instant, opts: &Options) -> Result<()> {
+/// Sends `set`, letting 48V-on frames through only when `--allow-48v` was given.
+fn send_set(conn: &Connection, set: Frame, allow_48v: bool) -> Result<(), SendError> {
+    if allow_48v {
+        conn.send_confirmed_phantom(set)
+    } else {
+        conn.send(set)
+    }
+}
+
+fn listen(events: &Receiver<Event>, start: Instant, opts: &Options) -> Result<()> {
     let until = Instant::now() + opts.listen;
-    let mut buf = [0u8; REPORT_BUFFER_LEN];
-    while Instant::now() < until {
-        let len = match device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
-            Ok(0) => continue,
-            Ok(len) => len,
-            Err(e) if is_interrupted(&e) => continue,
-            Err(e) => return Err(anyhow!("reading from the TOPPING E2x2 failed: {e}")),
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        let event = match events.recv_timeout(left) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => return Ok(()),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(anyhow!("the connection to the TOPPING E2x2 closed"))
+            }
         };
-        let data = &buf[..len];
-        let decoded = Frame::decode(data, Dir::FromDevice);
-        let meter = decoded.is_ok_and(|f| f.is_meter());
-        if opts.all || !meter {
-            let status = match decoded {
-                Ok(_) => "crc-ok".to_string(),
-                Err(e) => format!("BAD: {e}"),
-            };
-            println!("{}  {status}", line(start, "rx", data));
+        match event {
+            // A device frame with a valid CRC re-encodes to the bytes it arrived as.
+            Event::Report(f) => println!("{}  crc-ok", line(start, "rx", &f.encode(Crc::Fill))),
+            Event::Meter(f) if opts.all => {
+                println!("{}  crc-ok", line(start, "rx", &f.encode(Crc::Fill)))
+            }
+            Event::Meter(_) => {}
+            Event::Malformed { error, raw } => {
+                println!("{}  BAD: {error}", line(start, "rx", &raw))
+            }
+            Event::Disconnected(e) => return Err(anyhow!("the TOPPING E2x2 I/O failed: {e}")),
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use toppingctl::conn::fake::FakeTransport;
 
     fn parse(args: &[&str]) -> Result<Command, String> {
         parse_args(args.iter().map(OsString::from))
@@ -275,6 +282,26 @@ mod tests {
         assert!(parse(&["22:01=0", "22:02=1"]).is_err());
         assert!(parse(&["21:02=0"]).is_ok());
         assert!(parse(&["--allow-48v", "21:02=1"]).is_ok());
+    }
+
+    #[test]
+    fn sends_48v_on_only_when_allowed() {
+        let (transport, fake) = FakeTransport::new();
+        let (conn, _events) = Connection::spawn(transport);
+        let on = Frame {
+            group: 0x21,
+            param: 0x02,
+            value: 1,
+        };
+        assert_eq!(
+            send_set(&conn, on, false),
+            Err(SendError::PhantomPowerNeedsConfirmation)
+        );
+        send_set(&conn, on, true).unwrap();
+        assert_eq!(
+            fake.wait_written(1, Duration::from_secs(2)),
+            vec![on.encode(Crc::Fill)]
+        );
     }
 
     #[test]
