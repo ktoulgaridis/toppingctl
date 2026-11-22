@@ -155,7 +155,7 @@ pub struct PbStrip {
 }
 
 /// One of the three mixes.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Mix {
     pub in1: Strip,
@@ -296,6 +296,26 @@ impl Default for State {
             phone_gain: true,
             system: System::default(),
             readout: Readout::default(),
+        }
+    }
+}
+
+impl Default for Mix {
+    /// As in the official app: IN1 hard left (L100), IN2 hard right (R100).
+    fn default() -> Self {
+        Mix {
+            in1: Strip {
+                pan: 0.0,
+                ..Strip::default()
+            },
+            in2: Strip {
+                pan: 1.0,
+                ..Strip::default()
+            },
+            pb12: PbStrip::default(),
+            pb34: PbStrip::default(),
+            pb56: PbStrip::default(),
+            link: false,
         }
     }
 }

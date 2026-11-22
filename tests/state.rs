@@ -156,11 +156,15 @@ fn diff_is_minimal() {
     s.inputs[0].phase = true;
     assert_eq!(diff_regs(&base, &s), vec![frame(0x21, 0x04, -0x0200_0000)]);
 
-    // Link: the 4 IN crosspoints, IN1 hard L, IN2 hard R.
-    let mut s = base.clone();
+    // Link: the 4 IN crosspoints, IN1 hard L, IN2 hard R (from centred
+    // pans; the default pans are already hard L / R).
+    let mut centred = base.clone();
+    centred.mixes[0].in1.pan = 0.5;
+    centred.mixes[0].in2.pan = 0.5;
+    let mut s = centred.clone();
     s.mixes[0].link = true;
     assert_eq!(
-        diff_regs(&base, &s),
+        diff_regs(&centred, &s),
         vec![
             frame(0x51, 0x11, 0x01ff_ffe0),
             frame(0x51, 0x21, 0),
@@ -175,10 +179,12 @@ fn diff_is_minimal() {
     assert_eq!(diff_regs(&base, &s), vec![frame(0x21, 0x04, 0x0284_91d0)]);
 
     // Mix strip fader at -1 dB, centred: the app's 0x00e428fc per side.
-    let mut s = base.clone();
+    let mut centred = base.clone();
+    centred.mixes[1].in2.pan = 0.5;
+    let mut s = centred.clone();
     s.mixes[1].in2.fader_db = -1.0;
     assert_eq!(
-        diff_regs(&base, &s),
+        diff_regs(&centred, &s),
         vec![
             frame(0x52, 0x12, 0x00e4_28fc),
             frame(0x52, 0x22, 0x00e4_28fc)
@@ -218,7 +224,8 @@ fn diff_is_minimal() {
         ]
     );
 
-    // Mix strip solo: every other strip in that mix goes to 0.
+    // Mix strip solo: every other strip in that mix goes to 0 (IN2 → L is
+    // already 0: IN2 is hard right by default).
     let mut s = base.clone();
     s.mixes[2].in1.solo = true;
     let regs: Vec<(u8, u8, i32)> = diff_regs(&base, &s)
@@ -228,7 +235,6 @@ fn diff_is_minimal() {
     assert_eq!(
         regs,
         vec![
-            (0x53, 0x12, 0),
             (0x53, 0x22, 0),
             (0x53, 0x13, 0),
             (0x53, 0x24, 0),
@@ -259,13 +265,10 @@ fn diff_is_minimal() {
         vec![frame(0x33, 0x01, 0), frame(0x33, 0x02, 0)]
     );
 
-    // A muted fader (-inf) writes 0.
+    // A muted fader (-inf) writes 0 (IN1 → R is already 0: hard left).
     let mut s = base.clone();
     s.mixes[0].in1.fader_db = f64::NEG_INFINITY;
-    assert_eq!(
-        diff_regs(&base, &s),
-        vec![frame(0x51, 0x11, 0), frame(0x51, 0x21, 0)]
-    );
+    assert_eq!(diff_regs(&base, &s), vec![frame(0x51, 0x11, 0)]);
 
     // 48V never appears in a diff.
     let mut s = base.clone();
@@ -515,4 +518,36 @@ fn loads_issue11_saved_state() {
     let mixed = r#"{"pan": 0.25, "pan_l": 0.1, "pan_r": 0.9, "link": false}"#;
     let p: PbStrip = serde_json::from_str(mixed).unwrap();
     assert_eq!((p.pan_l, p.pan_r, p.link), (0.1, 0.9, false));
+}
+
+/// The mixer's IN 1+2 default, as in the official app on the Mac: IN1
+/// hard left (L100), IN2 hard right (R100), in every mix. A saved state
+/// keeps its own pans.
+#[test]
+fn in12_pans_default_hard_left_and_right() {
+    let s = State::default();
+    for mix in &s.mixes {
+        assert_eq!(mix.in1.pan, 0.0, "IN1 L100");
+        assert_eq!(mix.in2.pan, 1.0, "IN2 R100");
+    }
+    // Mix A IN1 at unity, hard left: all of it to L (51 11), none to R.
+    let frames = s.frames();
+    let get = |g: u8, p: u8| {
+        frames
+            .iter()
+            .find(|f| (f.group, f.param) == (g, p))
+            .unwrap()
+            .value
+    };
+    assert!(get(0x51, 0x11) > 0);
+    assert_eq!(get(0x51, 0x21), 0);
+    assert_eq!(get(0x51, 0x12), 0);
+    assert!(get(0x51, 0x22) > 0);
+
+    let mut saved = State::default();
+    saved.mixes[1].in1.pan = 0.3;
+    saved.mixes[1].in2.pan = 0.5;
+    let json = serde_json::to_string(&saved).unwrap();
+    let back: State = serde_json::from_str(&json).unwrap();
+    assert_eq!((back.mixes[1].in1.pan, back.mixes[1].in2.pan), (0.3, 0.5));
 }
