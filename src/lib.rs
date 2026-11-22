@@ -5,3 +5,4 @@ pub mod device;
 pub mod error;
 pub mod frame;
 pub mod open;
+pub mod value;
