@@ -118,6 +118,17 @@ impl Fader {
         }
     }
 
+    /// The cells a fader takes in `area`: [`Fader::width`] columns,
+    /// centred, the whole height.
+    pub fn rect(labels: bool, area: Rect) -> Rect {
+        let w = Fader::width(labels, area.width).min(area.width);
+        Rect {
+            x: area.x + (area.width - w) / 2,
+            width: w,
+            ..area
+        }
+    }
+
     /// The tick rows on `h` rows: `(row, label)`, top to bottom, dropping a
     /// tick whose row is taken.
     pub fn ticks(max_db: f64, h: u16) -> Vec<(u16, String)> {
@@ -139,8 +150,7 @@ impl Widget for Fader {
         }
         let t = self.theme;
         let h = area.height;
-        let w = Fader::width(self.labels, area.width).min(area.width);
-        let x = area.x + (area.width - w) / 2;
+        let Rect { x, width: w, .. } = Fader::rect(self.labels, area);
         let cap_row = fader_row(fader_frac(self.db, self.max_db), h);
         let ticks = Fader::ticks(self.max_db, h);
         let cap_style = if self.focused { t.focus() } else { t.heading() };
