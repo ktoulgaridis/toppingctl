@@ -88,3 +88,26 @@ fn meter_reports_are_recognised() {
     assert!(!is_meter(0x21, 0x01));
     assert!(!is_meter(0x11, 0x01));
 }
+
+/// Every frame in the capture fixtures (tests/fixtures/frames.tsv, built by
+/// tools/fixtures.py): rx frames carry a valid CRC16, tx frames carry either
+/// `00 00` or the CRC16, and re-encoding the decoded fields gives the same bytes.
+#[test]
+fn every_capture_fixture_round_trips() {
+    let fixtures = include_str!("fixtures/frames.tsv");
+    let mut count = 0;
+    for line in fixtures.lines().filter(|l| !l.starts_with('#')) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let (dir, frame) = (cols[0], hex(cols[1]));
+        let (g, p, v) = decode(&frame).unwrap_or_else(|| panic!("decode: {line}"));
+        let with_crc = frame[11..13] != [0, 0];
+        if dir == "rx" {
+            assert!(crc_ok(&frame), "rx crc: {line}");
+        } else if with_crc {
+            assert!(crc_ok(&frame), "tx crc: {line}");
+        }
+        assert_eq!(encode(g, p, v, with_crc).to_vec(), frame, "{line}");
+        count += 1;
+    }
+    assert!(count > 200, "only {count} fixtures");
+}
