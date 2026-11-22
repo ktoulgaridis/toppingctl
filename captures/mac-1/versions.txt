@@ -1,0 +1,6 @@
+Device model: E2x2
+Device hardware version: V1.14
+Device software (firmware) version: V1.13
+TOPPING Professional Control Center version: V1.09
+macOS: Darwin 27.2.0
+Frida: frida-tools (uv tool)
