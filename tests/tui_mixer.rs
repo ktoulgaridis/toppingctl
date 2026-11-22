@@ -892,3 +892,163 @@ fn layout_is_content_sized() {
     let (buf, _) = render(&app, &meters, 120, 40);
     assert!(buf[(0, 0)].symbol() == "╭" && buf[(119, 39 - 1)].symbol() != " ");
 }
+
+// ------------------------------------------------ responsiveness (#37)
+
+fn kitty_layer() -> toppingctl::tui::pixel::PixelLayer {
+    use ratatui_image::picker::{Picker, ProtocolType};
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Kitty);
+    toppingctl::tui::pixel::PixelLayer::new(picker)
+}
+
+/// The event loop's own steps, in a kitty terminal, after startup: draw a
+/// frame (text plus images), take the queued input, send the frames. Keys
+/// and clicks on the mixer change the state and reach the device within a
+/// tick or two; an idle frame writes no image bytes, in the centred
+/// layout of a large terminal too; a press and release never leave a drag
+/// behind that eats the next click.
+#[test]
+fn event_loop_stays_responsive() {
+    use crossterm::event::Event;
+    use toppingctl::tui::run::{draw_frame, process_input};
+    use MixControl::*;
+    for (w, h) in [(250u16, 60u16), (120, 40)] {
+        let mut app = app_with(State::default());
+        let meters = fake_meters();
+        let dev = Device::new();
+        let mut layer = kitty_layer();
+        layer.set_resize_settle(Duration::ZERO);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let mut tick = |app: &App| -> (HitMap, usize) {
+            let mut images = Vec::new();
+            let hits =
+                draw_frame(&mut terminal, app, &meters, Some(&mut layer), &mut images).unwrap();
+            (hits, images.len())
+        };
+        // Startup: images go out until everything is placed, then idle
+        // frames write nothing.
+        let mut idle = usize::MAX;
+        for _ in 0..40 {
+            idle = tick(&app).1;
+            if idle == 0 {
+                break;
+            }
+        }
+        assert_eq!(idle, 0, "{w}x{h}: an unchanged frame writes no image bytes");
+        let (hits, n) = tick(&app);
+        assert_eq!(n, 0, "{w}x{h}: still idle");
+
+        let feed = |app: &mut App, hits: &HitMap, evs: Vec<Event>| {
+            let mut it = evs.into_iter();
+            let mut actions = Vec::new();
+            // One event per tick, as the loop does.
+            for _ in 0..8 {
+                actions.extend(process_input(app, &mut it, hits));
+            }
+            dev.send(&actions);
+            sends(&actions)
+        };
+
+        // Keys: to the PB 1/2 fader and up 1 dB.
+        let keys = vec![
+            Event::Key(ch('2')),
+            Event::Key(key(KeyCode::Right)),
+            Event::Key(key(KeyCode::Down)),
+            Event::Key(key(KeyCode::Down)),
+            Event::Key(key(KeyCode::Down)),
+            Event::Key(key(KeyCode::Right)),
+        ];
+        let sent = feed(&mut app, &hits, keys);
+        assert_eq!(app.state().mixes[0].pb12.fader_db, 1.0, "{w}x{h}");
+        assert!(!sent.is_empty());
+        let (hits, _) = tick(&app);
+
+        // Mouse: click MUTE on PB 3/4, then SOLO on PB 5/6 right after.
+        let at = |r: Rect, kind| Event::Mouse(mouse(kind, r.x + 1, r.y, NONE));
+        let mute = hits.rect(Hit::Control(mix(2, Mute(0)))).unwrap();
+        let solo = hits.rect(Hit::Control(mix(3, Solo(0)))).unwrap();
+        let fader = hits.rect(Hit::Control(mix(1, Fader(0)))).unwrap();
+        let sent = feed(
+            &mut app,
+            &hits,
+            vec![
+                at(fader, DOWN),
+                at(fader, UP),
+                at(mute, DOWN),
+                at(mute, UP),
+                at(solo, DOWN),
+                at(solo, UP),
+            ],
+        );
+        assert!(app.state().mixes[0].pb34.mute, "{w}x{h}");
+        assert!(app.state().mixes[0].pb56.solo, "{w}x{h}");
+        assert!(!sent.is_empty());
+        // A drag after the releases moves nothing.
+        let none = feed(&mut app, &hits, vec![at(fader, DRAG)]);
+        assert!(none.is_empty(), "{w}x{h}: no drag left behind");
+
+        // The changes redraw, then the loop is idle again.
+        let mut idle = usize::MAX;
+        for _ in 0..10 {
+            idle = tick(&app).1;
+            if idle == 0 {
+                break;
+            }
+        }
+        assert_eq!(idle, 0, "{w}x{h}: idle after the changes");
+        assert!(!dev.written().is_empty());
+    }
+}
+
+/// Renaming is obvious and never traps the keyboard: the title is marked
+/// while editing and the footer says how to leave; Esc leaves; Tab, ↑ and
+/// ↓ leave too (keeping the text) and then act as usual.
+#[test]
+fn rename_never_traps_keys() {
+    let meters = fake_meters();
+    let mut app = app_with(State::default());
+    app.handle_key(ch('2'));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.editing().is_some());
+    let (buf, _) = render(&app, &meters, 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("▏"), "a cursor in the title:\n{t}");
+    let footer = t.lines().nth(39).unwrap();
+    assert!(
+        footer.contains("rename") && footer.contains("esc"),
+        "the footer says how to leave: {footer}"
+    );
+    assert!(app.handle_key(key(KeyCode::Esc)).is_empty());
+    assert!(app.editing().is_none());
+
+    for (k, want) in [
+        (key(KeyCode::Tab), Control::Loopback(0)),
+        (key(KeyCode::Down), mix(1, MixControl::Pan(0))),
+        (key(KeyCode::Up), Control::Mixer(1)),
+    ] {
+        app.handle_key(ch('2'));
+        app.handle_key(key(KeyCode::Right));
+        app.handle_key(key(KeyCode::Enter));
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(ch('X'));
+        app.handle_key(k);
+        assert!(app.editing().is_none(), "{k:?} leaves the edit");
+        assert_eq!(app.focus(), want, "{k:?} then acts");
+        assert_eq!(app.state().strip_names[1].as_deref(), Some("X"));
+    }
+    // On a strip name the footer says how to reach the controls.
+    app.handle_key(ch('2'));
+    let (buf, _) = render(&app, &meters, 120, 40);
+    let footer = text(&buf).lines().nth(39).unwrap().to_string();
+    assert!(
+        footer.contains("↓") && footer.contains("controls") && footer.contains("rename"),
+        "{footer}"
+    );
+    // Enter on a switch or a fader never starts an edit.
+    app.handle_key(ch('2'));
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.editing().is_none());
+}

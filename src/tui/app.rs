@@ -500,6 +500,15 @@ impl App {
             return vec![Action::Quit];
         }
         if self.modal.is_none() && self.editing.is_some() {
+            if matches!(
+                key.code,
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down
+            ) {
+                // Moving focus away keeps the name and never gets eaten.
+                let mut out = self.finish_edit();
+                out.extend(self.handle_key(key));
+                return out;
+            }
             return self.edit_key(key.code);
         }
         let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
@@ -981,7 +990,7 @@ impl App {
     /// A key while a strip name is being edited: text, Backspace, Enter
     /// keeps it (empty: back to the default name), Esc drops it.
     fn edit_key(&mut self, code: KeyCode) -> Vec<Action> {
-        let Some((strip, text)) = self.editing.as_mut() else {
+        let Some((_, text)) = self.editing.as_mut() else {
             return Vec::new();
         };
         match code {
@@ -995,17 +1004,21 @@ impl App {
                 text.pop();
             }
             KeyCode::Esc => self.editing = None,
-            KeyCode::Enter => {
-                let strip = *strip;
-                let name = text.trim().to_string();
-                self.editing = None;
-                let mut new = self.state.clone();
-                new.strip_names[strip] = (!name.is_empty()).then_some(name);
-                return self.commit(new);
-            }
+            KeyCode::Enter => return self.finish_edit(),
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Ends a name edit, keeping the text (empty: the default name).
+    fn finish_edit(&mut self) -> Vec<Action> {
+        let Some((strip, text)) = self.editing.take() else {
+            return Vec::new();
+        };
+        let name = text.trim().to_string();
+        let mut new = self.state.clone();
+        new.strip_names[strip] = (!name.is_empty()).then_some(name);
+        self.commit(new)
     }
 
     /// The PHONE level switch (`11 02`): +17 dBu (`true`) or 0 dBu.

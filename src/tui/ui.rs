@@ -428,8 +428,44 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut Hit
 }
 
 fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
+    if let Some((strip, _)) = app.editing() {
+        // Renaming takes the keyboard: say so, and how to leave.
+        let mut spans = vec![
+            Span::raw(" "),
+            Span::styled(
+                format!(" rename {} ", MIX_STRIPS[strip]),
+                t.fg_bg(Theme::PILL_ON_FG, Theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+        ];
+        for (k, what) in [("type", "the name"), ("enter", "keep"), ("esc", "cancel")] {
+            spans.push(Span::styled(k, t.focus()));
+            spans.push(Span::styled(format!(" {what}   "), t.dim()));
+        }
+        Line::from(spans).render(area, buf);
+        return;
+    }
     if let Some(notice) = app.notice() {
         Line::from(vec![Span::raw(" "), Span::styled(notice, t.heading())]).render(area, buf);
+        return;
+    }
+    if let Control::Mixer(_) = app.focus() {
+        // On a strip's name nothing adjusts: point at the controls.
+        let mut spans = vec![Span::raw(" ")];
+        for (k, what) in [
+            ("↓", "into the strip's controls"),
+            ("←→", "strip"),
+            ("enter", "rename"),
+            ("tab 1-4", "panel"),
+            ("a b c", "mix"),
+            ("?", "help"),
+            ("q", "quit"),
+        ] {
+            spans.push(Span::styled(k, t.focus()));
+            spans.push(Span::styled(format!(" {what}   "), t.dim()));
+        }
+        Line::from(spans).render(area, buf);
         return;
     }
     let hints = [
