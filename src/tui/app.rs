@@ -77,18 +77,69 @@ impl InputControl {
 pub enum Control {
     /// A control on IN1 (`ch` 0) or IN2 (`ch` 1).
     Input { ch: usize, kind: InputControl },
+    /// A mixer strip: IN 1+2 (0), PB 1/2 (1), PB 3/4 (2), PB 5/6 (3).
+    /// Highlighted only: its controls come with #14.
+    Mixer(usize),
+    /// LOOP 1+2 (0), LOOP 3+4 (1). Highlighted only until #15.
+    Loopback(usize),
+    /// OUT 1+2 (0), MONITOR MIX (1), PHONE (2). Highlighted only until #15.
+    Output(usize),
+}
+
+/// The four panels, in Tab order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Panel {
+    Input,
+    Mixer,
+    Loopback,
+    Output,
+}
+
+impl Panel {
+    pub const ALL: [Panel; 4] = [Panel::Input, Panel::Mixer, Panel::Loopback, Panel::Output];
+
+    /// Where focus lands when the panel is entered.
+    pub fn first(self) -> Control {
+        match self {
+            Panel::Input => Control::Input {
+                ch: 0,
+                kind: InputControl::ORDER[0],
+            },
+            Panel::Mixer => Control::Mixer(0),
+            Panel::Loopback => Control::Loopback(0),
+            Panel::Output => Control::Output(0),
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|&p| p == self).unwrap_or(0)
+    }
 }
 
 impl Control {
-    /// All focusable controls, in Tab order.
-    pub fn all() -> Vec<Control> {
-        (0..2)
-            .flat_map(|ch| {
-                InputControl::ORDER
-                    .iter()
-                    .map(move |&kind| Control::Input { ch, kind })
-            })
-            .collect()
+    /// The panel this control is in.
+    pub fn panel(self) -> Panel {
+        match self {
+            Control::Input { .. } => Panel::Input,
+            Control::Mixer(_) => Panel::Mixer,
+            Control::Loopback(_) => Panel::Loopback,
+            Control::Output(_) => Panel::Output,
+        }
+    }
+
+    /// The strip to the left (`step` −1) or right (+1) in the same panel,
+    /// clamped at the ends.
+    fn beside(self, step: isize) -> Control {
+        let mv = |i: usize, n: usize| (i as isize + step).clamp(0, n as isize - 1) as usize;
+        match self {
+            Control::Input { ch, kind } => Control::Input {
+                ch: mv(ch, 2),
+                kind,
+            },
+            Control::Mixer(i) => Control::Mixer(mv(i, 4)),
+            Control::Loopback(i) => Control::Loopback(mv(i, 2)),
+            Control::Output(i) => Control::Output(mv(i, 3)),
+        }
     }
 }
 
@@ -198,9 +249,19 @@ pub struct App {
     /// The mix the mixer shows: A (0), B (1), C (2).
     mix: usize,
     clips: Clips,
+    /// When the device last sent anything (meters included).
+    last_rx: Option<Instant>,
+    /// When [`App::tick`] first saw the session synced.
+    synced_at: Option<Instant>,
+    /// Nothing from the device for [`RX_STALE`] while synced.
+    rx_stale: bool,
     theme: Theme,
     notice: Option<String>,
 }
+
+/// With no report from the device for this long, the header says so (the
+/// device streams meter reports several times a second).
+pub const RX_STALE: Duration = Duration::from_secs(2);
 
 impl App {
     /// A new session, connecting.
@@ -208,15 +269,15 @@ impl App {
         App {
             state: State::default(),
             phase: Phase::Connecting,
-            focus: Control::Input {
-                ch: 0,
-                kind: InputControl::ORDER[0],
-            },
+            focus: Panel::Input.first(),
             modal: None,
             drag: None,
             last_click: None,
             mix: 0,
             clips: Clips::default(),
+            last_rx: None,
+            synced_at: None,
+            rx_stale: false,
             theme,
             notice: None,
         }
@@ -231,9 +292,26 @@ impl App {
         &self.clips
     }
 
-    /// The meters as of `now`: updates the clip lights.
+    /// The meters as of `now`: updates the clip lights, and whether the
+    /// device has gone quiet.
     pub fn tick(&mut self, meters: &Meters, now: Instant) {
         self.clips.update(meters, now);
+        if self.phase == Phase::Synced {
+            let since = *self.synced_at.get_or_insert(now);
+            let last = self.last_rx.map_or(since, |l| l.max(since));
+            self.rx_stale = now.saturating_duration_since(last) > RX_STALE;
+        }
+    }
+
+    /// The device sent something (a report or a meter) at `now`.
+    pub fn on_rx(&mut self, now: Instant) {
+        self.last_rx = Some(now);
+    }
+
+    /// Whether the device has sent nothing for [`RX_STALE`] (as of the last
+    /// [`App::tick`]).
+    pub fn rx_stale(&self) -> bool {
+        self.rx_stale
     }
 
     /// The device is at `state` (from `sync::connect`).
@@ -320,15 +398,24 @@ impl App {
         if self.phase != Phase::Synced {
             return Vec::new();
         }
-        let Control::Input { ch, kind } = self.focus;
         let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
             10
         } else {
             1
         };
+        let gain_focused = matches!(
+            self.focus,
+            Control::Input {
+                kind: InputControl::Gain,
+                ..
+            }
+        );
         match key.code {
-            KeyCode::Tab => self.cycle(1),
-            KeyCode::BackTab => self.cycle(-1),
+            KeyCode::Tab => self.cycle_panel(1),
+            KeyCode::BackTab => self.cycle_panel(-1),
+            KeyCode::Char(c @ '1'..='4') => {
+                self.focus = Panel::ALL[usize::from(c as u8 - b'1')].first();
+            }
             KeyCode::Up => self.move_vertical(-1),
             KeyCode::Down => self.move_vertical(1),
             KeyCode::Left | KeyCode::Right => {
@@ -337,13 +424,10 @@ impl App {
                 } else {
                     step
                 };
-                if kind == InputControl::Gain {
+                if gain_focused {
                     return self.adjust(self.focus, delta);
                 }
-                self.focus = Control::Input {
-                    ch: if delta < 0 { 0 } else { 1 },
-                    kind,
-                };
+                self.focus = self.focus.beside(delta.signum() as isize);
             }
             KeyCode::Char('?') => {
                 self.modal = Some(Modal::Help);
@@ -351,7 +435,11 @@ impl App {
             }
             KeyCode::Char('0') => return self.reset(self.focus),
             KeyCode::Char(c @ ('a' | 'b' | 'c')) => self.mix = usize::from(c as u8 - b'a'),
-            KeyCode::Char(' ') | KeyCode::Enter => return self.toggle(ch, kind),
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                if let Control::Input { ch, kind } = self.focus {
+                    return self.toggle(ch, kind);
+                }
+            }
             _ => {}
         }
         Vec::new()
@@ -398,9 +486,12 @@ impl App {
                 // A double-click is used up: a third click starts afresh.
                 self.last_click = if double { None } else { hit.map(|h| (h, now)) };
                 match hit {
+                    Some(Hit::Focus(c)) => self.focus = c,
                     Some(Hit::Control(c)) => {
                         self.focus = c;
-                        let Control::Input { ch, kind } = c;
+                        let Control::Input { ch, kind } = c else {
+                            return Vec::new();
+                        };
                         if kind != InputControl::Gain {
                             return self.toggle(ch, kind);
                         }
@@ -491,10 +582,13 @@ impl App {
     }
 
     fn adjust(&mut self, c: Control, delta: i32) -> Vec<Action> {
-        let Control::Input { ch, kind } = c;
-        if kind != InputControl::Gain {
+        let Control::Input {
+            ch,
+            kind: InputControl::Gain,
+        } = c
+        else {
             return Vec::new();
-        }
+        };
         let gain = i32::from(self.state.inputs[ch].gain_db.min(MAX_GAIN_DB));
         let gain = (gain + delta).clamp(0, i32::from(MAX_GAIN_DB)) as u8;
         self.set_gain(ch, gain)
@@ -541,16 +635,18 @@ impl App {
         self.commit(new)
     }
 
-    fn cycle(&mut self, step: isize) {
-        let all = Control::all();
-        let i = all.iter().position(|&c| c == self.focus).unwrap_or(0);
-        let n = all.len() as isize;
-        self.focus = all[(i as isize + step).rem_euclid(n) as usize];
+    /// Tab / Shift-Tab: the next / previous panel, wrapping.
+    fn cycle_panel(&mut self, step: isize) {
+        let i = self.focus.panel().index() as isize;
+        let n = Panel::ALL.len() as isize;
+        self.focus = Panel::ALL[(i + step).rem_euclid(n) as usize].first();
     }
 
-    /// Up/Down: along the input's column, clamped at the ends.
+    /// Up/Down: along an input's column, clamped at the ends.
     fn move_vertical(&mut self, step: isize) {
-        let Control::Input { ch, kind } = self.focus;
+        let Control::Input { ch, kind } = self.focus else {
+            return;
+        };
         let n = InputControl::ORDER.len() as isize;
         let i = (kind.index() as isize + step).clamp(0, n - 1) as usize;
         self.focus = Control::Input {

@@ -48,16 +48,15 @@ pub fn fader_frac(db: f64, max_db: f64) -> f64 {
     0.0
 }
 
-/// A fader value: `0.0 dB`, `−6.0 dB`, `+3.0 dB`, `−∞ dB`.
+/// A fader value: `−0.0 dB` (0 dB reads −0, as in the official app),
+/// `−6.0 dB`, `+3.0 dB`, `−∞ dB`.
 pub fn fmt_db(db: f64) -> String {
     if db.is_nan() || db <= FLOOR_DB {
         return "−∞ dB".into();
     }
-    // `+ 0.0` turns −0.0 into 0.0; rounding first keeps −0.04 from
-    // printing as −0.0.
-    let r = (db * 10.0).round() / 10.0 + 0.0;
+    let r = (db * 10.0).round() / 10.0;
     if r == 0.0 {
-        "0.0 dB".into()
+        "−0.0 dB".into()
     } else {
         format!("{r:+.1} dB").replace('-', "−")
     }

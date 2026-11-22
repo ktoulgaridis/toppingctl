@@ -15,10 +15,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::state::{Meters, PbStrip, Source, Strip};
-use crate::tui::app::{App, Control, InputControl, MeterId, Modal, Phase, MAX_GAIN_DB};
+use crate::state::{Meters, Mix, PbStrip, Source};
+use crate::tui::app::{App, Control, InputControl, MeterId, Modal, Panel, Phase, MAX_GAIN_DB};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::dial::{Dial, DIAL_HEIGHT};
+use crate::tui::widgets::dial::Dial;
 use crate::tui::widgets::fader::{fmt_db, Fader};
 use crate::tui::widgets::meter::{peak_text, Meter, Scale, INPUT_SCALE_DB};
 use crate::tui::widgets::pill::{pill, PillKind};
@@ -34,7 +34,10 @@ const MIX_FADER_MAX_DB: f64 = 6.0;
 /// Something clickable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
+    /// A control: a click acts on it (and focuses it).
     Control(Control),
+    /// A strip's area: a click only moves focus there.
+    Focus(Control),
     /// The tab of mix A (0), B (1) or C (2).
     MixTab(usize),
     /// A modal's confirm button.
@@ -221,8 +224,8 @@ fn console(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut 
     draw_header(buf, header, app, t);
     draw_input_panel(buf, input, app, meters, hits);
     draw_mixer_panel(buf, mixer, app, meters, hits);
-    draw_loopback_panel(buf, loopback, app, meters);
-    draw_output_panel(buf, output, app, meters);
+    draw_loopback_panel(buf, loopback, app, meters, hits);
+    draw_output_panel(buf, output, app, meters, hits);
     draw_footer(buf, footer, app, t);
 }
 
@@ -300,6 +303,7 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
         vec![val("default"), lab(" ▾"), sep(), val("—"), lab(" kHz ▾ ")]
     };
     let (dot, status) = match app.phase() {
+        Phase::Synced if app.rx_stale() => (t.warn(), " no meters "),
         Phase::Synced => (t.fg(Theme::OK), " synced "),
         Phase::Connecting => (t.dim(), " connecting "),
     };
@@ -337,10 +341,9 @@ fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
         return;
     }
     let hints = [
-        ("tab", "focus"),
-        ("↑↓", "move"),
-        ("←→", "adjust"),
-        ("⇧", "×10"),
+        ("tab 1-4", "panel"),
+        ("↑↓←→", "move"),
+        ("←→", "gain ⇧×10"),
         ("space", "toggle"),
         ("0", "reset"),
         ("a b c", "mix"),
@@ -357,17 +360,26 @@ fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
 
 /// A panel: a rounded border with `key` and `name` set into it. Returns
 /// the inner area and the column after the title.
-fn panel(buf: &mut Buffer, area: Rect, t: Theme, key: &str, name: &str) -> (Rect, u16) {
+fn panel(
+    buf: &mut Buffer,
+    area: Rect,
+    app: &App,
+    which: Panel,
+    key: &str,
+    name: &str,
+) -> (Rect, u16) {
+    let t = app.theme();
+    let focused = app.focus().panel() == which;
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(t.border());
+        .border_style(if focused { t.active() } else { t.border() });
     let inner = block.inner(area);
     block.render(area, buf);
     let mut x = area.x + 1;
     for (s, st) in [
         ("┤", t.border()),
         (key, t.focus()),
-        (name, t.heading()),
+        (name, if focused { t.focus() } else { t.heading() }),
         ("├", t.border()),
     ] {
         x = put(buf, area, x, area.y, s, st).right().max(x);
@@ -412,9 +424,12 @@ fn columns(area: Rect, n: u16) -> Vec<Rect> {
         .collect()
 }
 
-/// A gain value: `+12 dB`.
+/// A gain value: `+12 dB`; 0 dB reads `−0 dB`, as in the official app.
 pub fn gain_text(gain_db: u8) -> String {
-    format!("{:+} dB", gain_db.min(MAX_GAIN_DB))
+    match gain_db.min(MAX_GAIN_DB) {
+        0 => "−0 dB".into(),
+        g => format!("+{g} dB"),
+    }
 }
 
 /// A pan value: `C`, `L40`, `R100`.
@@ -444,7 +459,7 @@ fn source_name(s: Source) -> &'static str {
 // ------------------------------------------------------------------ input
 
 fn draw_input_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut HitMap) {
-    let (inner, _) = panel(buf, area, app.theme(), "¹", "input");
+    let (inner, _) = panel(buf, area, app, Panel::Input, "¹", "input");
     for (ch, col) in columns(inner, 2).into_iter().enumerate() {
         draw_input_strip(buf, col, app, meters, ch, hits);
     }
@@ -460,12 +475,17 @@ fn draw_input_strip(
 ) {
     let t = app.theme();
     let input = &app.state().inputs[ch];
-    let Control::Input {
-        ch: fch,
-        kind: fkind,
-    } = app.focus();
-    let focused = |kind| fch == ch && fkind == kind;
-    let r = strip_box(buf, area, t, &format!("IN{}", ch + 1), fch == ch);
+    let focus = app.focus();
+    let focused = |kind| focus == Control::Input { ch, kind };
+    let in_strip = matches!(focus, Control::Input { ch: c, .. } if c == ch);
+    hits.push(
+        Hit::Focus(Control::Input {
+            ch,
+            kind: InputControl::ORDER[0],
+        }),
+        area,
+    );
+    let r = strip_box(buf, area, t, &format!("IN{}", ch + 1), in_strip);
     if r.height < 2 || r.width < 8 {
         return;
     }
@@ -504,9 +524,10 @@ fn draw_input_strip(
         let rects = put_centered(buf, right, y, &[span]);
         hits.push(Hit::Control(Control::Input { ch, kind }), rects[0]);
     }
-    let knob_h = DIAL_HEIGHT + 1;
-    if r.height >= 1 + 6 + knob_h {
-        let knob = Rect::new(right.x, r.bottom() - knob_h, right.width, knob_h);
+    // The gain knob takes every row under the switches: dial, then value.
+    let knob_y = r.y + 7;
+    if r.bottom() >= knob_y + 4 {
+        let knob = Rect::new(right.x, knob_y, right.width, r.bottom() - knob_y);
         let gain = input.gain_db.min(MAX_GAIN_DB);
         Dial::new(t)
             .value(Some(f64::from(gain) / f64::from(MAX_GAIN_DB)))
@@ -527,7 +548,7 @@ fn draw_input_strip(
 
 fn draw_mixer_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut HitMap) {
     let t = app.theme();
-    let (inner, mut x) = panel(buf, area, t, "²", "mixer");
+    let (inner, mut x) = panel(buf, area, app, Panel::Mixer, "²", "mixer");
     // The mix tabs, set into the border; the active one is boxed.
     x = put(buf, area, x, area.y, "─", t.border()).right().max(x);
     for (m, name) in ["mix A", "mix B", "mix C"].into_iter().enumerate() {
@@ -568,9 +589,9 @@ fn draw_mixer_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hi
     }
     let mix = &app.state().mixes[app.mix()];
     let cols = columns(inner, 4);
-    draw_in12_strip(buf, cols[0], app, meters, mix.link, &mix.in1, &mix.in2);
+    draw_in12_strip(buf, cols[0], app, meters, mix, hits);
     for (i, strip) in [&mix.pb12, &mix.pb34, &mix.pb56].into_iter().enumerate() {
-        draw_pb_strip(buf, cols[i + 1], app, meters, i, strip);
+        draw_pb_strip(buf, cols[i + 1], app, meters, i, strip, hits);
     }
 }
 
@@ -588,9 +609,26 @@ fn value_span(db: f64, mute: bool, t: Theme, unit: bool) -> Span<'static> {
     Span::styled(s, t.heading())
 }
 
-/// Two pan dials side by side with their values under them.
-fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2]) {
-    let halves = columns(Rect { height: 4, ..area }, 2);
+/// Rows for a mix strip's two pan dials and their values: more when the
+/// strip is tall.
+fn dial_rows(r: Rect) -> u16 {
+    if r.height >= 16 {
+        5
+    } else {
+        4
+    }
+}
+
+/// Two pan dials side by side with their values under them, in the top
+/// `rows` rows of `area`.
+fn pan_dials(buf: &mut Buffer, area: Rect, t: Theme, pans: [f64; 2], rows: u16) {
+    let halves = columns(
+        Rect {
+            height: rows,
+            ..area
+        },
+        2,
+    );
     for (h, p) in halves.into_iter().zip(pans) {
         Dial::new(t)
             .value(Some(p))
@@ -631,23 +669,39 @@ fn stereo_body(
         .render(col(x + 3 + fw, 1), buf);
 }
 
-fn draw_pb_strip(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, i: usize, s: &PbStrip) {
+fn draw_pb_strip(
+    buf: &mut Buffer,
+    area: Rect,
+    app: &App,
+    meters: &Meters,
+    i: usize,
+    s: &PbStrip,
+    hits: &mut HitMap,
+) {
     let t = app.theme();
     let name = ["PB 1/2", "PB 3/4", "PB 5/6"][i];
-    let r = strip_box(buf, area, t, name, false);
+    let me = Control::Mixer(i + 1);
+    hits.push(Hit::Focus(me), area);
+    let r = strip_box(buf, area, t, name, app.focus() == me);
     if r.height < 8 {
         return;
     }
-    pan_dials(buf, r, t, [s.pan_l, s.pan_r]);
+    let d = dial_rows(r);
+    pan_dials(buf, r, t, [s.pan_l, s.pan_r], d);
     put_centered(
         buf,
         r,
-        r.y + 4,
+        r.y + d,
         &[pill("LINK", s.link, PillKind::Normal, false, t)],
     );
-    put_centered(buf, r, r.y + 5, &[value_span(s.fader_db, s.mute, t, true)]);
+    put_centered(
+        buf,
+        r,
+        r.y + d + 1,
+        &[value_span(s.fader_db, s.mute, t, true)],
+    );
     let rows = switch_rows(r);
-    let body = Rect::new(r.x, r.y + 6, r.width, r.height - 6 - rows);
+    let body = Rect::new(r.x, r.y + d + 2, r.width, r.height - d - 2 - rows);
     let clips = [0, 1].map(|c| app.clips().lit(MeterId::Playback(i, c)));
     stereo_body(
         buf,
@@ -703,25 +757,28 @@ fn draw_in12_strip(
     area: Rect,
     app: &App,
     meters: &Meters,
-    link: bool,
-    in1: &Strip,
-    in2: &Strip,
+    mix: &Mix,
+    hits: &mut HitMap,
 ) {
     let t = app.theme();
-    let r = strip_box(buf, area, t, "IN 1+2", false);
+    let (link, in1, in2) = (mix.link, &mix.in1, &mix.in2);
+    let me = Control::Mixer(0);
+    hits.push(Hit::Focus(me), area);
+    let r = strip_box(buf, area, t, "IN 1+2", app.focus() == me);
     if r.height < 8 {
         return;
     }
     // Link puts IN1 hard L and IN2 hard R: show what is in effect.
     let pans = if link { [0.0, 1.0] } else { [in1.pan, in2.pan] };
-    pan_dials(buf, r, t, pans);
+    let d = dial_rows(r);
+    pan_dials(buf, r, t, pans, d);
     put_centered(
         buf,
         r,
-        r.y + 4,
+        r.y + d,
         &[pill("LINK", link, PillKind::Disabled, false, t)],
     );
-    let halves = columns(row(r, 5), 2);
+    let halves = columns(row(r, d + 1), 2);
     for (h, s) in halves.iter().zip([in1, in2]) {
         put_centered(buf, *h, h.y, &[value_span(s.fader_db, s.mute, t, false)]);
     }
@@ -729,7 +786,7 @@ fn draw_in12_strip(
     // M1 · F1 · scale · F2 · M2: one scale between two mono faders, tick
     // marks on both sides of each.
     let rows = switch_rows(r);
-    let body = Rect::new(r.x, r.y + 6, r.width, r.height - 6 - rows);
+    let body = Rect::new(r.x, r.y + d + 2, r.width, r.height - d - 2 - rows);
     let total = 13;
     if body.width >= total && body.height > 0 {
         let x = body.x + (body.width - total) / 2;
@@ -791,12 +848,20 @@ fn draw_in12_strip(
 
 // --------------------------------------------------------------- loopback
 
-fn draw_loopback_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters) {
+fn draw_loopback_panel(
+    buf: &mut Buffer,
+    area: Rect,
+    app: &App,
+    meters: &Meters,
+    hits: &mut HitMap,
+) {
     let t = app.theme();
-    let (inner, _) = panel(buf, area, t, "³", "loopback");
+    let (inner, _) = panel(buf, area, app, Panel::Loopback, "³", "loopback");
     for (i, col) in columns(inner, 2).into_iter().enumerate() {
         let lb = &app.state().loopbacks[i];
-        let r = strip_box(buf, col, t, ["LOOP 1+2", "LOOP 3+4"][i], false);
+        let me = Control::Loopback(i);
+        hits.push(Hit::Focus(me), col);
+        let r = strip_box(buf, col, t, ["LOOP 1+2", "LOOP 3+4"][i], app.focus() == me);
         if r.height < 5 {
             continue;
         }
@@ -850,10 +915,10 @@ fn levels_spans(l: f64, r: f64, mute: bool, t: Theme) -> Vec<Span<'static>> {
 
 // ----------------------------------------------------------------- output
 
-fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters) {
+fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut HitMap) {
     let t = app.theme();
     let state = app.state();
-    let (inner, _) = panel(buf, area, t, "⁴", "output");
+    let (inner, _) = panel(buf, area, app, Panel::Output, "⁴", "output");
     let w1 = inner.width * 2 / 5;
     let w2 = (inner.width - w1) / 2;
     let out_area = Rect { width: w1, ..inner };
@@ -868,8 +933,12 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters) {
         ..inner
     };
 
+    for (k, a) in [out_area, mon_area, phone_area].into_iter().enumerate() {
+        hits.push(Hit::Focus(Control::Output(k)), a);
+    }
+    let focused = |k| app.focus() == Control::Output(k);
     let out = &state.output;
-    let r = strip_box(buf, out_area, t, "OUT 1+2", false);
+    let r = strip_box(buf, out_area, t, "OUT 1+2", focused(0));
     if r.height >= 5 {
         source_line(buf, r, t, out.source);
         put_centered(
@@ -896,14 +965,15 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters) {
     }
 
     // Monitor Mix: an analog knob the device never reports.
-    let r = strip_box(buf, mon_area, t, "MONITOR MIX", false);
-    if r.height >= 4 {
-        let top = u16::from(r.height >= 8);
-        Dial::new(t).render(Rect::new(r.x, r.y + top, r.width, DIAL_HEIGHT), buf);
+    let r = strip_box(buf, mon_area, t, "MONITOR MIX", focused(1));
+    if r.height >= 6 {
+        // The dial takes what the two text rows leave.
+        let dial_h = r.height - 3;
+        Dial::new(t).render(Rect::new(r.x, r.y, r.width, dial_h), buf);
         put_centered(
             buf,
             r,
-            r.y + top + DIAL_HEIGHT,
+            r.y + dial_h,
             &[
                 Span::styled("input", t.dim()),
                 Span::raw("    "),
@@ -913,7 +983,7 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters) {
         put_centered(
             buf,
             r,
-            r.y + top + DIAL_HEIGHT + 2,
+            r.y + dial_h + 2,
             &[Span::styled(
                 if r.width >= 19 {
                     "knob on device only"
@@ -926,7 +996,7 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters) {
     }
 
     // Phone out: the gain switch and the volume knob's raw position.
-    let r = strip_box(buf, phone_area, t, "PHONE", false);
+    let r = strip_box(buf, phone_area, t, "PHONE", focused(2));
     if r.height >= 4 {
         put_centered(
             buf,
@@ -1001,23 +1071,26 @@ fn confirm(
 
 fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
     let keys: &[(&str, &str)] = &[
-        ("Tab  Shift-Tab", "next / previous control"),
+        ("Tab  Shift-Tab", "next / previous panel"),
+        ("1  2  3  4", "input, mixer, loopback, output"),
         ("↑ ↓", "move along an input"),
-        ("← →", "adjust the gain −1 / +1 dB"),
-        ("Shift ← →", "adjust −10 / +10 dB"),
-        ("0", "reset the gain to +0 dB"),
+        ("← →", "next strip; on a gain knob −1 / +1 dB"),
+        ("Shift ← →", "gain −10 / +10 dB"),
+        ("0", "reset the gain to −0 dB"),
         ("space", "toggle the focused switch"),
         ("a  b  c", "show mix A / B / C"),
         ("?", "this help"),
         ("q  Ctrl-C", "quit"),
         ("", ""),
-        ("click", "focus; flip a switch; pick a mix"),
-        ("wheel", "adjust a knob (Shift ×10)"),
+        ("click", "focus a strip; flip a switch; pick a mix"),
+        ("wheel", "turn a knob (Shift ×10)"),
         ("drag", "turn a knob (up / down)"),
         ("double-click", "reset a knob"),
+        ("", ""),
+        ("", "mixer, loopback, output: shown, set in a later version"),
     ];
     let h = keys.len() as u16 + 6;
-    let inner = modal_box(buf, area, t, " Help ", 60, h);
+    let inner = modal_box(buf, area, t, " Help ", 80, h);
     for (i, (k, what)) in keys.iter().enumerate() {
         let y = inner.y + 1 + i as u16;
         put(buf, inner, inner.x + 3, y, k, t.heading());

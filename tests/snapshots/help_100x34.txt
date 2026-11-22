@@ -3,32 +3,32 @@
 │  █▄ █▄█ █▀▀ █▀▀ █ █ █ ▀▀█ █▄▄  █▄ █▄  fw 1.13         s save  │  l load  │  w store  │  ● synced │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭┤¹input├──────────────────────────╮╭┤²mixer├─┤a mix A├ b mix B   c mix C  ────────────────────────╮
-│╭───── IN1 ─────╮╭───── IN2 ─────╮││╭── IN 1+2 ───╮╭── PB 1/2 ───╮╭─── PB 3/4 ───╮╭─── PB 5/6 ───╮│
-││ ▔▔ −18 pk     ││ ▔▔  −4 pk     ││││⢠⣶⠶⠐⡀  ⢀⠂⠰⣶⡄ ││⢠⡶⠶⠐⡀  ⢀⠂⠰⢶⡄ ││ ⢠⡶⠶⠐⡀  ⢀⠂⠰⢶⡄ ││ ⢠⡶⠶⠐⡀  ⢀⠂⠰⢶⡄ ││
-││ ▕   0   MON   ││ ╭ Help ────────────────────────────────────────────────────╮⢛ ││ ⣿⢀⠤ ⢐  ⡂ ⠠⡀⣿ ││
-││ ▕  −6   48V   ││ │                                                          │⠂ ││ ⠘⠁  ⠂  ⠐  ⠈⠃ ││
-││ ▕ −12   INST  ││ │   Tab  Shift-Tab   next / previous control               │  ││ L100   R100  ││
-││ ▃▃      SOLO  ││ │   ↑ ↓              move along an input                   │  ││     LINK     ││
-││ ██−24   MUTE  ││ │   ← →              adjust the gain −1 / +1 dB            │  ││    −∞ dB     ││
-││ ██       Ø    ││ │   Shift ← →        adjust −10 / +10 dB                   │▔ ││▔     ┃     ▔ ││
-││ ██            ││ │   0                reset the gain to +0 dB               │▕ ││▕   0 ┃ 0   ▕ ││
-││ ██−36         ││ │   space            toggle the focused switch             │▕ ││▕  −6 ┃ −6  ▕ ││
-││ ██     ⢠⣶⠶⡖⡀  ││ │   a  b  c          show mix A / B / C                    │█ ││▕ −12 ┃ −12 ▕ ││
-││ ██−48  ⣿ ⠸ ⢐  ││ │   ?                this help                             │█ ││▕ −24 ┃ −24 ▕ ││
-││ ██     ⠘⠁  ⠂  ││ │   q  Ctrl-C        quit                                  │█ ││▕  −∞━●━−∞  ▕ ││
-││ ██−60  +12 dB ││ │                                                          │  ││  Ø   S   M   ││
-│╰───────────────╯╰─│   click            focus; flip a switch; pick a mix      │──╯╰──────────────╯│
-╰───────────────────│   wheel            adjust a knob (Shift ×10)             │───────────────────╯
-╭┤³loopback├────────│   drag             turn a knob (up / down)               │───────────────────╮
-│╭── LOOP 1+2 ───╮╭─│   double-click     reset a knob                          │╭───── PHONE ─────╮│
-││   PB 3/4 ▾    ││ │                                                          ││                 ││
-││  LINK   MUTE  ││ │                       [Esc] close                        ││      GAIN       ││
-││    0.0 dB     ││ │                                                          ││                 ││
-││▔   0━━●━━0   ▔││▔╰──────────────────────────────────────────────────────────╯│   volume knob   ││
-││▕  −6  ┃  −6  ▕││▕  −6━━●━━−6  ▕││││   ▃  −6  ┃  −6  ▂    ││input    playback││       73        ││
-││▄ −12  ┃  −12 ▄││▕ −12  ┃  −12 ▕││││   █ −12  ┃  −12 █    ││                 ││                 ││
-││█ −24  ┃  −24 █││▕ −24  ┃  −24 ▕││││   █ −24  ┃  −24 █    ││ on device only  ││                 ││
-││█  −∞  ┃  −∞  █││▕  −∞  ┃  −∞  ▕││││   █  −∞  ┃  −∞  █    ││                 ││                 ││
+│╭───── IN╭ Help ────────────────────────────────────────────────────────────────────────╮ 5/6 ───╮│
+││ ▔▔ −18 │                                                                              │╮╭──━━━┓││
+││ ▕   0  │   Tab  Shift-Tab   next / previous panel                                     │││  ↘  ┃││
+││ ▕  −6  │   1  2  3  4       input, mixer, loopback, output                            │╯╰     ┛││
+││ ▕ −12  │   ↑ ↓              move along an input                                       │  R100  ││
+││ ▃▃     │   ← →              next strip; on a gain knob −1 / +1 dB                     │INK     ││
+││ ██−24  │   Shift ← →        gain −10 / +10 dB                                         │ dB     ││
+││ ██     │   0                reset the gain to −0 dB                                   │┃     ▔ ││
+││ ██    ┏│   space            toggle the focused switch                                 │┃ 0   ▕ ││
+││ ██−36 ┃│   a  b  c          show mix A / B / C                                        │┃ −6  ▕ ││
+││ ██    ┃│   ?                this help                                                 │┃ −12 ▕ ││
+││ ██−48 ┗│   q  Ctrl-C        quit                                                      │┃ −24 ▕ ││
+││ ██     │                                                                              │●━−∞  ▕ ││
+││ ██−60  │   click            focus a strip; flip a switch; pick a mix                  │S   M   ││
+│╰────────│   wheel            turn a knob (Shift ×10)                                   │────────╯│
+╰─────────│   drag             turn a knob (up / down)                                   │─────────╯
+╭┤³loopbac│   double-click     reset a knob                                              │─────────╮
+│╭── LOOP │                                                                              │NE ─────╮│
+││   PB 3/│                    mixer, loopback, output: shown, set in a later version    │        ││
+││  LINK  │                                                                              │N       ││
+││    −0.0│                                 [Esc] close                                  │        ││
+││▔   0━━●│                                                                              │ knob   ││
+││▕  −6  ┃╰──────────────────────────────────────────────────────────────────────────────╯        ││
+││▄ −12  ┃  −12 ▄││▕ −12  ┃  −12 ▕││││   █ −12  ┃  −12 █    ││input    playback││                 ││
+││█ −24  ┃  −24 █││▕ −24  ┃  −24 ▕││││   █ −24  ┃  −24 █    ││                 ││                 ││
+││█  −∞  ┃  −∞  █││▕  −∞  ┃  −∞  ▕││││   █  −∞  ┃  −∞  █    ││ on device only  ││                 ││
 │╰───────────────╯╰───────────────╯││╰──────────────────────╯╰─────────────────╯╰─────────────────╯│
 ╰──────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯
- tab focus   ↑↓ move   ←→ adjust   ⇧ ×10   space toggle   0 reset   a b c mix   ? help   q quit
+ tab 1-4 panel   ↑↓←→ move   ←→ gain ⇧×10   space toggle   0 reset   a b c mix   ? help   q quit

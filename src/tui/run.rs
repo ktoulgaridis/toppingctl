@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event as Input};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event as Input, MouseEventKind,
+};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -97,11 +99,12 @@ pub fn run() -> Result<()> {
         terminal.draw(|f| hits = ui::draw(f, &app, &meters))?;
         let mut actions = Vec::new();
         if event::poll(TICK)? {
-            match event::read()? {
-                Input::Key(key) => actions = app.handle_key(key),
-                Input::Mouse(ev) => actions = app.handle_mouse(ev, &hits),
-                _ => {}
-            }
+            // Everything already queued, without waiting again.
+            let mut queued = std::iter::from_fn(|| match event::poll(Duration::ZERO) {
+                Ok(true) => event::read().ok(),
+                _ => None,
+            });
+            actions = process_input(&mut app, &mut queued, &hits);
         }
         actions.extend(drain_device(&events, &mut app, &mut meters)?);
         send_actions(&conn, &actions)?;
@@ -121,6 +124,28 @@ pub fn run() -> Result<()> {
     }
 }
 
+/// Takes terminal events from `events` until one that matters (a key, or
+/// a mouse press, release, drag or wheel) has been handled, and returns
+/// its actions. Pointer motion is dropped: crossterm's mouse capture
+/// reports every move, and handling them one per frame used to queue clicks
+/// behind seconds of motion. Stopping after one event keeps the hit map in
+/// step with what was drawn: the next one is handled after a redraw.
+pub fn process_input(
+    app: &mut App,
+    events: &mut dyn Iterator<Item = Input>,
+    hits: &HitMap,
+) -> Vec<Action> {
+    for ev in events {
+        match ev {
+            Input::Key(key) => return app.handle_key(key),
+            Input::Mouse(m) if m.kind == MouseEventKind::Moved => {}
+            Input::Mouse(m) => return app.handle_mouse(m, hits),
+            _ => {}
+        }
+    }
+    Vec::new()
+}
+
 /// Sends the frames in `actions` to the device, in order: [`Action::Send`]
 /// with `Connection::send` (which refuses to turn 48V on) and
 /// [`Action::SendConfirmedPhantom`] with `send_confirmed_phantom`. Other
@@ -137,7 +162,7 @@ pub fn send_actions(conn: &Connection, actions: &[Action]) -> Result<(), SendErr
 }
 
 /// Applies everything the device sent since the last call.
-fn drain_device(
+pub fn drain_device(
     events: &Receiver<Event>,
     app: &mut App,
     meters: &mut Meters,
@@ -146,9 +171,13 @@ fn drain_device(
     loop {
         match events.try_recv() {
             Ok(Event::Meter(f)) => {
+                app.on_rx(Instant::now());
                 meters.apply(&f);
             }
-            Ok(Event::Report(f)) => actions.extend(app.on_report(&f)),
+            Ok(Event::Report(f)) => {
+                app.on_rx(Instant::now());
+                actions.extend(app.on_report(&f));
+            }
             Ok(Event::Malformed { .. }) => {}
             Ok(Event::Disconnected(e)) => {
                 return Err(anyhow!("the TOPPING E2x2 disconnected: {e}"))

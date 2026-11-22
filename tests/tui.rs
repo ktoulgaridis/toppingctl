@@ -20,8 +20,8 @@ use toppingctl::conn::fake::{FakeHandle, FakeTransport};
 use toppingctl::conn::Connection;
 use toppingctl::frame::{Dir, Frame};
 use toppingctl::state::{Meters, Source, State, Version};
-use toppingctl::tui::app::{Action, App, Control, InputControl, Modal};
-use toppingctl::tui::run::send_actions;
+use toppingctl::tui::app::{Action, App, Control, InputControl, Modal, Panel};
+use toppingctl::tui::run::{process_input, send_actions};
 use toppingctl::tui::theme::Theme;
 use toppingctl::tui::ui::{self, Hit, HitMap};
 
@@ -240,7 +240,7 @@ fn snapshots() {
     assert_snapshot("push_defaults_100x34", &text(&buf));
 
     let mut modal = synced_app(Theme::color());
-    modal.handle_key(key(KeyCode::Tab));
+    modal.handle_key(key(KeyCode::Down));
     assert_eq!(modal.focus(), input(0, InputControl::Phantom));
     modal.handle_key(ch(' '));
     let (buf, _) = render(&modal, &meters, 100, 34);
@@ -476,23 +476,32 @@ fn input_keys_send_frames() {
         dev.send(&a);
         a
     };
+    // By keys only: `1` for the input panel, → for IN2, ↓ down the column.
+    let goto = |app: &mut App, c: usize, kind: InputControl| {
+        press(app, ch('1'));
+        if c == 1 {
+            press(app, key(KeyCode::Right));
+        }
+        while app.focus() != input(c, kind) {
+            assert!(press(app, key(KeyCode::Down)).is_empty());
+        }
+    };
 
-    // Tab walks IN1's column, then IN2's, and wraps; Shift-Tab goes back.
+    // ↓ walks IN1's column top to bottom and stops at the end.
     let order = [Mon, Phantom, Inst, Solo, Mute, Phase, Gain];
     assert_eq!(app.focus(), input(0, Mon));
     let mut seen = vec![app.focus()];
-    for _ in 0..14 {
-        press(&mut app, key(KeyCode::Tab));
+    for _ in 0..7 {
+        press(&mut app, key(KeyCode::Down));
         seen.push(app.focus());
     }
-    let want: Vec<Control> = (0..2)
-        .flat_map(|c| order.iter().map(move |&k| input(c, k)))
-        .chain([input(0, Mon)])
+    let want: Vec<Control> = order
+        .iter()
+        .map(|&k| input(0, k))
+        .chain([input(0, Gain)])
         .collect();
     assert_eq!(seen, want);
-    press(&mut app, key(KeyCode::BackTab));
-    assert_eq!(app.focus(), input(1, Gain));
-    press(&mut app, key(KeyCode::Tab));
+    press(&mut app, ch('1'));
 
     // ↑↓ move along the column; ←→ on a switch cross to the other input.
     press(&mut app, key(KeyCode::Down));
@@ -519,16 +528,12 @@ fn input_keys_send_frames() {
     expect.push(frame(0x21, 0x03, 1));
 
     // Unmute IN2 (it starts muted), so IN1's SOLO has something to silence.
-    while app.focus() != input(1, Mute) {
-        press(&mut app, key(KeyCode::Tab));
-    }
+    goto(&mut app, 1, Mute);
     press(&mut app, ch(' '));
     assert!(!app.state().inputs[1].mute);
     expect.push(frame(0x22, 0x04, toppingctl::state::INPUT_GAIN_LEVELS[4]));
     // Back on IN1: SOLO.
-    while app.focus() != input(0, Solo) {
-        press(&mut app, key(KeyCode::Tab));
-    }
+    goto(&mut app, 0, Solo);
     press(&mut app, ch(' '));
     assert!(app.state().inputs[0].solo);
     expect.push(frame(0x22, 0x04, 0));
@@ -576,9 +581,7 @@ fn input_keys_send_frames() {
 
     // 48V: asks first and sends nothing; n cancels; y sends on the
     // confirmed path; off goes straight out.
-    while app.focus() != input(0, Phantom) {
-        press(&mut app, key(KeyCode::Tab));
-    }
+    goto(&mut app, 0, Phantom);
     assert!(press(&mut app, ch(' ')).is_empty());
     assert_eq!(app.modal(), Some(Modal::Phantom { ch: 0 }));
     for k in [key(KeyCode::Right), ch('0'), key(KeyCode::Tab), ch(' ')] {
@@ -788,7 +791,7 @@ fn input_mouse_sends_frames() {
 fn focus_is_accent_and_bold() {
     let mut app = synced_app(Theme::color());
     for _ in 0..6 {
-        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Down));
     }
     assert_eq!(app.focus(), input(0, InputControl::Gain));
     let (buf, hits) = render(&app, &fake_meters(), 100, 34);
@@ -925,4 +928,281 @@ fn first_run_asks_before_pushing() {
     let mut app = App::new(Theme::color());
     app.needs_initial_state(device);
     assert_eq!(app.handle_key(ch('n')), [Action::Quit]);
+}
+
+// ------------------------------------------------------- meters, end to end
+
+/// The device→host reports of a capture, as raw 16-byte reports.
+fn captured_rx(path: &str) -> Vec<Vec<u8>> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| l.split_whitespace().nth(1) == Some("rx"))
+        .map(|l| {
+            l.split_whitespace()
+                .skip(2)
+                .take(16)
+                .map(|b| u8::from_str_radix(b, 16).unwrap())
+                .collect()
+        })
+        .collect()
+}
+
+/// Real captured meter reports (`captures/mac-3/meters-tone.txt`: IN1,
+/// playback 1/2, output and loopback meters) go through the connection,
+/// `sync::connect` and the TUI's drain into the meters, and the input strip
+/// shows them.
+#[test]
+fn captured_meters_reach_the_screen() {
+    use toppingctl::frame::Crc;
+    use toppingctl::sync::{connect, Store};
+    use toppingctl::tui::run::drain_device;
+
+    let dir = std::env::temp_dir().join(format!("toppingctl-{}-meters", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let store = Store::at(dir.join("state.json"));
+    store.save(&fake_state()).unwrap();
+
+    let (transport, fake) = FakeTransport::new();
+    for f in [
+        frame(0x10, 0x06, 1),
+        frame(0x10, 0x0b, 0),
+        frame(0x10, 0x04, 0x0001_000d),
+        frame(0x11, 0x01, 0x49),
+        frame(0x10, 0x0a, 1),
+        frame(0x10, 0x03, 0x0001_000e),
+        frame(0x10, 0x0c, 0),
+    ] {
+        fake.push_report(&f.encode(Crc::Fill));
+    }
+    let rx = captured_rx("captures/mac-3/meters-tone.txt");
+    assert!(rx.len() > 1000);
+    for r in &rx {
+        fake.push_report(r);
+    }
+    // A louder IN1 reading after the capture: −12.3 dBFS.
+    fake.push_report(&frame(0x21, 0x05, -123).encode(Crc::Fill));
+
+    let (conn, events) = Connection::spawn(transport);
+    let mut app = App::new(Theme::color());
+    app.synced(connect(&conn, &events, &store).unwrap());
+    let mut meters = Meters::default();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while meters.inputs[0] != -12.3 && Instant::now() < deadline {
+        drain_device(&events, &mut app, &mut meters).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(meters.inputs[0], -12.3, "IN1 meter frames reach the meters");
+    assert!(meters.playback[0][0] > -60.0, "{:?}", meters.playback);
+    assert!(meters.output[0] > -60.0, "{:?}", meters.output);
+
+    app.tick(&meters, Instant::now());
+    let (buf, _) = render(&app, &meters, 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("−12 pk"), "the IN1 peak readout moves:\n{t}");
+    // The IN1 meter is lit well up its height.
+    let lines: Vec<&str> = t.lines().collect();
+    let lit = lines[6..23]
+        .iter()
+        .filter(|l| l.chars().take(12).collect::<String>().contains("██"))
+        .count();
+    assert!(lit >= 8, "IN1 meter lit rows: {lit}\n{t}");
+}
+
+// ---------------------------------------------------------- panel focus
+
+/// Tab and 1–4 move between the panels, ←→ between strips, and a click on a
+/// strip focuses it; the focused strip and panel are drawn in the accent.
+#[test]
+fn panel_focus_reaches_every_strip() {
+    let mut app = synced_app(Theme::color());
+    let meters = fake_meters();
+    assert_eq!(app.focus().panel(), Panel::Input);
+
+    // Tab cycles input → mixer → loopback → output → input; Shift-Tab back.
+    let mut seen = vec![app.focus()];
+    for _ in 0..4 {
+        assert!(app.handle_key(key(KeyCode::Tab)).is_empty());
+        seen.push(app.focus());
+    }
+    assert_eq!(
+        seen,
+        [
+            input(0, InputControl::Mon),
+            Control::Mixer(0),
+            Control::Loopback(0),
+            Control::Output(0),
+            input(0, InputControl::Mon),
+        ]
+    );
+    app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(app.focus(), Control::Output(0));
+
+    // 1–4 jump to a panel.
+    for (c, want) in [
+        ('2', Control::Mixer(0)),
+        ('3', Control::Loopback(0)),
+        ('4', Control::Output(0)),
+        ('1', input(0, InputControl::Mon)),
+    ] {
+        assert!(app.handle_key(ch(c)).is_empty());
+        assert_eq!(app.focus(), want);
+    }
+
+    // ←→ walk the strips of a panel, clamped; nothing reaches the device.
+    app.handle_key(ch('2'));
+    for want in [1, 2, 3, 3] {
+        assert!(app.handle_key(key(KeyCode::Right)).is_empty());
+        assert_eq!(app.focus(), Control::Mixer(want));
+    }
+    for k in [ch(' '), ch('0'), key(KeyCode::Up), key(KeyCode::Enter)] {
+        assert!(app.handle_key(k).is_empty(), "the mixer is not wired yet");
+    }
+    app.handle_key(ch('4'));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(app.focus(), Control::Output(2));
+
+    // The focused strip's border and its panel's border are the accent.
+    app.handle_key(ch('2'));
+    app.handle_key(key(KeyCode::Right));
+    let (buf, hits) = render(&app, &meters, 120, 40);
+    let pb12 = hits.rect(Hit::Focus(Control::Mixer(1))).unwrap();
+    assert_eq!(buf[(pb12.x, pb12.y)].fg, Theme::ACCENT, "PB 1/2 border");
+    let pb34 = hits.rect(Hit::Focus(Control::Mixer(2))).unwrap();
+    assert_ne!(buf[(pb34.x, pb34.y)].fg, Theme::ACCENT);
+    let top_left_of_mixer = (0..120u16)
+        .find(|&x| buf[(x, 4)].symbol() == "╭" && x > 0)
+        .unwrap();
+    assert_eq!(
+        buf[(top_left_of_mixer, 4)].fg,
+        Theme::ACCENT,
+        "mixer panel border"
+    );
+
+    // Every strip has a click target that focuses it.
+    let none = KeyModifiers::NONE;
+    let down = MouseEventKind::Down(MouseButton::Left);
+    let mut targets = vec![];
+    for i in 0..4 {
+        targets.push(Control::Mixer(i));
+    }
+    for i in 0..2 {
+        targets.push(Control::Loopback(i));
+    }
+    for i in 0..3 {
+        targets.push(Control::Output(i));
+    }
+    for c in targets {
+        let r = hits.rect(Hit::Focus(c)).unwrap_or_else(|| panic!("{c:?}"));
+        let a = app.handle_mouse(mouse(down, r.x + 2, r.bottom() - 2, none), &hits);
+        assert!(a.is_empty());
+        assert_eq!(app.focus(), c);
+    }
+    // A click on an empty spot of an input strip focuses that input, and
+    // flips nothing.
+    let in2 = hits.rect(Hit::Focus(input(1, InputControl::Mon))).unwrap();
+    let a = app.handle_mouse(mouse(down, in2.x + 1, in2.y, none), &hits);
+    assert!(a.is_empty());
+    assert_eq!(app.focus(), input(1, InputControl::Mon));
+
+    // The footer and help say how.
+    let t = text(&buf);
+    assert!(t.contains("tab 1-4 panel"), "{t}");
+    app.handle_key(ch('?'));
+    let (buf, _) = render(&app, &meters, 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("next / previous panel") && t.contains("input, mixer, loopback, output"));
+}
+
+/// Real crossterm events, through the same function the event loop uses:
+/// a flood of pointer motion (crossterm's capture reports every move) does
+/// not hold up the click behind it, and wheel, drag and tab clicks work.
+#[test]
+fn mouse_events_through_the_event_loop() {
+    use crossterm::event::Event;
+    let meters = fake_meters();
+    let mut app = synced_app(Theme::color());
+    let (_, hits) = render(&app, &meters, 120, 40);
+    let none = KeyModifiers::NONE;
+    let ev = |kind, r: Rect| Event::Mouse(mouse(kind, r.x, r.y, none));
+    let inst2 = hits
+        .rect(Hit::Control(input(1, InputControl::Inst)))
+        .unwrap();
+
+    let mut queue: Vec<Event> = (0..2000)
+        .map(|i| Event::Mouse(mouse(MouseEventKind::Moved, (i % 100) as u16, 10, none)))
+        .collect();
+    queue.push(ev(MouseEventKind::Down(MouseButton::Left), inst2));
+    queue.push(ev(MouseEventKind::Up(MouseButton::Left), inst2));
+    let mut it = queue.into_iter();
+    let a = process_input(&mut app, &mut it, &hits);
+    assert_eq!(sends(&a), [frame(0x22, 0x03, 0)], "the click, in one pass");
+    assert!(!app.state().inputs[1].inst);
+    // The release is next; then the queue is empty.
+    assert!(process_input(&mut app, &mut it, &hits).is_empty());
+    assert!(it.next().is_none());
+
+    // Wheel and drag on a knob.
+    let g1 = hits
+        .rect(Hit::Control(input(0, InputControl::Gain)))
+        .unwrap();
+    let a = process_input(
+        &mut app,
+        &mut [ev(MouseEventKind::ScrollUp, g1)].into_iter(),
+        &hits,
+    );
+    assert_eq!(app.state().inputs[0].gain_db, 13);
+    assert_eq!(sends(&a).len(), 1);
+    let at = |x: u16, y: u16, kind| Event::Mouse(mouse(kind, x, y, none));
+    let (x, y) = (g1.x + 2, g1.y + 2);
+    let drag = [
+        at(x, y, MouseEventKind::Down(MouseButton::Left)),
+        at(x, y - 1, MouseEventKind::Moved),
+        at(x, y - 4, MouseEventKind::Drag(MouseButton::Left)),
+        at(x, y - 4, MouseEventKind::Up(MouseButton::Left)),
+    ]
+    .into_iter();
+    for e in drag {
+        process_input(&mut app, &mut std::iter::once(e), &hits);
+    }
+    assert_eq!(app.state().inputs[0].gain_db, 17);
+
+    // A click on a mix tab and on a strip.
+    let tab = hits.rect(Hit::MixTab(1)).unwrap();
+    process_input(
+        &mut app,
+        &mut [ev(MouseEventKind::Down(MouseButton::Left), tab)].into_iter(),
+        &hits,
+    );
+    assert_eq!(app.mix(), 1);
+    let lb = hits.rect(Hit::Focus(Control::Loopback(1))).unwrap();
+    process_input(
+        &mut app,
+        &mut [ev(MouseEventKind::Down(MouseButton::Left), lb)].into_iter(),
+        &hits,
+    );
+    assert_eq!(app.focus(), Control::Loopback(1));
+
+    // Keys go through the same path.
+    let a = process_input(&mut app, &mut [Event::Key(ch('1'))].into_iter(), &hits);
+    assert!(a.is_empty());
+    assert_eq!(app.focus(), input(0, InputControl::Mon));
+}
+
+/// 0 dB reads −0, as in the official app: fader values and the gain.
+#[test]
+fn zero_db_reads_minus_zero() {
+    assert_eq!(ui::gain_text(0), "−0 dB");
+    assert_eq!(ui::gain_text(12), "+12 dB");
+    let mut app = synced_app(Theme::color());
+    let mut s = fake_state();
+    s.inputs[1].gain_db = 0;
+    app.synced(s);
+    let (buf, _) = render(&app, &fake_meters(), 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("−0 dB"), "IN2 gain:\n{t}");
+    assert!(t.contains("−0.0 dB"), "a 0 dB fader:\n{t}");
+    assert!(!t.contains(" 0.0 dB"), "{t}");
 }

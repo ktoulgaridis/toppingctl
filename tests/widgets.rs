@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Widget;
 
 use toppingctl::tui::theme::Theme;
-use toppingctl::tui::widgets::dial::{Dial, DIAL_HEIGHT, DIAL_WIDTH};
+use toppingctl::tui::widgets::dial::{Dial, DialStyle, DIAL_HEIGHT};
 use toppingctl::tui::widgets::fader::{fader_frac, fmt_db, Fader};
 use toppingctl::tui::widgets::meter::{
     peak_text, ClipHold, Meter, Scale, CLIP_HOLD, INPUT_SCALE_DB, PEAK_HOT_DB,
@@ -71,22 +71,24 @@ fn dots(buf: &Buffer) -> Vec<(f64, f64, Color)> {
     out
 }
 
-/// The dial's centre in dot units.
-fn centre() -> (f64, f64) {
-    (
-        (f64::from(DIAL_WIDTH) * 2.0 - 1.0) / 2.0,
-        (f64::from(DIAL_HEIGHT) * 4.0 - 1.0) / 2.0,
-    )
+/// The dial's centre and ring radius in dot units.
+fn geometry(buf: &Buffer) -> (f64, f64, f64) {
+    let (w, h) = (
+        f64::from(buf.area.width) * 2.0,
+        f64::from(buf.area.height) * 4.0,
+    );
+    ((w - 1.0) / 2.0, (h - 1.0) / 2.0, (w.min(h) - 1.0) / 2.0)
 }
 
-/// The pointer: the dots near the centre. Returns their mean angle in
-/// degrees (0 = right, 90 = up), or `None` when there are none.
+/// The pointer: the accent dots well inside the knob. Returns their mean
+/// angle in degrees (0 = right, 90 = up), or `None` when there are none.
 fn pointer_angle(buf: &Buffer) -> Option<f64> {
-    let (cx, cy) = centre();
+    let (cx, cy, r) = geometry(buf);
     let inner: Vec<(f64, f64)> = dots(buf)
         .into_iter()
+        .filter(|(_, _, c)| *c == Theme::ACCENT)
         .map(|(x, y, _)| (x - cx, cy - y))
-        .filter(|(x, y)| (x * x + y * y).sqrt() < 2.9)
+        .filter(|(x, y)| (x * x + y * y).sqrt() < r * 0.4)
         .collect();
     if inner.is_empty() {
         return None;
@@ -100,10 +102,10 @@ fn pointer_angle(buf: &Buffer) -> Option<f64> {
 
 /// Dots on the ring (ticks and the lit arc).
 fn ring_dots(buf: &Buffer) -> usize {
-    let (cx, cy) = centre();
+    let (cx, cy, r) = geometry(buf);
     dots(buf)
         .into_iter()
-        .filter(|(x, y, _)| ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() >= 2.9)
+        .filter(|(x, y, _)| ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() >= r - 1.6)
         .count()
 }
 
@@ -115,8 +117,11 @@ fn accent_cells(buf: &Buffer) -> usize {
 }
 
 fn dial(value: Option<f64>, bipolar: bool) -> Buffer {
-    let d = Dial::new(Theme::color()).value(value).bipolar(bipolar);
-    render(d, DIAL_WIDTH, DIAL_HEIGHT)
+    let d = Dial::new(Theme::color())
+        .value(value)
+        .bipolar(bipolar)
+        .style(DialStyle::Braille);
+    render(d, 13, 7)
 }
 
 fn close(a: f64, b: f64, tol: f64) -> bool {
@@ -164,6 +169,65 @@ fn dial_min_centre_max() {
     assert!(close(pointer_angle(&c).unwrap(), 90.0, 30.0));
 }
 
+/// The glyph dial (the default): `●` ticks lit up to the value, `·` unlit
+/// ones, a round knob, and an arrow in its middle pointing at the value.
+#[test]
+fn glyph_dial() {
+    let g = |v: Option<f64>, bi: bool, w: u16, h: u16| {
+        render(Dial::new(Theme::color()).value(v).bipolar(bi), w, h)
+    };
+    let lit = |b: &Buffer| {
+        b.content()
+            .iter()
+            .filter(|c| c.fg == Theme::ACCENT && c.symbol() != " ")
+            .count()
+    };
+    let hub = |b: &Buffer| {
+        let (w, h) = (b.area.width, b.area.height);
+        b[(w / 2, (h - 1) / 2)].clone()
+    };
+    for (w, h) in [(9, 5), (13, 7), (7, 3), (7, 4)] {
+        let min = g(Some(0.0), false, w, h);
+        let mid = g(Some(0.5), false, w, h);
+        let max = g(Some(1.0), false, w, h);
+        let at = |b: &Buffer| hub(b).symbol().to_string();
+        assert_eq!(at(&min), "↙", "{w}x{h} min: {:?}", rows(&min));
+        assert_eq!(at(&mid), "↑", "{w}x{h} centre: {:?}", rows(&mid));
+        assert_eq!(at(&max), "↘", "{w}x{h} max: {:?}", rows(&max));
+        assert_eq!(hub(&min).fg, Theme::ACCENT, "the pointer is the accent");
+        assert!(
+            lit(&min) < lit(&mid) && lit(&mid) < lit(&max),
+            "{w}x{h}: the lit arc grows"
+        );
+        // Pan lights from the centre: no lit ticks at centre.
+        let arc = |b: &Buffer| {
+            b.content()
+                .iter()
+                .filter(|c| c.fg == Theme::ACCENT && "●┏━┓┃┗┛".contains(c.symbol()))
+                .count()
+        };
+        assert_eq!(arc(&g(Some(0.5), true, w, h)), 0, "{w}x{h}");
+        assert!(arc(&g(Some(0.0), true, w, h)) > 0);
+        // Unknown: still a dial, nothing lit, a dim dot for a hub.
+        let u = g(None, false, w, h);
+        assert!(u.content().iter().all(|c| c.fg != Theme::ACCENT));
+        assert!(u.content().iter().filter(|c| c.symbol() != " ").count() >= 6);
+    }
+    // The ring form: unlit ticks are dim dots, lit ones accent `●`.
+    let r = g(Some(0.5), false, 13, 7);
+    assert!(r
+        .content()
+        .iter()
+        .any(|c| c.symbol() == "·" && c.fg == Theme::DIM));
+    assert!(r
+        .content()
+        .iter()
+        .any(|c| c.symbol() == "●" && c.fg == Theme::ACCENT));
+    // The small form: the box border is the scale, heavy where lit.
+    let b = rows(&g(Some(1.0), false, 7, 3));
+    assert_eq!(b[0], "┏━━━━━┓");
+}
+
 /// Monitor Mix: the device never reports it, so the dial is dim with no
 /// pointer and no lit arc, only the scale.
 #[test]
@@ -171,7 +235,6 @@ fn dial_unknown_is_dimmed() {
     let unknown = dial(None, false);
     assert_eq!(pointer_angle(&unknown), None, "no pointer");
     assert!(ring_dots(&unknown) > 0, "the scale is still drawn");
-    assert!(ring_dots(&unknown) <= ring_dots(&dial(Some(0.0), false)));
     assert_eq!(accent_cells(&unknown), 0, "nothing lit");
 }
 
@@ -193,7 +256,11 @@ fn dial_shows_value() {
         .content()
         .iter()
         .all(|c| c.fg == Color::Reset && c.bg == Color::Reset));
-    assert!(pointer_angle(&buf).is_some() || ring_dots(&buf) > 0);
+    let drawn = (0..3u16)
+        .flat_map(|y| (0..9u16).map(move |x| (x, y)))
+        .filter(|&p| buf[p].symbol() != " ")
+        .count();
+    assert!(drawn > 4, "the knob is drawn");
     assert_eq!(rows(&buf)[3].trim(), "L40");
 }
 
@@ -269,8 +336,10 @@ fn fader_scale_and_value_text() {
     assert!(fader_frac(-40.0, 0.0) > 0.0 && fader_frac(-40.0, 0.0) < fader_frac(-24.0, 0.0));
     assert_eq!(fader_frac(9.0, 6.0), 1.0, "clamped");
 
-    assert_eq!(fmt_db(0.0), "0.0 dB");
-    assert_eq!(fmt_db(-0.0), "0.0 dB", "no −0.0");
+    // 0 dB reads −0, as in the official app.
+    assert_eq!(fmt_db(0.0), "−0.0 dB");
+    assert_eq!(fmt_db(-0.0), "−0.0 dB");
+    assert_eq!(fmt_db(-0.04), "−0.0 dB");
     assert_eq!(fmt_db(-6.0), "−6.0 dB");
     assert_eq!(fmt_db(-12.0), "−12.0 dB");
     assert_eq!(fmt_db(3.0), "+3.0 dB");
