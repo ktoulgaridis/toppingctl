@@ -14,10 +14,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
-use hidapi::{HidApi, HidDevice};
+use hidapi::HidDevice;
 use toppingctl::capture::format_line;
-use toppingctl::device::{self, HidEntry};
-use toppingctl::error::{classify, is_interrupted, message, OpenFailure, Platform};
+use toppingctl::error::{is_interrupted, message, Platform};
+use toppingctl::open::open_e2x2;
 
 const USAGE: &str = "\
 Usage: hidsniff [--out <file>]
@@ -91,7 +91,7 @@ fn run(out: Option<PathBuf>) -> Result<()> {
     ctrlc::set_handler(move || handler_stop.store(true, Ordering::SeqCst))
         .context("installing the Ctrl-C handler")?;
 
-    let device = open_e2x2()?;
+    let device = open()?;
     // Create the file only once the device is open, so failures leave no empty capture.
     let out = match out {
         Some(path) => {
@@ -105,28 +105,8 @@ fn run(out: Option<PathBuf>) -> Result<()> {
     sniff(&device, out, &stop)
 }
 
-fn open_failure(failure: OpenFailure) -> anyhow::Error {
-    anyhow!(message(&failure, Platform::current()))
-}
-
-fn open_e2x2() -> Result<HidDevice> {
-    let api = HidApi::new().map_err(|e| open_failure(classify(&e)))?;
-    // Share the device with the official app instead of grabbing it.
-    #[cfg(target_os = "macos")]
-    api.set_open_exclusive(false);
-
-    let infos: Vec<_> = api.device_list().collect();
-    let entries: Vec<HidEntry> = infos
-        .iter()
-        .map(|info| HidEntry {
-            vendor_id: info.vendor_id(),
-            product_id: info.product_id(),
-            interface_number: info.interface_number(),
-        })
-        .collect();
-    let index = device::select(&entries).map_err(|e| open_failure(e.into()))?;
-    api.open_path(infos[index].path())
-        .map_err(|e| open_failure(classify(&e)))
+fn open() -> Result<HidDevice> {
+    open_e2x2().map_err(|failure| anyhow!(message(&failure, Platform::current())))
 }
 
 /// Reads input reports until `stop` is set or a read or write fails, then
