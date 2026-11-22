@@ -1085,7 +1085,7 @@ fn draw_pb_strip(
         buf,
         g,
         g.y + d + 1,
-        &[value_span(s.fader_db, s.mute, t, true)],
+        &[value_span(s.fader_l_db, s.mute_l, t, true)],
         hits,
     );
     let body = Rect::new(g.x, g.y + d + 2, g.width, fader_h);
@@ -1095,7 +1095,7 @@ fn draw_pb_strip(
         buf,
         body,
         t,
-        s.fader_db,
+        s.fader_l_db,
         MIX_FADER_MAX_DB,
         meters.playback[i],
         clips,
@@ -1103,7 +1103,16 @@ fn draw_pb_strip(
         hits,
     );
     hits.push(Hit::Control(fc), f);
-    strip_switches(buf, g, app, strip, 0, [s.phase, s.solo, s.mute], rows, hits);
+    strip_switches(
+        buf,
+        g,
+        app,
+        strip,
+        0,
+        [s.phase_l, s.solo_l, s.mute_l],
+        rows,
+        hits,
+    );
 }
 
 /// Rows for a mix strip's Ø / SOLO / MUTE: stacked when the strip is tall
@@ -1301,7 +1310,7 @@ fn draw_loopback_panel(
             &[
                 pill("LINK", lb.link, PillKind::Normal, false, t),
                 Span::raw(" "),
-                pill("MUTE", lb.mute, PillKind::Danger, false, t),
+                pill("MUTE", lb.mute_l, PillKind::Danger, false, t),
             ],
             hits,
         );
@@ -1309,7 +1318,7 @@ fn draw_loopback_panel(
             buf,
             r,
             r.y + 2,
-            &levels_spans(lb.level_l_db, lb.level_r_db, lb.mute, t),
+            &levels_spans(lb.level_l_db, lb.level_r_db, lb.mute_l, t),
             hits,
         );
         let body = Rect::new(r.x, r.y + 3, r.width, r.height - 3);

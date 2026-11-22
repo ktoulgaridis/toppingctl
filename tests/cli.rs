@@ -260,7 +260,7 @@ fn parse_paths_and_values() {
     assert!(set(&s, "in2.inst", "on").inputs[1].inst);
     assert_eq!(set(&s, "in1.gain", "9").inputs[0].gain_db, 9);
     assert_eq!(
-        set(&s, "mix.c.pb56.fader", "-12").mixes[2].pb56.fader_db,
+        set(&s, "mix.c.pb56.fader", "-12").mixes[2].pb56.fader_l_db,
         -12.0
     );
     assert!(set(&s, "mix.a.in2.phase", "1").mixes[0].in2.phase);

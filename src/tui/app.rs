@@ -893,7 +893,7 @@ impl App {
         match strip {
             0 if ch == 0 => m.in1.fader_db,
             0 => m.in2.fader_db,
-            _ => pb(m, strip).fader_db,
+            _ => pb(m, strip).fader_l_db,
         }
     }
 
@@ -915,7 +915,7 @@ impl App {
         match strip {
             0 if ch == 0 => m.in1.fader_db = db,
             0 => m.in2.fader_db = db,
-            _ => pb_mut(m, strip).fader_db = db,
+            _ => pb_mut(m, strip).set_fader(db),
         }
         self.commit(new)
     }
@@ -975,7 +975,13 @@ impl App {
             }
             _ => {
                 let s = pb_mut(m, strip);
-                (&mut s.mute, &mut s.solo, &mut s.phase)
+                match ctl {
+                    MixControl::Mute(_) => (s.mute_l, s.mute_r) = (!s.mute_l, !s.mute_l),
+                    MixControl::Solo(_) => (s.solo_l, s.solo_r) = (!s.solo_l, !s.solo_l),
+                    MixControl::Phase(_) => (s.phase_l, s.phase_r) = (!s.phase_l, !s.phase_l),
+                    _ => return Vec::new(),
+                }
+                return self.commit(new);
             }
         };
         match ctl {

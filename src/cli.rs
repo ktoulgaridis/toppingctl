@@ -368,47 +368,33 @@ impl Path {
                     InputField::Phantom => input.phantom = Some(b),
                 }
             }
-            (Path::Strip(m, s, f), v) => {
-                let (fader, mute, solo, phase) = match strip_mut(state, m, s) {
-                    StripMut::Mono(strip) => {
-                        if let (StripField::Pan, Value::Pan(p)) = (f, v) {
-                            strip.pan = p;
-                        }
-                        (
-                            &mut strip.fader_db,
-                            &mut strip.mute,
-                            &mut strip.solo,
-                            &mut strip.phase,
-                        )
-                    }
-                    StripMut::Stereo(strip) => {
-                        // On a stereo strip, `pan` is a balance over both pans.
-                        if let (StripField::Pan, Value::Pan(p)) = (f, v) {
-                            strip.set_balance(p);
-                        }
-                        (
-                            &mut strip.fader_db,
-                            &mut strip.mute,
-                            &mut strip.solo,
-                            &mut strip.phase,
-                        )
-                    }
-                };
-                match (f, v) {
-                    (StripField::Fader, Value::Db(db)) => *fader = db,
-                    (StripField::Mute, Value::Bool(b)) => *mute = b,
-                    (StripField::Solo, Value::Bool(b)) => *solo = b,
-                    (StripField::Phase, Value::Bool(b)) => *phase = b,
+            (Path::Strip(m, s, f), v) => match strip_mut(state, m, s) {
+                StripMut::Mono(strip) => match (f, v) {
+                    (StripField::Pan, Value::Pan(p)) => strip.pan = p,
+                    (StripField::Fader, Value::Db(db)) => strip.fader_db = db,
+                    (StripField::Mute, Value::Bool(b)) => strip.mute = b,
+                    (StripField::Solo, Value::Bool(b)) => strip.solo = b,
+                    (StripField::Phase, Value::Bool(b)) => strip.phase = b,
                     _ => {}
-                }
-            }
+                },
+                // On a stereo strip, `pan` is a balance over both pans and
+                // the rest set both channels.
+                StripMut::Stereo(strip) => match (f, v) {
+                    (StripField::Pan, Value::Pan(p)) => strip.set_balance(p),
+                    (StripField::Fader, Value::Db(db)) => strip.set_fader(db),
+                    (StripField::Mute, Value::Bool(b)) => (strip.mute_l, strip.mute_r) = (b, b),
+                    (StripField::Solo, Value::Bool(b)) => (strip.solo_l, strip.solo_r) = (b, b),
+                    (StripField::Phase, Value::Bool(b)) => (strip.phase_l, strip.phase_r) = (b, b),
+                    _ => {}
+                },
+            },
             (Path::Link(m), Value::Bool(b)) => state.mixes[m].link = b,
             (Path::Loopback(n, f), v) => {
                 let lb = &mut state.loopbacks[n];
                 match (f, v) {
                     (LoopbackField::Source, Value::Source(src)) => lb.source = src,
                     (LoopbackField::Level, Value::Db(db)) => lb.set_level(db),
-                    (LoopbackField::Mute, Value::Bool(b)) => lb.mute = b,
+                    (LoopbackField::Mute, Value::Bool(b)) => lb.set_mute(b),
                     _ => {}
                 }
             }
@@ -449,7 +435,9 @@ impl Path {
             Path::Strip(m, s, f) => {
                 let (fader, pan, mute, solo, phase) = match strip_ref(state, m, s) {
                     StripRef::Mono(s) => (s.fader_db, s.pan, s.mute, s.solo, s.phase),
-                    StripRef::Stereo(s) => (s.fader_db, s.balance(), s.mute, s.solo, s.phase),
+                    StripRef::Stereo(s) => {
+                        (s.fader_l_db, s.balance(), s.mute_l, s.solo_l, s.phase_l)
+                    }
                 };
                 match f {
                     StripField::Fader => show_db(fader),
@@ -465,7 +453,7 @@ impl Path {
                 match f {
                     LoopbackField::Source => name_of(&SOURCES, lb.source).into(),
                     LoopbackField::Level => show_db(lb.level_l_db),
-                    LoopbackField::Mute => on_off(lb.mute),
+                    LoopbackField::Mute => on_off(lb.mute_l),
                 }
             }
             Path::Out(f) => {

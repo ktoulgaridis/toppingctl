@@ -92,11 +92,11 @@ fn fake_state() -> State {
     a.in1.pan = 0.3;
     a.in2.pan = 0.7;
     a.in2.mute = true;
-    a.pb34.fader_db = -12.0;
+    a.pb34.set_fader(-12.0);
     a.pb34.pan_l = 0.2;
     a.pb34.pan_r = 0.8;
-    a.pb34.solo = true;
-    a.pb56.fader_db = f64::NEG_INFINITY;
+    (a.pb34.solo_l, a.pb34.solo_r) = (true, true);
+    a.pb56.set_fader(f64::NEG_INFINITY);
     a.pb56.link = false;
     s.loopbacks[1].set_level(-6.0);
     s.output.source = Source::MixA;
