@@ -70,6 +70,8 @@ pub struct HitMap {
     entries: Vec<(Hit, Rect)>,
     /// The pixel widgets the last render placed (see [`draw_with`]).
     pixels: Vec<PixelSpot>,
+    /// The open modal's box, from the last render.
+    modal: Option<Rect>,
 }
 
 impl HitMap {
@@ -96,6 +98,11 @@ impl HitMap {
             .rev()
             .find(|(h, _)| *h == hit)
             .map(|&(_, r)| r)
+    }
+
+    /// The open modal's box, when one was drawn.
+    pub fn modal_rect(&self) -> Option<Rect> {
+        self.modal
     }
 
     pub fn is_empty(&self) -> bool {
@@ -132,8 +139,9 @@ pub fn draw(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
 /// [`draw`], then, with a pixel layer, the pixel widgets: the layer queues
 /// the kitty commands for what changed (the caller writes them after the
 /// frame, see [`PixelLayer::take_output`]) and the text form under each
-/// placed widget is blanked, labels kept. Not while a modal is open: every
-/// placement goes, so the modal's text stays on top.
+/// placed widget is blanked, labels kept. While a modal is open only the
+/// widgets under its box go, so its text stays on top and the rest of the
+/// screen neither flickers nor gets sent again.
 pub fn draw_with(
     f: &mut Frame,
     app: &App,
@@ -142,13 +150,18 @@ pub fn draw_with(
 ) -> HitMap {
     let hits = draw_text(f, app, meters);
     if let Some(layer) = pixels {
-        let spots = if app.modal().is_none() {
-            hits.pixels()
-        } else {
-            &[]
+        let spots: Vec<PixelSpot> = match hits.modal_rect() {
+            None if app.modal().is_none() => hits.pixels().to_vec(),
+            None => Vec::new(),
+            Some(m) => hits
+                .pixels()
+                .iter()
+                .filter(|s| !s.rect.intersects(m))
+                .cloned()
+                .collect(),
         };
-        layer.update(spots, f.area());
-        clear_under(layer, spots, f.buffer_mut());
+        layer.update(&spots, f.area());
+        clear_under(layer, &spots, f.buffer_mut());
     }
     hits
 }
@@ -1479,8 +1492,16 @@ pub fn monitor_mix_text(balance: Option<i32>) -> String {
 }
 
 /// A centred modal box; returns its inner area.
-fn modal_box(buf: &mut Buffer, area: Rect, t: Theme, title: &str, w: u16, h: u16) -> Rect {
+fn modal_box(
+    buf: &mut Buffer,
+    area: Rect,
+    t: Theme,
+    title: &str,
+    (w, h): (u16, u16),
+    hits: &mut HitMap,
+) -> Rect {
     let r = centered(area, w, h);
+    hits.modal = Some(r);
     Clear.render(r, buf);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -1504,7 +1525,7 @@ fn confirm(
     let text_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
     let w = (text_w + 8).max(40);
     let h = lines.len() as u16 + 6;
-    let inner = modal_box(buf, area, t, title, w, h);
+    let inner = modal_box(buf, area, t, title, (w, h), hits);
     for (i, line) in lines.iter().enumerate() {
         put(
             buf,
@@ -1545,7 +1566,7 @@ fn rate_list(
     hits: &mut HitMap,
 ) {
     let h = RATES.len() as u16 + 6;
-    let inner = modal_box(buf, area, t, " Sample rate ", 30, h);
+    let inner = modal_box(buf, area, t, " Sample rate ", (30, h), hits);
     for (i, &r) in RATES.iter().enumerate() {
         let mark = if current == Some(r) { "●" } else { " " };
         let line = format!(" {mark} {:<10}", format_khz(Some(r)));
@@ -1595,7 +1616,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ("", "loopback, output: shown, set in a later version"),
     ];
     let h = keys.len() as u16 + 6;
-    let inner = modal_box(buf, area, t, " Help ", 80, h);
+    let inner = modal_box(buf, area, t, " Help ", (80, h), hits);
     for (i, (k, what)) in keys.iter().enumerate() {
         let y = inner.y + 1 + i as u16;
         put(buf, inner, inner.x + 3, y, k, t.heading());

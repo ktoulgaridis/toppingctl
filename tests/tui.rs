@@ -1590,18 +1590,26 @@ fn pixel_widgets_redraw() {
     assert!(out.starts_with("\x1b_Ga=d,d=A,q=2\x1b\\"), "{out:?}");
     assert!(placements(&out).is_empty());
 
-    // Back to full size, then a modal: every placement is deleted so its
-    // text stays on top, and the text widgets are drawn under it.
+    // Back to full size, then a modal: only the placements under its box
+    // are deleted so its text stays on top (#37: the rest no longer
+    // flickers); nothing new is placed or sent.
     draw_pixels(&app, &meters, 120, 40, &mut layer);
     let built = layer.built();
     app.handle_key(ch('?'));
-    let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let (_, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let modal = hits.modal_rect().unwrap();
+    let under = hits
+        .pixels()
+        .iter()
+        .filter(|s| s.rect.intersects(modal))
+        .count();
+    assert!(under > 0 && under < all);
     assert!(placements(&out).is_empty());
-    assert_eq!(count(&out, "d"), all);
-    // Closed: placed again from the cache.
+    assert_eq!(count(&out, "d"), under);
+    // Closed: those placed again from the cache.
     app.handle_key(key(KeyCode::Esc));
     let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
-    assert_eq!(placements(&out).len(), all);
+    assert_eq!(placements(&out).len(), under);
     assert_eq!(count(&out, "t"), 0);
     assert_eq!(layer.built(), built);
 

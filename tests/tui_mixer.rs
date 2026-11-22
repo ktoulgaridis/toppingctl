@@ -1209,3 +1209,85 @@ fn buttons_are_square_lit_caps() {
     let otop = (0..h).find(|&y| px(&off, w / 2, y)[3] > 200).unwrap();
     assert!(px(&off, oleft, otop)[3] > 200, "square corner when off");
 }
+
+// ------------------------------------------------------ modals (#37)
+
+/// A modal (rate list, help, 48V confirm) keeps the pixel widgets around
+/// it: only those under the modal's box go, nothing is sent again, and
+/// closing it puts them back from the cache without re-sending an image.
+#[test]
+fn modals_keep_the_pixels_around_them() {
+    use toppingctl::tui::app::InputControl;
+    let meters = fake_meters();
+    let mut state = State::default();
+    state.inputs[0].phantom = Some(false);
+    let mut app = app_with(state);
+    let mut layer = kitty_layer();
+    layer.set_resize_settle(Duration::ZERO);
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let mut frame_out = |app: &App, layer: &mut toppingctl::tui::pixel::PixelLayer| {
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| hits = ui::draw_with(f, app, &meters, Some(&mut *layer)))
+            .unwrap();
+        (hits, layer.take_output())
+    };
+    for _ in 0..40 {
+        if frame_out(&app, &mut layer).1.is_empty() {
+            break;
+        }
+    }
+    let (base, out) = frame_out(&app, &mut layer);
+    assert!(out.is_empty(), "idle before");
+    type Open = Box<dyn Fn(&mut App)>;
+    let opens: [(&str, Open); 3] = [
+        ("rate", Box::new(|a: &mut App| drop(a.handle_key(ch('r'))))),
+        ("help", Box::new(|a: &mut App| drop(a.handle_key(ch('?'))))),
+        (
+            "48V",
+            Box::new(|a: &mut App| {
+                a.handle_key(ch('1'));
+                a.handle_key(key(KeyCode::Down));
+                assert_eq!(
+                    a.focus(),
+                    Control::Input {
+                        ch: 0,
+                        kind: InputControl::Phantom
+                    }
+                );
+                drop(a.handle_key(ch(' ')));
+            }),
+        ),
+    ];
+    for (name, open) in opens {
+        open(&mut app);
+        assert!(app.modal().is_some(), "{name}");
+        let (hits, out) = frame_out(&app, &mut layer);
+        let modal = hits.modal_rect().expect("the modal's box");
+        assert!(!out.contains("a=t"), "{name}: no image sent on open");
+        for s in base.pixels() {
+            let under = s.rect.intersects(modal);
+            assert_eq!(
+                layer.is_placed(s.rect),
+                !under,
+                "{name}: {s:?} vs {modal:?}"
+            );
+        }
+        // Idle while open.
+        assert!(
+            frame_out(&app, &mut layer).1.is_empty(),
+            "{name}: idle open"
+        );
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.modal().is_none(), "{name}");
+        let (_, out) = frame_out(&app, &mut layer);
+        assert!(!out.contains("a=t"), "{name}: put back from the cache");
+        for s in base.pixels() {
+            assert!(layer.is_placed(s.rect), "{name}: {s:?} back");
+        }
+        assert!(
+            frame_out(&app, &mut layer).1.is_empty(),
+            "{name}: idle after"
+        );
+    }
+}
