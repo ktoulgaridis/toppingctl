@@ -7,6 +7,7 @@ pub mod device;
 pub mod error;
 pub mod frame;
 pub mod open;
+pub mod rate;
 pub mod state;
 pub mod sync;
 pub mod tui;

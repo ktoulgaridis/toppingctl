@@ -11,6 +11,15 @@ anyhow = "1"
 crossterm = "0.29"
 ctrlc = "3"
 ratatui = "0.30"
+# Pixel knobs in kitty / Ghostty (#34): ratatui-image places them, tiny-skia
+# draws them. `image` is ratatui-image's own image type (already in its tree).
+ratatui-image = { version = "10.0.8", default-features = false, features = ["crossterm"] }
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+image = { version = "0.25.6", default-features = false }
+# The direct kitty placements (#34): zlib and base64 for the image data.
+# Both were already in the tree (png, ratatui-image).
+flate2 = "1.1"
+base64-simd = "0.8"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 

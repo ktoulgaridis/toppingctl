@@ -16,7 +16,7 @@ use std::sync::mpsc::Receiver;
 
 use crate::conn::{Connection, Event};
 use crate::frame::Frame;
-use crate::state::{Source, State, Strip};
+use crate::state::{PbStrip, Source, State, Strip};
 use crate::sync::{self, Store, StoreError, SyncError};
 
 /// `toppingctl --help`.
@@ -52,8 +52,9 @@ Values:
   switches    on, off, true, false, 1, 0
   gain        0 .. 20 dB, e.g. 12 or 12dB
   fader       -inf .. +6 dB, e.g. -6, -6dB or -inf
-  level       -inf .. 0 dB (loopback and out levels)
-  pan         L100 .. C .. R100, or 0 (left) .. 1 (right)
+  level       -inf .. 0 dB (loopback and out levels; sets L and R)
+  pan         L100 .. C .. R100, or 0 (left) .. 1 (right); on pb12,
+              pb34 and pb56 a balance over the two channels' pans
   source      mixa mixb mixc pb12 pb34 pb56 in1 in2 in1+2
   brightness  0, 1, 2 (1 = normal)
 
@@ -368,13 +369,36 @@ impl Path {
                 }
             }
             (Path::Strip(m, s, f), v) => {
-                let strip = strip_mut(state, m, s);
+                let (fader, mute, solo, phase) = match strip_mut(state, m, s) {
+                    StripMut::Mono(strip) => {
+                        if let (StripField::Pan, Value::Pan(p)) = (f, v) {
+                            strip.pan = p;
+                        }
+                        (
+                            &mut strip.fader_db,
+                            &mut strip.mute,
+                            &mut strip.solo,
+                            &mut strip.phase,
+                        )
+                    }
+                    StripMut::Stereo(strip) => {
+                        // On a stereo strip, `pan` is a balance over both pans.
+                        if let (StripField::Pan, Value::Pan(p)) = (f, v) {
+                            strip.set_balance(p);
+                        }
+                        (
+                            &mut strip.fader_db,
+                            &mut strip.mute,
+                            &mut strip.solo,
+                            &mut strip.phase,
+                        )
+                    }
+                };
                 match (f, v) {
-                    (StripField::Fader, Value::Db(db)) => strip.fader_db = db,
-                    (StripField::Pan, Value::Pan(p)) => strip.pan = p,
-                    (StripField::Mute, Value::Bool(b)) => strip.mute = b,
-                    (StripField::Solo, Value::Bool(b)) => strip.solo = b,
-                    (StripField::Phase, Value::Bool(b)) => strip.phase = b,
+                    (StripField::Fader, Value::Db(db)) => *fader = db,
+                    (StripField::Mute, Value::Bool(b)) => *mute = b,
+                    (StripField::Solo, Value::Bool(b)) => *solo = b,
+                    (StripField::Phase, Value::Bool(b)) => *phase = b,
                     _ => {}
                 }
             }
@@ -383,7 +407,7 @@ impl Path {
                 let lb = &mut state.loopbacks[n];
                 match (f, v) {
                     (LoopbackField::Source, Value::Source(src)) => lb.source = src,
-                    (LoopbackField::Level, Value::Db(db)) => lb.level_db = db,
+                    (LoopbackField::Level, Value::Db(db)) => lb.set_level(db),
                     (LoopbackField::Mute, Value::Bool(b)) => lb.mute = b,
                     _ => {}
                 }
@@ -392,7 +416,7 @@ impl Path {
                 let out = &mut state.output;
                 match (f, v) {
                     (OutField::Source, Value::Source(src)) => out.source = src,
-                    (OutField::Level, Value::Db(db)) => out.level_db = db,
+                    (OutField::Level, Value::Db(db)) => out.set_level(db),
                     (OutField::Headphones, Value::Bool(b)) => out.headphones = b,
                     (OutField::Line, Value::Bool(b)) => out.line = b,
                     _ => {}
@@ -423,13 +447,16 @@ impl Path {
                 }
             }
             Path::Strip(m, s, f) => {
-                let strip = strip_ref(state, m, s);
+                let (fader, pan, mute, solo, phase) = match strip_ref(state, m, s) {
+                    StripRef::Mono(s) => (s.fader_db, s.pan, s.mute, s.solo, s.phase),
+                    StripRef::Stereo(s) => (s.fader_db, s.balance(), s.mute, s.solo, s.phase),
+                };
                 match f {
-                    StripField::Fader => show_db(strip.fader_db),
-                    StripField::Pan => show_pan(strip.pan),
-                    StripField::Mute => on_off(strip.mute),
-                    StripField::Solo => on_off(strip.solo),
-                    StripField::Phase => on_off(strip.phase),
+                    StripField::Fader => show_db(fader),
+                    StripField::Pan => show_pan(pan),
+                    StripField::Mute => on_off(mute),
+                    StripField::Solo => on_off(solo),
+                    StripField::Phase => on_off(phase),
                 }
             }
             Path::Link(m) => on_off(state.mixes[m].link),
@@ -437,7 +464,7 @@ impl Path {
                 let lb = &state.loopbacks[n];
                 match f {
                     LoopbackField::Source => name_of(&SOURCES, lb.source).into(),
-                    LoopbackField::Level => show_db(lb.level_db),
+                    LoopbackField::Level => show_db(lb.level_l_db),
                     LoopbackField::Mute => on_off(lb.mute),
                 }
             }
@@ -445,7 +472,7 @@ impl Path {
                 let out = &state.output;
                 match f {
                     OutField::Source => name_of(&SOURCES, out.source).into(),
-                    OutField::Level => show_db(out.level_db),
+                    OutField::Level => show_db(out.level_l_db),
                     OutField::Headphones => on_off(out.headphones),
                     OutField::Line => on_off(out.line),
                 }
@@ -484,25 +511,36 @@ impl fmt::Display for Path {
     }
 }
 
-fn strip_mut(state: &mut State, m: usize, s: StripId) -> &mut Strip {
+/// A mix strip: mono (IN1, IN2) or stereo (PB).
+enum StripMut<'a> {
+    Mono(&'a mut Strip),
+    Stereo(&'a mut PbStrip),
+}
+
+enum StripRef<'a> {
+    Mono(&'a Strip),
+    Stereo(&'a PbStrip),
+}
+
+fn strip_mut(state: &mut State, m: usize, s: StripId) -> StripMut<'_> {
     let mix = &mut state.mixes[m];
     match s {
-        StripId::In1 => &mut mix.in1,
-        StripId::In2 => &mut mix.in2,
-        StripId::Pb12 => &mut mix.pb12,
-        StripId::Pb34 => &mut mix.pb34,
-        StripId::Pb56 => &mut mix.pb56,
+        StripId::In1 => StripMut::Mono(&mut mix.in1),
+        StripId::In2 => StripMut::Mono(&mut mix.in2),
+        StripId::Pb12 => StripMut::Stereo(&mut mix.pb12),
+        StripId::Pb34 => StripMut::Stereo(&mut mix.pb34),
+        StripId::Pb56 => StripMut::Stereo(&mut mix.pb56),
     }
 }
 
-fn strip_ref(state: &State, m: usize, s: StripId) -> &Strip {
+fn strip_ref(state: &State, m: usize, s: StripId) -> StripRef<'_> {
     let mix = &state.mixes[m];
     match s {
-        StripId::In1 => &mix.in1,
-        StripId::In2 => &mix.in2,
-        StripId::Pb12 => &mix.pb12,
-        StripId::Pb34 => &mix.pb34,
-        StripId::Pb56 => &mix.pb56,
+        StripId::In1 => StripRef::Mono(&mix.in1),
+        StripId::In2 => StripRef::Mono(&mix.in2),
+        StripId::Pb12 => StripRef::Stereo(&mix.pb12),
+        StripId::Pb34 => StripRef::Stereo(&mix.pb34),
+        StripId::Pb56 => StripRef::Stereo(&mix.pb56),
     }
 }
 

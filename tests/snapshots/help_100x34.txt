@@ -1,0 +1,34 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ▄█▄ ▄▄▄ ▄▄▄ ▄▄▄ ▄ ▄▄▄ ▄▄▄ ▄▄▄ ▄█▄ █   E2x2                                 default ▾  │  — kHz ▾ │
+│  █▄ █▄█ █▀▀ █▀▀ █ █ █ ▀▀█ █▄▄  █▄ █▄  fw 1.13         s save  │  l load  │  w store  │  ● synced │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭┤¹input├─╭ Help ────────────────────────────────────────────────────────────────────────╮─────────╮
+│╭───── IN│                                                                              │ 5/6 ───╮│
+││ ▔▔ −18 │   Tab  Shift-Tab   next / previous panel                                     │ ⢠⢖⠭⠭⡲⡄ ││
+││ ▕   0  │   1  2  3  4       input, mixer, loopback, output                            │ ⡇⡇ ⢄⢸⢸ ││
+││ ▕  −6  │   ↑ ↓              move along an input                                       │ ⠘⠊⠒⠒⠑⠃ ││
+││ ▕ −12  │   ← →              next strip; on a gain knob −1 / +1 dB                     │  R100  ││
+││ ▃▃     │   Shift ← →        gain −10 / +10 dB                                         │INK     ││
+││ ██−24  │   0                reset the gain to −0 dB                                   │ dB     ││
+││ ██     │   space            toggle the focused switch                                 │┃     ▔ ││
+││ ██   ⢀⡴│   a  b  c          show mix A / B / C                                        │┃ 0   ▕ ││
+││ ██−36⣾⠱│   r                sample rate list (sets it through PipeWire)               │┃ −6  ▕ ││
+││ ██   ⢿⡰│   ?                this help                                                 │┃ −12 ▕ ││
+││ ██−48⠈⠃│   q  Ctrl-C        quit                                                      │┃ −24 ▕ ││
+││ ██     │                                                                              │●━−∞  ▕ ││
+││ ██−60 +│   click            focus a strip; flip a switch; pick a mix                  │S   M   ││
+│╰────────│   wheel            turn a knob (Shift ×10)                                   │────────╯│
+╰─────────│   drag             turn a knob (up / down)                                   │─────────╯
+╭┤³loopbac│   double-click     reset a knob                                              │─────────╮
+│╭── LOOP │                                                                              │NE ─────╮│
+││   PB 3/│                    PHONE: space or a click sets the level switch             │        ││
+││  LINK  │                    mixer, loopback, output: shown, set in a later version    │el      ││
+││    −0.0│                                                                              │  0 dBu ││
+││▔   0━━●│                                 [Esc] close                                  │        ││
+││▕  −6  ┃│                                                                              │        ││
+││▄ −12  ┃╰──────────────────────────────────────────────────────────────────────────────╯        ││
+││█ −24  ┃  −24 █││▕ −24  ┃  −24 ▕││││   █ −24  ┃  −24 █    ││                 ││                 ││
+││█  −∞  ┃  −∞  █││▕  −∞  ┃  −∞  ▕││││   █  −∞  ┃  −∞  █    ││       +23       ││                 ││
+│╰───────────────╯╰───────────────╯││╰──────────────────────╯╰─────────────────╯╰─────────────────╯│
+╰──────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯
+ tab 1-4 panel   ↑↓←→ move   ←→ gain ⇧×10   space toggle   0 reset   a b c mix   ? help   q quit

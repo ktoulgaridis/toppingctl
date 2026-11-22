@@ -75,8 +75,8 @@ Dir: **w** = host→device write, **r** = device→host report.
 
 | param | meaning | encoding | range | dir | verified |
 |---|---|---|---|---|---|
-| `01` | volume knob position | raw step count | seen `0x23`…`0x4d` | r | reply (knob turned on the device) |
-| `02` | Phone Out Gain (device gain button) | bool | | w, r | echo |
+| `01` | Monitor Mix balance (input ↔ playback) | int, 50 = centre | 0…100 (seen `0x23`…`0x4d`) | r | reply (knob turned on the device); RE of app V1.09 (see below) |
+| `02` | phone out level switch: +17 dBu / 0 dBu (the device's gain button) | bool | | w, r | echo; RE of app V1.09 for the labels |
 
 ## Group `1a`: commands
 
@@ -134,16 +134,28 @@ Param `<o><s>`: o = output (`1` L, `2` R), s = source (`1` IN1, `2` IN2, `3`…`
 
 The app's fader and pan are a linear split of the level across L and R (centre = 0.5 each).
 
+## Monitor Mix and the phone out (static RE)
+
+From a read-only look at the official app V1.09 (class and method names and UI strings, never run):
+
+- `11 01` is the **Monitor Mix balance**, not the volume knob. The device reports it when its Monitor
+  Mix knob turns (0…100, 50 = centre). The app shows it read-only: `Balance_big::setValue(v-50)`,
+  with the mouse disabled and no write.
+- `11 02` is the phone out level switch, labelled "+17dBu" / "0dBu". Which bool value is which label
+  is not confirmed by a capture; toppingctl shows `1` as +17 dBu.
+- The HP and LINE buttons (`34 01/02`) resend `31 01/02`, so the OUT 1+2 fader is the shared output
+  level.
+
 ## Not HID
 
 - **Sample rate:** set through CoreAudio / ALSA, not HID. No frame accompanies a change.
-- **Monitor Mix knob:** analog only. It sends nothing.
+- **Headphone volume:** the device's analog volume knob. No frame sets it; software never changes it.
 - **Workspace save/load:** app-only, no frames.
 
 ## Open questions
 
 - **State on connect:** the device has no known full-state read. The `10 06` query returns the device
-  info, the settings and the volume knob only. The official app writes its own saved state at launch
+  info, the settings and the Monitor Mix balance only. The official app writes its own saved state at launch
   (69 frames), so a client that wants to show the current switches has to either push a state or
   track echoes from then on.
 - **Output level (`31 01/02`):** encoding known, effect unmeasured.

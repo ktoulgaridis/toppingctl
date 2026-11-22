@@ -9,8 +9,18 @@
 
 
 
-                              Terminal too small
-                            need 80×24, have 79×24
+
+
+
+
+
+                                        Terminal too small
+                                      need 100×34, have 99×34
+
+
+
+
+
 
 
 

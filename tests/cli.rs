@@ -98,8 +98,8 @@ fn run(args: &[&str], store: &Store, stdin_is_tty: bool, stdin: &str) -> Run {
 fn saved_and_connected() -> (State, State) {
     let mut saved = State::default();
     saved.inputs[0].gain_db = 7;
-    saved.mixes[1].pb34.pan = 0.25;
-    saved.output.level_db = -3.0;
+    saved.mixes[1].pb34.set_balance(0.25);
+    saved.output.set_level(-3.0);
     saved.system.brightness = 2;
     let mut connected = saved.clone();
     connected.system.brightness = 0;
@@ -269,10 +269,16 @@ fn parse_paths_and_values() {
         set(&s, "loopback.1.source", "mixc").loopbacks[0].source,
         Source::MixC
     );
+    let lb = &set(&s, "loopback.2.level", "-inf").loopbacks[1];
     assert_eq!(
-        set(&s, "loopback.2.level", "-inf").loopbacks[1].level_db,
-        f64::NEG_INFINITY
+        (lb.level_l_db, lb.level_r_db),
+        (f64::NEG_INFINITY, f64::NEG_INFINITY),
+        "level sets both channels"
     );
+    let out = set(&s, "out.level", "-6").output;
+    assert_eq!((out.level_l_db, out.level_r_db), (-6.0, -6.0));
+    let pb = &set(&s, "mix.b.pb34.pan", "L50").mixes[1].pb34;
+    assert_eq!((pb.pan_l, pb.pan_r), (0.0, 0.5), "a PB pan is a balance");
     assert_eq!(set(&s, "out.source", "in1+2").output.source, Source::In12);
     assert!(!set(&s, "out.hp", "off").output.headphones);
     assert!(!set(&s, "out.line", "off").output.line);
@@ -285,7 +291,7 @@ fn parse_paths_and_values() {
     let s = set(&s, "mix.b.pb34.pan", "L50");
     for (path, shown) in [
         ("mix.b.pb34.pan", "L50"),
-        ("mix.a.in1.pan", "C"),
+        ("mix.a.in1.pan", "L100"),
         ("out.level", "0dB"),
         ("loopback.1.source", "pb34"),
         ("in1.mon", "off"),
