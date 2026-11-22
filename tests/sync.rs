@@ -52,9 +52,9 @@ fn saved_state() -> State {
     s.inputs[0].mon = true;
     s.inputs[1].phantom = Some(true);
     s.mixes[0].in1.fader_db = -1.0;
-    s.mixes[1].pb34.pan = 0.25;
+    s.mixes[1].pb34.pan_r = 0.5;
     s.loopbacks[0].source = Source::MixB;
-    s.output.level_db = -6.0;
+    s.output.set_level(-6.0);
     s.system.brightness = 2;
     s.system.mobile_apps = true;
     s

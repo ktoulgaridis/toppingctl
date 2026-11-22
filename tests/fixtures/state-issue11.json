@@ -1,0 +1,160 @@
+{
+  "inputs": [
+    {
+      "gain_db": 7,
+      "mute": false,
+      "solo": false,
+      "phase": false,
+      "mon": false,
+      "inst": false
+    },
+    {
+      "gain_db": 0,
+      "mute": true,
+      "solo": false,
+      "phase": false,
+      "mon": false,
+      "inst": false
+    }
+  ],
+  "mixes": [
+    {
+      "in1": {
+        "fader_db": -3.0,
+        "pan": 0.3,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "in2": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb12": {
+        "fader_db": 0.0,
+        "pan": 0.75,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb34": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb56": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "link": false
+    },
+    {
+      "in1": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "in2": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb12": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb34": {
+        "fader_db": -12.0,
+        "pan": 0.25,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb56": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "link": false
+    },
+    {
+      "in1": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "in2": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb12": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb34": {
+        "fader_db": 0.0,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "pb56": {
+        "fader_db": null,
+        "pan": 0.5,
+        "mute": false,
+        "solo": false,
+        "phase": false
+      },
+      "link": true
+    }
+  ],
+  "loopbacks": [
+    {
+      "source": "pb34",
+      "level_db": -6.0,
+      "mute": false
+    },
+    {
+      "source": "mix_b",
+      "level_db": null,
+      "mute": false
+    }
+  ],
+  "output": {
+    "source": "mix_a",
+    "level_db": -3.0,
+    "headphones": true,
+    "line": false
+  },
+  "phone_gain": true,
+  "system": {
+    "brightness": 1,
+    "auto_standby": false,
+    "mobile_apps": false
+  }
+}

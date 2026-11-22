@@ -16,18 +16,23 @@
 //!   in the capture fits this), capped at the app's fader top `0x03fb2784`.
 //!   Pan is then a linear split ([`value::pan_split`]), so centre gives each
 //!   side `0x00fffff0`.
-//! - **Stereo PB strips**: the app has one pan per channel (odd channel hard
-//!   L, even hard R by default). [`Strip::pan`] is a single balance `b`
-//!   instead: the odd channel pans to `max(0, 2b − 1)` and the even channel
-//!   to `min(1, 2b)`. Centre reproduces the app's default exactly, and moving
-//!   the balance off centre gives the same frames as the app's PB2 pan
-//!   (left of centre) or PB1 pan (right of centre). Per-channel pan settings
-//!   that are not a balance can't be expressed.
-//! - **Link** puts IN1 hard L and IN2 hard R in that mix, overriding their pan.
+//! - **Stereo PB strips** ([`PbStrip`]): one pan per channel, as in the app
+//!   (`setbalance_L` / `setbalance_R`, app V1.09). [`PbStrip::pan_l`] pans
+//!   the odd channel and [`PbStrip::pan_r`] the even one; the default is the
+//!   app's (odd hard L, even hard R). [`PbStrip::link`] couples the two
+//!   pans in the UI and has no frames of its own. A saved state from before
+//!   per-channel pan holds a single balance `b`; it loads as
+//!   `pan_l = max(0, 2b − 1)`, `pan_r = min(1, 2b)`, which gives the same
+//!   frames that balance gave.
+//! - **Link** (IN 1+2) puts IN1 hard L and IN2 hard R in that mix,
+//!   overriding their pan.
 //! - **Solo** in a mix writes 0 for every strip of that mix that is not soloed.
 //! - **Output and loopback levels** use [`value::level_from_db`] (0 dB =
 //!   `0x02000000`, as the app writes). Away from 0 dB the app's own words
-//!   differ from it by about one part in a million.
+//!   differ from it by about one part in a million. Each channel has its own
+//!   level (`x 01` L, `x 02` R); LINK couples them in the UI and has no
+//!   frames of its own. A saved state from before holds one `level_db`; it
+//!   loads into both channels.
 //! - **Output switches**: when headphones or line out change, [`State::diff`]
 //!   sends both switches and then the output level, as the app does.
 //! - **48V** is never in [`State::frames`] or [`State::diff`]; it is not
@@ -117,15 +122,33 @@ pub struct Input {
     pub phantom: Option<bool>,
 }
 
-/// One channel strip of a mix.
+/// A mono channel strip of a mix (IN1, IN2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Strip {
     /// Fader, `-inf` ..= ≈ +6 dB. Stored as `null` in JSON when `-inf`.
     #[serde(with = "db_serde")]
     pub fader_db: f64,
-    /// 0 = left, 0.5 = centre, 1 = right. A balance on stereo PB strips.
+    /// 0 = left, 0.5 = centre, 1 = right.
     pub pan: f64,
+    pub mute: bool,
+    pub solo: bool,
+    pub phase: bool,
+}
+
+/// A stereo playback strip of a mix (PB 1/2, 3/4, 5/6).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, from = "PbStripWire")]
+pub struct PbStrip {
+    /// Fader, `-inf` ..= ≈ +6 dB. Stored as `null` in JSON when `-inf`.
+    #[serde(with = "db_serde")]
+    pub fader_db: f64,
+    /// Pan of the odd channel (PB1, PB3, PB5): 0 = left, 1 = right.
+    pub pan_l: f64,
+    /// Pan of the even channel (PB2, PB4, PB6): 0 = left, 1 = right.
+    pub pan_r: f64,
+    /// The two pans move together in the UI. No frames of its own.
+    pub link: bool,
     pub mute: bool,
     pub solo: bool,
     pub phase: bool,
@@ -137,33 +160,43 @@ pub struct Strip {
 pub struct Mix {
     pub in1: Strip,
     pub in2: Strip,
-    pub pb12: Strip,
-    pub pb34: Strip,
-    pub pb56: Strip,
+    pub pb12: PbStrip,
+    pub pb34: PbStrip,
+    pub pb56: PbStrip,
     /// IN1+2 linked: IN1 hard left, IN2 hard right.
     pub link: bool,
 }
 
 /// One loopback pair.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, from = "LoopbackWire")]
 pub struct Loopback {
     pub source: Source,
-    /// Level, `-inf` ..= 0 dB.
+    /// Left level, `-inf` ..= 0 dB.
     #[serde(with = "db_serde")]
-    pub level_db: f64,
+    pub level_l_db: f64,
+    /// Right level, `-inf` ..= 0 dB.
+    #[serde(with = "db_serde")]
+    pub level_r_db: f64,
+    /// The two levels move together in the UI. No frames of its own.
+    pub link: bool,
     pub mute: bool,
 }
 
 /// Output 1+2.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, from = "OutputWire")]
 pub struct Output {
     /// The app offers the mixes here; the register accepts any source.
     pub source: Source,
-    /// Level, `-inf` ..= 0 dB.
+    /// Left level, `-inf` ..= 0 dB.
     #[serde(with = "db_serde")]
-    pub level_db: f64,
+    pub level_l_db: f64,
+    /// Right level, `-inf` ..= 0 dB.
+    #[serde(with = "db_serde")]
+    pub level_r_db: f64,
+    /// The two levels move together in the UI. No frames of its own.
+    pub link: bool,
     pub headphones: bool,
     pub line: bool,
 }
@@ -278,13 +311,55 @@ impl Default for Strip {
     }
 }
 
+/// The app's default: odd channel hard L, even hard R, linked.
+impl Default for PbStrip {
+    fn default() -> Self {
+        PbStrip {
+            fader_db: 0.0,
+            pan_l: 0.0,
+            pan_r: 1.0,
+            link: true,
+            mute: false,
+            solo: false,
+            phase: false,
+        }
+    }
+}
+
+impl PbStrip {
+    /// Sets both pans from a single balance `b` (0 = left, 1 = right): left
+    /// of centre the even channel moves left, right of centre the odd
+    /// channel moves right. Centre is the default.
+    pub fn set_balance(&mut self, b: f64) {
+        let b = b.clamp(0.0, 1.0);
+        self.pan_l = (2.0 * b - 1.0).max(0.0);
+        self.pan_r = (2.0 * b).min(1.0);
+    }
+
+    /// The balance that [`PbStrip::set_balance`] would take to reach these
+    /// pans (their mean; exact for every pan pair a balance can make).
+    pub fn balance(&self) -> f64 {
+        (self.pan_l + self.pan_r) / 2.0
+    }
+}
+
 impl Default for Loopback {
     fn default() -> Self {
         Loopback {
             source: Source::Pb12,
-            level_db: 0.0,
+            level_l_db: 0.0,
+            level_r_db: 0.0,
+            link: true,
             mute: false,
         }
+    }
+}
+
+impl Loopback {
+    /// Sets both channels to `db`.
+    pub fn set_level(&mut self, db: f64) {
+        self.level_l_db = db;
+        self.level_r_db = db;
     }
 }
 
@@ -292,10 +367,20 @@ impl Default for Output {
     fn default() -> Self {
         Output {
             source: Source::MixA,
-            level_db: 0.0,
+            level_l_db: 0.0,
+            level_r_db: 0.0,
+            link: true,
             headphones: true,
             line: true,
         }
+    }
+}
+
+impl Output {
+    /// Sets both channels to `db`.
+    pub fn set_level(&mut self, db: f64) {
+        self.level_l_db = db;
+        self.level_r_db = db;
     }
 }
 
@@ -336,22 +421,44 @@ impl Input {
     }
 }
 
+/// A strip's level before pan, with MUTE, SOLO and Ø folded in.
+fn strip_level(fader_db: f64, mute: bool, solo: bool, phase: bool, mix_has_solo: bool) -> i32 {
+    if mute || (mix_has_solo && !solo) {
+        return 0;
+    }
+    value::phase(crosspoint_level(fader_db), phase)
+}
+
 impl Strip {
-    /// The strip's level before pan, with MUTE, SOLO and Ø folded in.
     fn level(&self, mix_has_solo: bool) -> i32 {
-        if self.mute || (mix_has_solo && !self.solo) {
-            return 0;
-        }
-        value::phase(crosspoint_level(self.fader_db), self.phase)
+        strip_level(
+            self.fader_db,
+            self.mute,
+            self.solo,
+            self.phase,
+            mix_has_solo,
+        )
+    }
+}
+
+impl PbStrip {
+    fn level(&self, mix_has_solo: bool) -> i32 {
+        strip_level(
+            self.fader_db,
+            self.mute,
+            self.solo,
+            self.phase,
+            mix_has_solo,
+        )
     }
 }
 
 impl Mix {
     /// The 16 crosspoint values as `(source 1..=8, left, right)`.
     fn crosspoints(&self) -> [(u8, i32, i32); 8] {
-        let soloed = [&self.in1, &self.in2, &self.pb12, &self.pb34, &self.pb56]
-            .iter()
-            .any(|s| s.solo);
+        let soloed = self.in1.solo
+            || self.in2.solo
+            || [&self.pb12, &self.pb34, &self.pb56].iter().any(|s| s.solo);
         let (in1_pan, in2_pan) = if self.link {
             (0.0, 1.0)
         } else {
@@ -363,14 +470,11 @@ impl Mix {
         let (l, r) = value::pan_split(self.in2.level(soloed), in2_pan);
         out[1] = (2, l, r);
         for (i, strip) in [&self.pb12, &self.pb34, &self.pb56].into_iter().enumerate() {
-            // A balance: the odd channel leaves hard left only right of
-            // centre, the even channel leaves hard right only left of it.
-            let b = strip.pan.clamp(0.0, 1.0);
             let lvl = strip.level(soloed);
             let odd = 3 + 2 * i as u8;
-            let (l, r) = value::pan_split(lvl, (2.0 * b - 1.0).max(0.0));
+            let (l, r) = value::pan_split(lvl, strip.pan_l);
             out[2 + 2 * i] = (odd, l, r);
-            let (l, r) = value::pan_split(lvl, (2.0 * b).min(1.0));
+            let (l, r) = value::pan_split(lvl, strip.pan_r);
             out[3 + 2 * i] = (odd + 1, l, r);
         }
         out
@@ -403,9 +507,8 @@ impl State {
         out.push(frame(0x33, 0x05, self.loopbacks[1].source.wire()));
         out.extend(self.output_level_frames());
         for (i, lb) in self.loopbacks.iter().enumerate() {
-            let lvl = level(lb.level_db, lb.mute);
-            out.push(frame(0x32 + i as u8, 0x01, lvl));
-            out.push(frame(0x32 + i as u8, 0x02, lvl));
+            out.push(frame(0x32 + i as u8, 0x01, level(lb.level_l_db, lb.mute)));
+            out.push(frame(0x32 + i as u8, 0x02, level(lb.level_r_db, lb.mute)));
         }
         out.push(frame(0x11, 0x02, value::bool_value(self.phone_gain)));
         out.extend(self.output_switch_frames());
@@ -424,8 +527,11 @@ impl State {
     }
 
     fn output_level_frames(&self) -> [Frame; 2] {
-        let lvl = level(self.output.level_db.min(0.0), false);
-        [frame(0x31, 0x01, lvl), frame(0x31, 0x02, lvl)]
+        let out = &self.output;
+        [
+            frame(0x31, 0x01, level(out.level_l_db.min(0.0), false)),
+            frame(0x31, 0x02, level(out.level_r_db.min(0.0), false)),
+        ]
     }
 
     fn output_switch_frames(&self) -> [Frame; 2] {
@@ -528,6 +634,159 @@ impl Meters {
         *slot = db;
         true
     }
+}
+
+/// [`PbStrip`] as stored, including the single `pan` (a balance) that saved
+/// states from before per-channel pan hold.
+#[derive(Deserialize)]
+#[serde(default)]
+struct PbStripWire {
+    #[serde(with = "db_serde")]
+    fader_db: f64,
+    pan: Option<f64>,
+    pan_l: Option<f64>,
+    pan_r: Option<f64>,
+    link: bool,
+    mute: bool,
+    solo: bool,
+    phase: bool,
+}
+
+impl Default for PbStripWire {
+    fn default() -> Self {
+        let d = PbStrip::default();
+        PbStripWire {
+            fader_db: d.fader_db,
+            pan: None,
+            pan_l: None,
+            pan_r: None,
+            link: d.link,
+            mute: d.mute,
+            solo: d.solo,
+            phase: d.phase,
+        }
+    }
+}
+
+impl From<PbStripWire> for PbStrip {
+    fn from(w: PbStripWire) -> Self {
+        let mut s = PbStrip {
+            fader_db: w.fader_db,
+            link: w.link,
+            mute: w.mute,
+            solo: w.solo,
+            phase: w.phase,
+            ..PbStrip::default()
+        };
+        if let Some(b) = w.pan {
+            s.set_balance(b);
+        }
+        s.pan_l = w.pan_l.unwrap_or(s.pan_l);
+        s.pan_r = w.pan_r.unwrap_or(s.pan_r);
+        s
+    }
+}
+
+/// [`Loopback`] as stored, including the single `level_db` of older saved
+/// states.
+#[derive(Deserialize)]
+#[serde(default)]
+struct LoopbackWire {
+    source: Source,
+    #[serde(deserialize_with = "opt_db")]
+    level_db: Option<f64>,
+    #[serde(deserialize_with = "opt_db")]
+    level_l_db: Option<f64>,
+    #[serde(deserialize_with = "opt_db")]
+    level_r_db: Option<f64>,
+    link: bool,
+    mute: bool,
+}
+
+impl Default for LoopbackWire {
+    fn default() -> Self {
+        let d = Loopback::default();
+        LoopbackWire {
+            source: d.source,
+            level_db: None,
+            level_l_db: None,
+            level_r_db: None,
+            link: d.link,
+            mute: d.mute,
+        }
+    }
+}
+
+impl From<LoopbackWire> for Loopback {
+    fn from(w: LoopbackWire) -> Self {
+        let (l, r) = levels(w.level_db, w.level_l_db, w.level_r_db);
+        Loopback {
+            source: w.source,
+            level_l_db: l,
+            level_r_db: r,
+            link: w.link,
+            mute: w.mute,
+        }
+    }
+}
+
+/// [`Output`] as stored, including the single `level_db` of older saved
+/// states.
+#[derive(Deserialize)]
+#[serde(default)]
+struct OutputWire {
+    source: Source,
+    #[serde(deserialize_with = "opt_db")]
+    level_db: Option<f64>,
+    #[serde(deserialize_with = "opt_db")]
+    level_l_db: Option<f64>,
+    #[serde(deserialize_with = "opt_db")]
+    level_r_db: Option<f64>,
+    link: bool,
+    headphones: bool,
+    line: bool,
+}
+
+impl Default for OutputWire {
+    fn default() -> Self {
+        let d = Output::default();
+        OutputWire {
+            source: d.source,
+            level_db: None,
+            level_l_db: None,
+            level_r_db: None,
+            link: d.link,
+            headphones: d.headphones,
+            line: d.line,
+        }
+    }
+}
+
+impl From<OutputWire> for Output {
+    fn from(w: OutputWire) -> Self {
+        let (l, r) = levels(w.level_db, w.level_l_db, w.level_r_db);
+        Output {
+            source: w.source,
+            level_l_db: l,
+            level_r_db: r,
+            link: w.link,
+            headphones: w.headphones,
+            line: w.line,
+        }
+    }
+}
+
+/// L and R levels from what was stored: each channel's own value, else the
+/// old shared one, else 0 dB.
+fn levels(both: Option<f64>, l: Option<f64>, r: Option<f64>) -> (f64, f64) {
+    let both = both.unwrap_or(0.0);
+    (l.unwrap_or(both), r.unwrap_or(both))
+}
+
+/// An optional dB value in JSON: absent is `None` (the field's default),
+/// `null` is `-inf`.
+fn opt_db<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    db_serde::deserialize(d).map(Some)
 }
 
 /// dB values in JSON: a number, or `null` for `-inf` (JSON has no infinity).
