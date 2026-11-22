@@ -501,7 +501,8 @@ fn pills() {
 // ------------------------------------------- pixel faders, meters, chips
 
 use toppingctl::tui::pixel::{
-    chip_image, clip_image, fader_image, meter_image, PX_CHIP, PX_GREEN, PX_RED, PX_TRACK,
+    chip_image, clip_image, fader_image, meter_image, PX_ACCENT, PX_AMBER, PX_CHIP, PX_GREEN,
+    PX_RED, PX_TRACK,
 };
 use toppingctl::tui::widgets::fader::fader_row;
 
@@ -677,4 +678,34 @@ fn pan_knobs_light_from_the_top() {
     assert!(lit > 0 && lit < count(&dial(0.25, false), Theme::KNOB_ACCENT) + 1);
     let a = mean_angle(&l, 12, 6, Theme::KNOB_ACCENT).unwrap();
     assert!(close(a, 112.0, 30.0), "lit between pointer and top: {a}°");
+}
+
+/// Meters read as meters: the colour at a height is the level there,
+/// green up to −12 dB, amber from −12 to −6, red above −6; the input
+/// meter's bar fills most of its two cells. Controls keep the accent.
+#[test]
+fn pixel_meter_colours_by_level() {
+    let ch = 20.0;
+    let rows = 20u16;
+    let h = f64::from(rows) * ch;
+    let (top, bot) = (0.5 * ch, h - 0.5 * ch);
+    let y = |db: f64| top + (bot - top) * (-db / 60.0);
+    let full = meter_image(1, rows, CELL, 0.0);
+    for (db, c) in [
+        (-3.0, PX_RED),
+        (-9.0, PX_AMBER),
+        (-20.0, PX_GREEN),
+        (-50.0, PX_GREEN),
+    ] {
+        let p = px(&full, 5.0, y(db));
+        assert!(near(p, c), "{db} dB: {p:?}");
+    }
+    // The input meter: two cells, the bar most of them.
+    let wide = meter_image(2, rows, CELL, 0.0);
+    assert!(near(px(&wide, 3.5, y(-30.0)), PX_GREEN), "wide bar");
+    assert!(near(px(&wide, 16.5, y(-30.0)), PX_GREEN), "wide bar");
+    // No meter colour is the controls' accent.
+    for db in [-1.0, -7.0, -15.0, -40.0] {
+        assert!(!near(px(&full, 5.0, y(db)), PX_ACCENT));
+    }
 }

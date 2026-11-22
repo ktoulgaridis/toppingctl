@@ -602,18 +602,14 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
 }
 
-/// The meter colour at `f` of the way down from the top: red, amber, green.
+/// The meter colour at `f` of the way down from the top (0 dB at the top,
+/// −60 at the bottom): green up to −12 dB, amber from −12 to −6, red above
+/// −6, blended over a dB either side of each step.
 fn meter_colour(f: f32) -> [f32; 3] {
+    let db = -60.0 * f;
     let (g, a, r) = (f3(PX_GREEN), f3(PX_AMBER), f3(PX_RED));
-    if f < 0.10 {
-        r
-    } else if f < 0.30 {
-        mix(a, r, ((0.30 - f) / 0.20).clamp(0.0, 1.0).powi(2))
-    } else if f < 0.45 {
-        mix(g, a, ((0.45 - f) / 0.15).clamp(0.0, 1.0))
-    } else {
-        g
-    }
+    let step = |edge: f32| ((db - edge + 1.0) / 2.0).clamp(0.0, 1.0);
+    mix(mix(g, a, step(-12.0)), r, step(-6.0))
 }
 
 /// A meter bar from `x0` to `x1` between `top` and `bot`, the signal
@@ -621,17 +617,16 @@ fn meter_colour(f: f32) -> [f32; 3] {
 /// up to the level, and a peak line on it.
 fn bar(cv: &mut Canvas, (x0, x1): (f32, f32), (top, bot): (f32, f32), level: f32, sy: f32) {
     let rad = (x1 - x0) / 2.0;
-    cv.fill(
-        Shape::RRect {
-            x0,
-            y0: top - rad,
-            x1,
-            y1: bot + rad,
-            rad,
-        },
-        PX_TRACK,
-        1.0,
-    );
+    let track = |inset: f32| Shape::RRect {
+        x0: x0 + inset,
+        y0: top - rad + inset,
+        x1: x1 - inset,
+        y1: bot + rad - inset,
+        rad: rad - inset,
+    };
+    // A faint rim around the track, so an empty meter still reads as one.
+    cv.fill(track(0.0), PX_FAINT, 1.0);
+    cv.fill(track(0.8 * sy.max(0.75)), PX_TRACK, 1.0);
     if level <= 0.0 {
         return;
     }
@@ -679,7 +674,13 @@ pub fn meter_image(cols: u16, rows: u16, cell: (u16, u16), db: f64) -> RgbaImage
 fn meter_image_at(cols: u16, rows: u16, cell: (u16, u16), level: f64) -> RgbaImage {
     let (mut cv, cw, ch) = canvas(cols, rows, cell);
     let (w, h) = (cv.w as f32, cv.h as f32);
-    let bw = (w * 0.58).min(12.0 * cw / 12.0);
+    // One cell: a bar of about 60 %; two or more (the input meter): most
+    // of them.
+    let bw = if cols >= 2 {
+        w * 0.8
+    } else {
+        (w * 0.6).min(cw)
+    };
     let cx = w / 2.0;
     bar(
         &mut cv,
