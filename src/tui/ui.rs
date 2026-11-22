@@ -14,7 +14,14 @@ use ratatui::Frame;
 
 use crate::state::{Meters, State};
 use crate::tui::app::{App, Control, InputControl, Modal, Phase, MAX_GAIN_DB};
-use crate::tui::theme::{Theme, Zone};
+use crate::tui::theme::Theme;
+
+#[derive(Clone, Copy)]
+enum Zone {
+    Normal,
+    Hot,
+    Clip,
+}
 
 /// The smallest terminal the full screen is drawn in.
 pub const MIN_WIDTH: u16 = 80;
@@ -453,7 +460,14 @@ fn draw_meter(buf: &mut Buffer, area: Rect, x: u16, db: f64, t: Theme) {
         let (s, style) = if fill == 0 {
             ("··", t.dim())
         } else {
-            (EIGHTHS[fill], t.meter(zone))
+            (
+                EIGHTHS[fill],
+                t.meter(match zone {
+                    Zone::Normal => 0.2,
+                    Zone::Hot => 0.6,
+                    Zone::Clip => 1.0,
+                }),
+            )
         };
         put(buf, area, x, y, s, style);
     }

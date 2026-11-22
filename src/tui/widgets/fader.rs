@@ -1,0 +1,180 @@
+//! A vertical fader: a track with a cap, and a scale of 0 / −6 / −12 / −24 /
+//! −∞ ticks on both sides. The value above the cap is [`fmt_db`].
+//!
+//! The ticks are spread evenly up the track (as on the app's faders), with
+//! the position in between linear in dB; below −24 dB it runs linearly to
+//! −60 dB at the bottom, where −∞ sits. A mix fader tops out at +6 dB (an
+//! unlabelled position above 0), a loopback or output fader at 0 dB.
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::widgets::Widget;
+
+use crate::tui::theme::Theme;
+
+/// The labelled ticks, top to bottom.
+pub const FADER_TICKS_DB: [f64; 5] = [0.0, -6.0, -12.0, -24.0, f64::NEG_INFINITY];
+/// The bottom of the scale: at or below this the fader is at −∞.
+const FLOOR_DB: f64 = -60.0;
+
+/// The ticks' dB values, top to bottom, for a fader topping out at `max_db`.
+fn anchors(max_db: f64) -> Vec<f64> {
+    let mut a = Vec::with_capacity(6);
+    if max_db > 0.0 {
+        a.push(max_db);
+    }
+    a.extend(FADER_TICKS_DB.iter().map(|&d| d.max(FLOOR_DB)));
+    a
+}
+
+/// Where `db` sits on a fader topping out at `max_db`: 0 = bottom, 1 = top.
+pub fn fader_frac(db: f64, max_db: f64) -> f64 {
+    let a = anchors(max_db);
+    let n = (a.len() - 1) as f64;
+    if db.is_nan() || db <= FLOOR_DB {
+        return 0.0;
+    }
+    if db >= a[0] {
+        return 1.0;
+    }
+    for i in 0..a.len() - 1 {
+        let (hi, lo) = (a[i], a[i + 1]);
+        if db <= hi && db >= lo {
+            let u = (db - lo) / (hi - lo);
+            return (n - (i + 1) as f64 + u) / n;
+        }
+    }
+    0.0
+}
+
+/// A fader value: `0.0 dB`, `−6.0 dB`, `+3.0 dB`, `−∞ dB`.
+pub fn fmt_db(db: f64) -> String {
+    if db.is_nan() || db <= FLOOR_DB {
+        return "−∞ dB".into();
+    }
+    // `+ 0.0` turns −0.0 into 0.0; rounding first keeps −0.04 from
+    // printing as −0.0.
+    let r = (db * 10.0).round() / 10.0 + 0.0;
+    if r == 0.0 {
+        "0.0 dB".into()
+    } else {
+        format!("{r:+.1} dB").replace('-', "−")
+    }
+}
+
+/// The tick label for `db`.
+fn tick_label(db: f64) -> String {
+    if db == f64::NEG_INFINITY {
+        "−∞".into()
+    } else {
+        format!("{}", db as i32).replace('-', "−")
+    }
+}
+
+/// The row (0 = top) of position `frac` on `h` rows.
+pub fn fader_row(frac: f64, h: u16) -> u16 {
+    ((1.0 - frac) * f64::from(h.saturating_sub(1))).round() as u16
+}
+
+/// A fader drawn in its whole area: `LLL track LLL` (track 5 wide from 11
+/// columns, else 3), or with [`Fader::labels`] off, a 3-wide track with tick
+/// marks on both sides.
+#[derive(Clone, Debug)]
+pub struct Fader {
+    db: f64,
+    max_db: f64,
+    labels: bool,
+    focused: bool,
+    theme: Theme,
+}
+
+impl Fader {
+    pub fn new(db: f64, max_db: f64, theme: Theme) -> Self {
+        Fader {
+            db,
+            max_db,
+            labels: true,
+            focused: false,
+            theme,
+        }
+    }
+
+    pub fn labels(mut self, labels: bool) -> Self {
+        self.labels = labels;
+        self
+    }
+
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// The width this fader needs for `available` columns.
+    pub fn width(labels: bool, available: u16) -> u16 {
+        match (labels, available) {
+            (false, _) => 3,
+            (true, w) if w >= 11 => 11,
+            _ => 9,
+        }
+    }
+
+    /// The tick rows on `h` rows: `(row, label)`, top to bottom, dropping a
+    /// tick whose row is taken.
+    pub fn ticks(max_db: f64, h: u16) -> Vec<(u16, String)> {
+        let mut out: Vec<(u16, String)> = Vec::new();
+        for db in FADER_TICKS_DB {
+            let row = fader_row(fader_frac(db, max_db), h);
+            if !out.iter().any(|(r, _)| *r == row) {
+                out.push((row, tick_label(db)));
+            }
+        }
+        out
+    }
+}
+
+impl Widget for Fader {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+        let t = self.theme;
+        let h = area.height;
+        let w = Fader::width(self.labels, area.width).min(area.width);
+        let x = area.x + (area.width - w) / 2;
+        let cap_row = fader_row(fader_frac(self.db, self.max_db), h);
+        let ticks = Fader::ticks(self.max_db, h);
+        let cap_style = if self.focused { t.focus() } else { t.heading() };
+        let put = |buf: &mut Buffer, dx: u16, y: u16, s: &str, st: Style| {
+            if dx < w {
+                buf.set_stringn(x + dx, area.y + y, s, usize::from(w - dx), st);
+            }
+        };
+        for row in 0..h {
+            let label = ticks.iter().find(|(r, _)| *r == row).map(|(_, l)| l);
+            let cap = row == cap_row;
+            if self.labels {
+                let track = w - 6;
+                if let Some(l) = label {
+                    put(buf, 0, row, &format!("{l:>3}"), t.scale());
+                    put(buf, 3 + track, row, &format!("{l:<3}"), t.scale());
+                }
+                let (s, st) = match (cap, track) {
+                    (true, 5) => ("━━●━━", cap_style),
+                    (true, _) => ("━●━", cap_style),
+                    (false, 5) => ("  ┃  ", t.track()),
+                    (false, _) => (" ┃ ", t.track()),
+                };
+                put(buf, 3, row, s, st);
+            } else if cap {
+                put(buf, 0, row, "━●━", cap_style);
+            } else {
+                if label.is_some() {
+                    put(buf, 0, row, "╶", t.scale());
+                    put(buf, 2, row, "╴", t.scale());
+                }
+                put(buf, 1, row, "┃", t.track());
+            }
+        }
+    }
+}
