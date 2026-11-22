@@ -6,9 +6,11 @@
 //! input and mixer on top, loopback and output below — and a line of key
 //! hints. Everything is drawn from the [`State`](crate::state::State).
 //! The input panel, the mix tabs and the mixer are clickable; the loopback
-//! and output controls come with #15. Past [`MAX_WIDTH`]×[`MAX_HEIGHT`] the
-//! console stops growing and is centred, and inside it faders, meters and
-//! knobs are capped, each strip's content kept as one centred group (#14).
+//! and output controls come with #15. The layout scales with the window
+//! (#14): panels, strips, faders, meters and knobs grow and shrink in the
+//! app's proportions, each strip's content one compact group with spare
+//! rows spread evenly. Only absurd sizes (past [`MAX_WIDTH`]×[`MAX_HEIGHT`])
+//! stop growing, centred.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -33,16 +35,10 @@ use crate::tui::widgets::pill::{pill, PillKind};
 /// The smallest terminal the full screen is drawn in.
 pub const MIN_WIDTH: u16 = 100;
 pub const MIN_HEIGHT: u16 = 34;
-/// The largest the console grows: beyond this the terminal's extra space
-/// is left around it (it is centred), so a large terminal keeps the app's
-/// proportions instead of stretching strips, faders and meters (#14).
-pub const MAX_WIDTH: u16 = 140;
-pub const MAX_HEIGHT: u16 = 55;
-/// The tallest fader track, in rows (+6 … −∞ in five even steps of 3).
-pub const FADER_MAX_ROWS: u16 = 16;
-/// The tallest meter bar, in rows (the input meter: 0 … −60 in six steps
-/// of 3, under its clip light).
-pub const METER_MAX_ROWS: u16 = 19;
+/// The console grows with the window up to this, a size no real screen
+/// needs; past it the console is centred.
+pub const MAX_WIDTH: u16 = 320;
+pub const MAX_HEIGHT: u16 = 100;
 /// From this header width up, the header shows its long labels.
 const WIDE_HEADER: u16 = 128;
 
@@ -568,13 +564,18 @@ fn columns(area: Rect, n: u16) -> Vec<Rect> {
         .collect()
 }
 
-/// The largest input gain and Monitor Mix knob, in cells (about 12×6).
-const GAIN_KNOB: (u16, u16) = (12, 6);
-/// An input strip's switches and gain knob, in rows: the peak readout and
-/// six switches, the dial and its value.
-const SWITCHES_AND_KNOB: u16 = 7 + GAIN_KNOB.1 + 1;
-/// The largest pan knob, in cells (about 8×4).
-const PAN_KNOB: (u16, u16) = (8, 4);
+/// A round knob (two columns a row) about `cols` wide, at most `rows`
+/// tall and at least 2: its (cols, rows).
+fn knob_size(cols: u16, rows: u16) -> (u16, u16) {
+    let r = (cols / 2).min(rows).max(2);
+    (r * 2, r)
+}
+
+/// A pan knob for a dial column `half` wide: about 78 % of it (#34's
+/// filled the column), and at most a fifth of the strip's `height`.
+fn pan_knob(half: u16, height: u16) -> (u16, u16) {
+    knob_size(half * 39 / 50, height / 5)
+}
 
 /// A knob to draw: the Braille knob as text, and its cells recorded for
 /// the pixel layer.
@@ -727,10 +728,9 @@ fn draw_input_strip(
     if r.height < 2 || r.width < 8 {
         return;
     }
-    // One group, centred: the meter (at most METER_MAX_ROWS under its clip
-    // light) beside the switches with the gain knob right under them.
-    let meter_h = r.height.min(METER_MAX_ROWS + 1);
-    let r = centered_rows(r, meter_h.max(SWITCHES_AND_KNOB.min(r.height)));
+    // The meter takes the strip's height; beside it the six switches and
+    // the gain knob are spread evenly down to the meter's foot.
+    let meter_h = r.height;
     let db = meters.inputs[ch];
     let x0 = r.x + 1;
     let lit = app.clips().lit(MeterId::Input(ch));
@@ -765,31 +765,41 @@ fn draw_input_strip(
         (InputControl::Mute, "MUTE", input.mute, PillKind::Danger),
         (InputControl::Phase, "Ø", input.phase, PillKind::Normal),
     ];
+    // The gain knob: about 0.49 of the strip's width (78 % of #34's
+    // 0.63), round, leaving rows for the switches.
+    let avail = r.height.saturating_sub(1);
+    let (kc, kr) = knob_size(r.width * 49 / 100, avail.saturating_sub(7));
+    let knob_rows = if avail >= 6 + 3 { kr + 1 } else { 0 };
+    // Spare rows go evenly into the six gaps after each switch (the
+    // remainder to the last ones, so the knob never crowds the switches).
+    let spare = avail.saturating_sub(6 + knob_rows);
+    let gap = |i: u16| spare / 6 + u16::from(i >= 6 - spare % 6);
+    let mut ys = Vec::with_capacity(7);
+    let mut y = r.y + 1;
+    for i in 0..7 {
+        ys.push(y);
+        y += 1 + gap(i);
+    }
     for (i, (kind, label, on, pk)) in switches.into_iter().enumerate() {
-        let y = r.y + 1 + i as u16;
+        let y = ys[i];
         let span = pill(&format!("{label:^4}"), on, pk, focused(kind), t);
         let rects = put_centered(buf, right, y, &[span], hits);
         hits.push(Hit::Control(Control::Input { ch, kind }), rects[0]);
     }
-    // The gain knob right under the switches: dial, then value.
-    let knob_y = r.y + 7;
-    if r.bottom() >= knob_y + 4 {
-        // From just right of the scale to the edge: as wide as the strip
-        // allows (about 12×6 cells at 120 columns).
+    // The gain knob after the last switch, at the same spacing: dial,
+    // then value.
+    let knob_y = ys[6];
+    if knob_rows > 0 && r.bottom() >= knob_y + knob_rows {
+        // From just right of the scale to the edge, the knob centred.
         let kx = x0 + 5;
-        let knob = Rect::new(
-            kx,
-            knob_y,
-            r.right().saturating_sub(kx),
-            (r.bottom() - knob_y).min(GAIN_KNOB.1 + 1),
-        );
+        let knob = Rect::new(kx, knob_y, r.right().saturating_sub(kx), knob_rows);
         let gain = input.gain_db.min(MAX_GAIN_DB);
         let k = Knob {
             value: Some(f64::from(gain) / f64::from(MAX_GAIN_DB)),
             label: Some(gain_text(gain)),
             focused: focused(InputControl::Gain),
             dimmed: false,
-            max: GAIN_KNOB,
+            max: (kc, kr),
             ticks: GAIN_TICKS,
             bipolar: false,
         };
@@ -894,24 +904,17 @@ fn value_span(db: f64, mute: bool, t: Theme, unit: bool) -> Span<'static> {
     Span::styled(s, t.heading())
 }
 
-/// Rows for a mix strip's two pan dials and their values: more when the
-/// strip is tall.
+/// Rows for a mix strip's two pan dials and their values: the pan knob
+/// (it scales with the strip) and the label.
 fn dial_rows(r: Rect) -> u16 {
-    if r.height >= 16 {
-        5
-    } else {
-        4
-    }
+    pan_knob(r.width / 2, r.height).1 + 1
 }
 
 /// A mix strip's content, top to bottom: the dials (`d` rows), LINK, the
-/// value, the fader (as tall as `r` allows, at most [`FADER_MAX_ROWS`])
-/// and the switches (`rows`). Returns the group's area, centred in `r`,
-/// and the fader's height.
+/// value, the fader (every row left) and the switches (`rows`). Returns
+/// the group's area and the fader's height.
 fn mix_group(r: Rect, d: u16, rows: u16) -> (Rect, u16) {
-    let fixed = d + 2 + rows;
-    let fader_h = r.height.saturating_sub(fixed).min(FADER_MAX_ROWS);
-    (centered_rows(r, fixed + fader_h), fader_h)
+    (r, r.height.saturating_sub(d + 2 + rows))
 }
 
 /// `r` cut to `h` rows, centred vertically.
@@ -953,7 +956,7 @@ fn pan_dials(
             label: Some(pan_text(p)),
             focused: app.focus() == c,
             dimmed: false,
-            max: PAN_KNOB,
+            max: pan_knob(h.width, area.height),
             ticks: 0,
             bipolar: true,
         };
@@ -1255,7 +1258,6 @@ fn draw_loopback_panel(
         if r.height < 5 {
             continue;
         }
-        let r = level_group(r);
         source_line(buf, r, t, lb.source, hits);
         put_centered(
             buf,
@@ -1289,12 +1291,6 @@ fn draw_loopback_panel(
             hits,
         );
     }
-}
-
-/// A loopback or output strip's content, centred in `r`: three text rows
-/// and a fader at most [`FADER_MAX_ROWS`] tall.
-fn level_group(r: Rect) -> Rect {
-    centered_rows(r, 3 + r.height.saturating_sub(3).min(FADER_MAX_ROWS))
 }
 
 fn source_line(buf: &mut Buffer, r: Rect, t: Theme, s: Source, hits: &mut HitMap) {
@@ -1350,7 +1346,6 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
     let out = &state.output;
     let r = strip_box(buf, out_area, t, "OUT 1+2", focused(0), hits);
     if r.height >= 5 {
-        let r = level_group(r);
         source_line(buf, r, t, out.source, hits);
         put_centered(
             buf,
@@ -1392,8 +1387,10 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
     // click target.
     let r = strip_box(buf, mon_area, t, "MONITOR MIX", focused(1), hits);
     if r.height >= 6 {
-        // The dial (at most GAIN_KNOB) and its two text rows, centred.
-        let dial_h = (r.height - 3).min(GAIN_KNOB.1);
+        // The dial, about 0.47 of the box's width (78 % of #34's), and
+        // its two text rows, centred.
+        let (kc, kr) = knob_size(r.width * 47 / 100, r.height - 3);
+        let dial_h = kr;
         let r = centered_rows(r, dial_h + 3);
         let balance = state.readout.monitor_mix;
         let k = Knob {
@@ -1401,7 +1398,7 @@ fn draw_output_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, h
             label: None,
             focused: false,
             dimmed: true,
-            max: GAIN_KNOB,
+            max: (kc, kr),
             ticks: 0,
             bipolar: true,
         };

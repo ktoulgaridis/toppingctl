@@ -785,112 +785,166 @@ fn kind(w: &PixelWidget) -> &'static str {
     }
 }
 
-/// A large terminal does not stretch the strips: the console keeps the
-/// app's proportions, capped and centred; faders and meters stop growing;
-/// each strip's knob, pills, value and fader stay one compact group; the
-/// pixel widgets sit in the new rects and the hit map stays exact.
+/// The layout scales with the window (#14, #37 review): at every size the
+/// console fills the terminal; panels, strips, faders, meters and knobs
+/// grow and shrink with it in the app's proportions; each strip's content
+/// stays one compact group with spare rows spread evenly; knobs are about
+/// 75–80 % of #34's relative size; pixel widgets sit in the new rects and
+/// the hit map stays exact.
 #[test]
-fn layout_is_content_sized() {
+fn layout_scales_with_the_window() {
+    use toppingctl::tui::app::InputControl;
     use MixControl::*;
     let app = app_with(fake_state());
     let meters = fake_meters();
-    let (buf, hits) = render(&app, &meters, 250, 60);
-    let t = text(&buf);
-    assert_snapshot("layout_250x60", &t);
-
-    // The console is capped and centred.
-    let (mw, mh) = (ui::MAX_WIDTH, ui::MAX_HEIGHT);
-    assert!(mw < 250 && mh <= 60);
-    let cols: Vec<u16> = (0..250u16)
-        .filter(|&x| (0..60u16).any(|y| buf[(x, y)].symbol() != " "))
-        .collect();
-    let (x0, x1) = (cols[0], *cols.last().unwrap());
-    assert!(x1 - x0 < mw, "{x0}..{x1}");
-    assert!(x0.abs_diff(249 - x1) <= 1, "centred: {x0}..{x1}");
-
-    // Faders and meters are capped.
-    for spot in hits.pixels() {
-        match kind(&spot.widget) {
-            "fader" => assert!(spot.rect.height <= ui::FADER_MAX_ROWS, "{spot:?}"),
-            "meter" => assert!(spot.rect.height <= ui::METER_MAX_ROWS, "{spot:?}"),
-            _ => {}
+    let sizes = [(100u16, 34u16), (120, 40), (160, 50), (250, 60)];
+    let mut fader_h = Vec::new();
+    let mut pan_w = Vec::new();
+    let mut gain_w = Vec::new();
+    for (w, h) in sizes {
+        let (buf, hits) = render(&app, &meters, w, h);
+        let t = text(&buf);
+        if (w, h) == (160, 50) || (w, h) == (250, 60) {
+            assert_snapshot(&format!("layout_{w}x{h}"), &t);
         }
-    }
+        let ctx = format!("{w}x{h}:\n{t}");
 
-    // A mix strip's dials, LINK, value and fader stay together: the fader
-    // starts within 3 rows of the LINK pill, and LINK within 2 of the dials.
-    for strip in 0..4 {
-        let dial = hits.rect(Hit::Control(mix(strip, Pan(0)))).unwrap();
-        let link = hits.rect(Hit::Control(mix(strip, Link))).unwrap();
-        let fader = hits.rect(Hit::Control(mix(strip, Fader(0)))).unwrap();
-        let mute = hits.rect(Hit::Control(mix(strip, Mute(0)))).unwrap();
-        assert!(
-            link.y <= dial.bottom() + 1,
-            "strip {strip}: {dial:?} {link:?}"
-        );
-        assert!(fader.y <= link.y + 3, "strip {strip}: {link:?} {fader:?}");
-        assert!(
-            mute.y <= fader.bottom() + 3,
-            "strip {strip}: {fader:?} {mute:?}"
-        );
-    }
-    // An input's gain knob sits right under its switches.
-    for c in 0..2 {
-        use toppingctl::tui::app::InputControl;
-        let phase = hits
-            .rect(Hit::Control(Control::Input {
-                ch: c,
-                kind: InputControl::Phase,
-            }))
-            .unwrap();
-        let knob = hits
-            .rect(Hit::Control(Control::Input {
-                ch: c,
-                kind: InputControl::Gain,
-            }))
-            .unwrap();
-        assert!(knob.y <= phase.y + 2, "IN{}: {phase:?} {knob:?}", c + 1);
-        let gain = hits
+        // The console fills the window.
+        assert_eq!(buf[(0, 0)].symbol(), "╭", "{ctx}");
+        assert_eq!(buf[(w - 1, 0)].symbol(), "╮", "{ctx}");
+        assert_eq!(buf[(w - 1, h - 2)].symbol(), "╯", "{ctx}");
+
+        let knobs: Vec<Rect> = hits
             .pixels()
             .iter()
-            .find(|s| kind(&s.widget) == "knob" && knob.contains(s.rect.as_position()))
-            .expect("gain knob pixels in its hit rect");
-        assert!(gain.rect.y <= phase.y + 3);
-    }
-    // No box is mostly empty: PHONE is no wider than its content needs.
-    let phone = hits.rect(Hit::Focus(Control::Output(2))).unwrap();
-    assert!(phone.width <= 32, "{phone:?}");
+            .filter(|s| kind(&s.widget) == "knob")
+            .map(|s| s.rect)
+            .collect();
+        assert_eq!(knobs.len(), 2 + 8 + 1, "{ctx}");
+        let knob_in = |r: Rect| {
+            *knobs
+                .iter()
+                .find(|k| r.contains(k.as_position()))
+                .unwrap_or_else(|| panic!("no knob in {r:?}: {ctx}"))
+        };
 
-    // Every pixel widget is inside the console; every control's hit rect
-    // answers for its own cells (the hit map stays exact).
-    let console = Rect::new(x0, 0, x1 + 1 - x0, 60);
-    for spot in hits.pixels() {
-        assert!(console.contains(spot.rect.as_position()), "{spot:?}");
-    }
-    for strip in 0..4 {
-        let chans = if strip == 0 { 2 } else { 1 };
-        let mut ctls = vec![Pan(0), Pan(1), Link];
-        for c in 0..chans {
-            ctls.extend([Fader(c), Phase(c), Solo(c), Mute(c)]);
-        }
-        for ctl in ctls {
-            let hit = Hit::Control(mix(strip, ctl));
-            let r = hits.rect(hit).unwrap_or_else(|| panic!("{strip} {ctl:?}"));
-            for (x, y) in [(r.x, r.y), (r.right() - 1, r.bottom() - 1)] {
-                assert_eq!(hits.get(x, y), Some(hit), "{strip} {ctl:?} at {x},{y}");
+        for strip in 0..4 {
+            let strip_box = hits.rect(Hit::Focus(Control::Mixer(strip))).unwrap();
+            // A pan knob: round (two columns a row), at most ~80 % of its
+            // half of the strip, and not tiny.
+            for c in 0..2 {
+                let d = hits.rect(Hit::Control(mix(strip, Pan(c)))).unwrap();
+                let k = knob_in(d);
+                let half = (strip_box.width - 2) / 2;
+                assert!(k.width <= half * 4 / 5 + 1, "pan {k:?} in {half}: {ctx}");
+                assert!(k.width >= half / 2, "pan {k:?} in {half}: {ctx}");
+                assert_eq!(k.width, k.height * 2, "round: {k:?}");
+                if strip == 1 && c == 0 {
+                    pan_w.push(k.width);
+                }
+            }
+            // One compact group: dials, LINK, value, fader, switches with
+            // no gap between them.
+            let dial = hits.rect(Hit::Control(mix(strip, Pan(0)))).unwrap();
+            let link = hits.rect(Hit::Control(mix(strip, Link))).unwrap();
+            let fader = hits.rect(Hit::Control(mix(strip, Fader(0)))).unwrap();
+            let phase = hits.rect(Hit::Control(mix(strip, Phase(0)))).unwrap();
+            assert_eq!(link.y, dial.bottom(), "strip {strip}: {ctx}");
+            assert_eq!(fader.y, link.y + 2, "strip {strip}: {ctx}");
+            assert!(phase.y <= fader.bottom() + 1, "strip {strip}: {ctx}");
+            if strip == 1 {
+                fader_h.push(fader.height);
             }
         }
-        // The fader's pixels are exactly over its hit rect's track.
-        let f = hits.rect(Hit::Control(mix(strip, Fader(0)))).unwrap();
-        assert!(hits
-            .pixels()
-            .iter()
-            .any(|s| kind(&s.widget) == "fader" && s.rect.y == f.y && s.rect.height == f.height));
-    }
 
-    // At 120×40 nothing is capped: the console fills the terminal.
-    let (buf, _) = render(&app, &meters, 120, 40);
-    assert!(buf[(0, 0)].symbol() == "╭" && buf[(119, 39 - 1)].symbol() != " ");
+        // An input strip: the switches and the gain knob spread evenly
+        // down the strip, the knob ending where the meter does.
+        for c in 0..2 {
+            let rows: Vec<u16> = InputControl::ORDER[..6]
+                .iter()
+                .map(|&kind| {
+                    hits.rect(Hit::Control(Control::Input { ch: c, kind }))
+                        .unwrap()
+                        .y
+                })
+                .collect();
+            let gaps: Vec<u16> = rows.windows(2).map(|p| p[1] - p[0]).collect();
+            assert!(
+                gaps.iter().max().unwrap() - gaps.iter().min().unwrap() <= 1,
+                "even: {rows:?}: {ctx}"
+            );
+            let knob = hits
+                .rect(Hit::Control(Control::Input {
+                    ch: c,
+                    kind: InputControl::Gain,
+                }))
+                .unwrap();
+            let after = knob.y - rows[5];
+            assert!(
+                after >= *gaps.iter().min().unwrap() && after <= gaps.iter().max().unwrap() + 1,
+                "knob follows at the same spacing: {rows:?} {knob:?}: {ctx}"
+            );
+            let strip = hits
+                .rect(Hit::Focus(Control::Input {
+                    ch: c,
+                    kind: InputControl::ORDER[0],
+                }))
+                .unwrap();
+            assert!(
+                knob.bottom() + 2 >= strip.bottom(),
+                "{knob:?} {strip:?}: {ctx}"
+            );
+            let k = knob_in(knob);
+            assert_eq!(k.width, k.height * 2, "round: {k:?}");
+            // About 75–80 % of #34's knob, which was ~0.63 of the strip.
+            let ratio = f64::from(k.width) / f64::from(strip.width - 2);
+            assert!(
+                (0.35..=0.6).contains(&ratio),
+                "gain {k:?} ratio {ratio}: {ctx}"
+            );
+            if c == 0 {
+                gain_w.push(k.width);
+            }
+        }
+
+        // Every control's hit rect answers for its own cells.
+        for strip in 0..4 {
+            let chans = if strip == 0 { 2 } else { 1 };
+            let mut ctls = vec![Pan(0), Pan(1), Link];
+            for c in 0..chans {
+                ctls.extend([Fader(c), Phase(c), Solo(c), Mute(c)]);
+            }
+            for ctl in ctls {
+                let hit = Hit::Control(mix(strip, ctl));
+                let r = hits.rect(hit).unwrap_or_else(|| panic!("{strip} {ctl:?}"));
+                for (x, y) in [(r.x, r.y), (r.right() - 1, r.bottom() - 1)] {
+                    assert_eq!(hits.get(x, y), Some(hit), "{strip} {ctl:?} at {x},{y}");
+                }
+            }
+            // The fader's pixels are over its hit rect's track.
+            let f = hits.rect(Hit::Control(mix(strip, Fader(0)))).unwrap();
+            assert!(hits.pixels().iter().any(|s| kind(&s.widget) == "fader"
+                && s.rect.y == f.y
+                && s.rect.height == f.height));
+        }
+    }
+    // Faders and knobs grow with the window, and shrink back.
+    assert!(fader_h.windows(2).all(|p| p[0] <= p[1]), "{fader_h:?}");
+    assert!(fader_h[3] > fader_h[0], "{fader_h:?}");
+    assert!(
+        pan_w.windows(2).all(|p| p[0] <= p[1]) && pan_w[3] > pan_w[0],
+        "{pan_w:?}"
+    );
+    assert!(
+        gain_w.windows(2).all(|p| p[0] <= p[1]) && gain_w[3] > gain_w[0],
+        "{gain_w:?}"
+    );
+    // Only absurd sizes stop growing, centred.
+    let (buf, _) = render(&app, &meters, 400, 120);
+    assert_eq!(buf[(0, 0)].symbol(), " ");
+    let (mw, mh) = (ui::MAX_WIDTH, ui::MAX_HEIGHT);
+    assert!(mw > 300 && mh >= 90);
+    assert_eq!(buf[((400 - mw) / 2, (120 - mh) / 2)].symbol(), "╭");
 }
 
 // ------------------------------------------------ responsiveness (#37)
