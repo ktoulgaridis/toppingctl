@@ -646,7 +646,8 @@ fn draw_pb_strip(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, i: us
         &[pill("LINK", s.link, PillKind::Normal, false, t)],
     );
     put_centered(buf, r, r.y + 5, &[value_span(s.fader_db, s.mute, t, true)]);
-    let body = Rect::new(r.x, r.y + 6, r.width, r.height - 7);
+    let rows = switch_rows(r);
+    let body = Rect::new(r.x, r.y + 6, r.width, r.height - 6 - rows);
     let clips = [0, 1].map(|c| app.clips().lit(MeterId::Playback(i, c)));
     stereo_body(
         buf,
@@ -657,19 +658,38 @@ fn draw_pb_strip(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, i: us
         meters.playback[i],
         clips,
     );
-    let gap = || Span::raw(" ");
-    put_centered(
-        buf,
-        r,
-        r.bottom() - 1,
-        &[
-            pill("Ø", s.phase, PillKind::Normal, false, t),
-            gap(),
-            pill("S", s.solo, PillKind::Normal, false, t),
-            gap(),
-            pill("M", s.mute, PillKind::Danger, false, t),
-        ],
-    );
+    strip_switches(buf, r, t, [s.phase, s.solo, s.mute], rows);
+}
+
+/// Rows for a mix strip's Ø / SOLO / MUTE: stacked when the strip is tall
+/// enough (as in the design), else one row of `Ø S M`.
+fn switch_rows(r: Rect) -> u16 {
+    if r.height >= 15 {
+        3
+    } else {
+        1
+    }
+}
+
+/// Ø / SOLO / MUTE (`on` in that order) at the bottom of `r`, in `rows`
+/// rows (3 or 1).
+fn strip_switches(buf: &mut Buffer, r: Rect, t: Theme, on: [bool; 3], rows: u16) {
+    let kinds = [PillKind::Normal, PillKind::Normal, PillKind::Danger];
+    if rows >= 3 {
+        for (k, label) in ["Ø", "SOLO", "MUTE"].into_iter().enumerate() {
+            let span = pill(&format!("{label:^4}"), on[k], kinds[k], false, t);
+            put_centered(buf, r, r.bottom() - 3 + k as u16, &[span]);
+        }
+        return;
+    }
+    let mut spans = Vec::new();
+    for (k, label) in ["Ø", "S", "M"].into_iter().enumerate() {
+        if k > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(pill(label, on[k], kinds[k], false, t));
+    }
+    put_centered(buf, r, r.bottom() - 1, &spans);
 }
 
 /// A pill with no padding, for tight rows.
@@ -708,7 +728,8 @@ fn draw_in12_strip(
 
     // M1 · F1 · scale · F2 · M2: one scale between two mono faders, tick
     // marks on both sides of each.
-    let body = Rect::new(r.x, r.y + 6, r.width, r.height - 7);
+    let rows = switch_rows(r);
+    let body = Rect::new(r.x, r.y + 6, r.width, r.height - 6 - rows);
     let total = 13;
     if body.width >= total && body.height > 0 {
         let x = body.x + (body.width - total) / 2;
@@ -740,6 +761,15 @@ fn draw_in12_strip(
         }
     }
     for (h, s) in halves.iter().zip([in1, in2]) {
+        if rows >= 3 {
+            let col = Rect {
+                y: r.y,
+                height: r.height,
+                ..*h
+            };
+            strip_switches(buf, col, t, [s.phase, s.solo, s.mute], rows);
+            continue;
+        }
         let h = Rect {
             y: r.bottom() - 1,
             ..*h
