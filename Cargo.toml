@@ -1,6 +1,6 @@
 [package]
 name = "toppingctl"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Control the TOPPING E2x2 USB audio interface over HID"
 license = "MIT OR Apache-2.0"
