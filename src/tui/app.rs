@@ -72,6 +72,16 @@ pub const DOWNLOAD_OPTIONS: [&str; 3] = [
     "Download to device only",
 ];
 
+/// The Settings dialog's device settings, in the official app's order
+/// (SYSTEMSETTING, app V1.09): display brightness (`10 0a`), automatic
+/// standby (`10 0b`), mobile applications (`10 0c`).
+pub const SETTINGS: [&str; 3] = ["Brightness", "Automatic standby", "Mobile applications"];
+/// The brightness choices, by value (`10 0a` = 0, 1, 2).
+pub const BRIGHTNESS: [&str; 3] = ["Dim", "Normal", "Bright"];
+/// Mobile applications' row in [`SETTINGS`]: a change takes effect only
+/// after the device restarts.
+pub const MOBILE_APPS: usize = 2;
+
 /// What a workspace name, once given, is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameThen {
@@ -404,6 +414,9 @@ pub enum Modal {
     RemoveWorkspace,
     /// The Download dialog ([`DOWNLOAD_OPTIONS`]), choice `sel` picked.
     Download { sel: usize },
+    /// The Settings dialog (the app's SYSTEMSETTING): setting `sel` of
+    /// [`SETTINGS`] focused.
+    Settings { sel: usize },
 }
 
 /// Where the session is.
@@ -546,6 +559,9 @@ pub struct App {
     /// Whether the mix strips show Ø / SOLO / MUTE stacked (a tall
     /// window) or in a row: the arrows follow what is drawn.
     switches_stacked: bool,
+    /// Mobile applications was changed here: it takes effect only after
+    /// the device restarts.
+    restart_required: bool,
 }
 
 /// A strip the arrows move within.
@@ -598,6 +614,7 @@ impl App {
             auto_save: false,
             prompt: String::new(),
             switches_stacked: false,
+            restart_required: false,
         }
     }
 
@@ -755,6 +772,12 @@ impl App {
         self.notice = notice;
     }
 
+    /// Whether mobile applications was changed in this session, so the
+    /// device needs a restart for it to take effect.
+    pub fn restart_required(&self) -> bool {
+        self.restart_required
+    }
+
     /// Whether the controls are on screen and take input.
     fn controls_live(&self) -> bool {
         self.phase == Phase::Synced && self.modal != Some(Modal::PushDefaults)
@@ -843,6 +866,23 @@ impl App {
                     }
                     KeyCode::Enter | KeyCode::Char(' ') => return self.download(sel),
                     KeyCode::Esc | KeyCode::Char('w') => self.modal = None,
+                    _ => {}
+                }
+                return Vec::new();
+            }
+            Some(Modal::Settings { sel }) => {
+                let last = SETTINGS.len() - 1;
+                let to = |sel| Some(Modal::Settings { sel });
+                match key.code {
+                    KeyCode::Up => self.modal = to(sel.saturating_sub(1)),
+                    KeyCode::Down => self.modal = to((sel + 1).min(last)),
+                    KeyCode::Tab => self.modal = to((sel + 1) % SETTINGS.len()),
+                    KeyCode::BackTab => self.modal = to((sel + last) % SETTINGS.len()),
+                    KeyCode::Left | KeyCode::Char('-' | '_') => return self.step_setting(sel, -1),
+                    KeyCode::Right | KeyCode::Char('+' | '=') => return self.step_setting(sel, 1),
+                    KeyCode::Enter | KeyCode::Char(' ') => return self.cycle_setting(sel),
+                    KeyCode::Esc | KeyCode::Char('e') => self.modal = None,
+                    KeyCode::Char('q') => return vec![Action::Quit],
                     _ => {}
                 }
                 return Vec::new();
@@ -962,6 +1002,7 @@ impl App {
             KeyCode::Char('s') => return self.save_key(),
             KeyCode::Char('l') => self.open_modal(Modal::Workspaces { sel: 0 }),
             KeyCode::Char('w') => self.open_modal(Modal::Download { sel: 0 }),
+            KeyCode::Char('e') => self.open_modal(Modal::Settings { sel: 0 }),
             KeyCode::Char(c @ ('a' | 'b' | 'c')) => self.mix = usize::from(c as u8 - b'a'),
             KeyCode::Enter if name_of(self.focus).is_some() => {
                 if let Some(name) = name_of(self.focus) {
@@ -1070,12 +1111,17 @@ impl App {
                     Vec::new()
                 }
                 (Modal::Download { sel }, Some(Hit::Yes)) => self.download(sel),
+                (Modal::Settings { .. }, Some(Hit::SettingOption { row, value })) => {
+                    self.modal = Some(Modal::Settings { sel: row });
+                    self.set_setting(row, value)
+                }
                 (
                     Modal::Workspaces { .. }
                     | Modal::WorkspaceName { .. }
                     | Modal::Overwrite { .. }
                     | Modal::RemoveWorkspace
-                    | Modal::Download { .. },
+                    | Modal::Download { .. }
+                    | Modal::Settings { .. },
                     Some(Hit::No),
                 ) => {
                     self.modal = None;
@@ -1791,6 +1837,48 @@ impl App {
             }
             _ => vec![Action::StoreToDevice],
         }
+    }
+
+    /// Setting `row` of [`SETTINGS`]'s value: brightness 0 ..= 2, a switch
+    /// on (1) or off (0).
+    fn setting(&self, row: usize) -> u8 {
+        let system = &self.state.system;
+        match row {
+            0 => system.brightness.min(2),
+            1 => u8::from(system.auto_standby),
+            _ => u8::from(system.mobile_apps),
+        }
+    }
+
+    /// Sets setting `row` of [`SETTINGS`] to `value` (brightness 0 ..= 2,
+    /// a switch on when non-zero) and sends its register. A change to
+    /// mobile applications asks for a device restart.
+    fn set_setting(&mut self, row: usize, value: u8) -> Vec<Action> {
+        let mut new = self.state.clone();
+        match row {
+            0 => new.system.brightness = value.min(2),
+            1 => new.system.auto_standby = value != 0,
+            MOBILE_APPS => new.system.mobile_apps = value != 0,
+            _ => return Vec::new(),
+        }
+        if row == MOBILE_APPS && new.system.mobile_apps != self.state.system.mobile_apps {
+            self.restart_required = true;
+        }
+        self.commit(new)
+    }
+
+    /// ←→ / +- on setting `row`: brightness one step, a switch on or off.
+    fn step_setting(&mut self, row: usize, step: i8) -> Vec<Action> {
+        let max = if row == 0 { 2 } else { 1 };
+        let value = self.setting(row).saturating_add_signed(step).min(max);
+        self.set_setting(row, value)
+    }
+
+    /// Enter / space on setting `row`: brightness cycles Dim → Normal →
+    /// Bright → Dim, a switch flips.
+    fn cycle_setting(&mut self, row: usize) -> Vec<Action> {
+        let n = if row == 0 { 3 } else { 2 };
+        self.set_setting(row, (self.setting(row) + 1) % n)
     }
 
     /// The PHONE level switch (`11 02`): +17 dBu (`true`) or 0 dBu.
