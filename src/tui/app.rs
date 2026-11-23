@@ -264,8 +264,8 @@ impl BusControl {
         BusControl::Fader(1),
     ];
 
-    /// Bus `bus`'s controls on its linked or unlinked page, in focus order
-    /// (top to bottom as drawn).
+    /// Bus `bus`'s controls on its linked or unlinked page. The arrows
+    /// walk them as drawn (see [`App::focus`]).
     pub fn order(bus: usize, linked: bool) -> &'static [BusControl] {
         match (bus == OUT_BUS, linked) {
             (false, true) => &Self::LOOP_LINKED,
