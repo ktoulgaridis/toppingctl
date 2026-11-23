@@ -21,6 +21,7 @@ use ratatui::Terminal;
 use crate::conn::{Connection, Event, HidTransport, SendError};
 use crate::error::{message, Platform};
 use crate::frame::Frame;
+use crate::official_app::{self, System};
 use crate::open::open_e2x2;
 use crate::rate;
 use crate::state::Meters;
@@ -129,6 +130,7 @@ pub fn run() -> Result<()> {
     let workspaces = Workspaces::from_env()?;
     let mut app = App::new(Theme::from_env());
     app.set_workspaces(workspaces.list(), workspaces.settings());
+    app.set_notice(official_app::warning(&System).map(String::from));
     let _guard = Guard::enter()?;
     // Before any event is read: does the terminal take kitty images?
     let mut pixels = PixelLayer::detect();
