@@ -274,6 +274,8 @@ jobs:
     steps:
       - name: apt-get install toppingctl from the signed repo
         run: |
+          # Minimized Ubuntu images tell dpkg to skip /usr/share/doc (the licences).
+          echo 'path-include=/usr/share/doc/toppingctl/*' >/etc/dpkg/dpkg.cfg.d/zz-toppingctl-doc
           apt-get update
           apt-get install -y ca-certificates curl gpg
           # The apt signing key: fingerprint 91A86B2085944347FA9C7F92F29E31E08B5B2DCE.
