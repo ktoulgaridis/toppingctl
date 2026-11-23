@@ -26,6 +26,7 @@ use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
 use crate::tui::widgets::fader::db_at_frac;
 use crate::tui::widgets::meter::ClipHold;
+use crate::workspace::{self, Settings};
 
 /// The highest input gain, in dB.
 pub const MAX_GAIN_DB: u8 = 20;
@@ -63,6 +64,40 @@ pub const PAN_STEP: f64 = 0.05;
 pub const NAME_MAX: usize = 10;
 /// Two clicks on the same knob within this are a double-click.
 pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// The Download dialog's choices (`w`), in the official app's order
+/// (`DOWNLOADOPTIONS`, app V1.09).
+pub const DOWNLOAD_OPTIONS: [&str; 3] = [
+    "Save the current workspace and download to the device",
+    "Save as workspace… and download",
+    "Download to device only",
+];
+
+/// What a workspace name, once given, is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameThen {
+    /// "New workspace…": the defaults, saved under the name and opened.
+    New,
+    /// "Save workspace as…" (and `s` on Default): the current state saved
+    /// under the name and opened.
+    SaveAs,
+    /// As [`NameThen::SaveAs`], then store to the device (`1a 03`).
+    SaveAsAndStore,
+}
+
+/// An entry of the header's workspace combo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComboItem {
+    /// No named workspace.
+    Default,
+    /// The `i`th of [`App::workspaces`].
+    Named(usize),
+    /// "New workspace…".
+    New,
+    /// "Save workspace as…".
+    SaveAs,
+    /// The auto-save toggle.
+    AutoSave,
+}
 
 /// What the event loop should do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,8 +107,20 @@ pub enum Action {
     /// Send a frame with `Connection::send_confirmed_phantom`; the user has
     /// just confirmed it.
     SendConfirmedPhantom(Frame),
-    /// Save [`App::state`] to the store.
+    /// Save [`App::state`] to the store (and, with auto-save on, to the
+    /// open workspace).
     Save,
+    /// Save [`App::state`] as the named workspace.
+    SaveWorkspace(String),
+    /// Read the named workspace and load it ([`App::load_workspace`]).
+    LoadWorkspace(String),
+    /// Remove the named workspace's file.
+    DeleteWorkspace(String),
+    /// Save the open workspace and auto-save ([`App::settings`]).
+    SaveWorkspaceSettings,
+    /// Send ParameterSave `1a 03`, unless a save before it in the same
+    /// batch failed.
+    StoreToDevice,
     /// Set the interface's sample rate (Hz), through the OS.
     SetRate(u32),
     /// Restore the terminal and exit.
@@ -378,6 +425,16 @@ pub enum Modal {
     Rate { sel: usize },
     /// Bus `bus`'s source menu ([`SOURCE_MENU`]), item `sel` highlighted.
     Source { bus: usize, sel: usize },
+    /// The workspace combo ([`App::combo_items`]), item `sel` highlighted.
+    Workspaces { sel: usize },
+    /// A workspace name being typed ([`App::prompt`]).
+    WorkspaceName { then: NameThen },
+    /// "Overwrite workspace?" for the name in [`App::prompt`].
+    Overwrite { then: NameThen },
+    /// "Remove workspace?" for the name in [`App::prompt`].
+    RemoveWorkspace,
+    /// The Download dialog ([`DOWNLOAD_OPTIONS`]), choice `sel` picked.
+    Download { sel: usize },
 }
 
 /// Where the session is.
@@ -510,6 +567,13 @@ pub struct App {
     sample_rate: Option<u32>,
     /// A strip's name being edited, and the text so far.
     editing: Option<(Name, String)>,
+    /// The saved workspaces' names, sorted.
+    workspaces: Vec<String>,
+    /// The open workspace; `None` is Default.
+    workspace: Option<String>,
+    auto_save: bool,
+    /// The workspace name a modal is about (typed, or to confirm).
+    prompt: String,
 }
 
 /// The PHONE strip's index among the output strips.
@@ -538,7 +602,67 @@ impl App {
             notice: None,
             sample_rate: None,
             editing: None,
+            workspaces: Vec::new(),
+            workspace: None,
+            auto_save: false,
+            prompt: String::new(),
         }
+    }
+
+    /// The saved workspaces and the settings, as on disk. A pointer to a
+    /// workspace that isn't there is Default.
+    pub fn set_workspaces(&mut self, names: Vec<String>, settings: Settings) {
+        self.workspace = settings.current.filter(|c| names.contains(c));
+        self.workspaces = names;
+        self.auto_save = settings.auto_save;
+    }
+
+    /// The saved workspaces' names, sorted.
+    pub fn workspaces(&self) -> &[String] {
+        &self.workspaces
+    }
+
+    /// The open workspace; `None` is Default.
+    pub fn workspace(&self) -> Option<&str> {
+        self.workspace.as_deref()
+    }
+
+    pub fn auto_save(&self) -> bool {
+        self.auto_save
+    }
+
+    /// The open workspace and auto-save, to persist.
+    pub fn settings(&self) -> Settings {
+        Settings {
+            current: self.workspace.clone(),
+            auto_save: self.auto_save,
+        }
+    }
+
+    /// The workspace name the open modal is about.
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    /// The workspace combo's entries, in the official app's order.
+    pub fn combo_items(&self) -> Vec<ComboItem> {
+        let mut items = vec![ComboItem::Default];
+        items.extend((0..self.workspaces.len()).map(ComboItem::Named));
+        items.extend([ComboItem::New, ComboItem::SaveAs, ComboItem::AutoSave]);
+        items
+    }
+
+    /// Workspace `name` was read as `loaded`: moves the device there with
+    /// [`State::diff`] (only what changed) and opens it. 48V and the
+    /// readout stay the device's: a load never turns 48V on.
+    pub fn load_workspace(&mut self, name: String, loaded: State) -> Vec<Action> {
+        let mut new = loaded;
+        for (n, now) in new.inputs.iter_mut().zip(&self.state.inputs) {
+            n.phantom = now.phantom;
+        }
+        new.readout = self.state.readout.clone();
+        self.workspace = Some(name);
+        self.commit(new)
     }
 
     /// The interface's sample rate (Hz), as last read from the OS.
@@ -664,9 +788,61 @@ impl App {
             }
             return self.edit_key(key.code);
         }
+        if let Some(Modal::WorkspaceName { then }) = self.modal {
+            return self.name_key(key.code, then);
+        }
         let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
         let no = matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc);
         match self.modal {
+            Some(Modal::Overwrite { then }) if yes => {
+                let name = self.prompt.clone();
+                return self.finish_name(then, name);
+            }
+            Some(Modal::RemoveWorkspace) if yes => return self.remove_workspace(),
+            Some(Modal::Overwrite { .. } | Modal::RemoveWorkspace) if no => {
+                self.modal = None;
+                return Vec::new();
+            }
+            Some(Modal::Workspaces { sel }) => {
+                let last = self.combo_items().len() - 1;
+                match key.code {
+                    KeyCode::Up => {
+                        self.modal = Some(Modal::Workspaces {
+                            sel: sel.saturating_sub(1),
+                        })
+                    }
+                    KeyCode::Down => {
+                        self.modal = Some(Modal::Workspaces {
+                            sel: (sel + 1).min(last),
+                        })
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => return self.pick_combo(sel),
+                    KeyCode::Char('s') => self.ask_overwrite(sel),
+                    KeyCode::Char('d') | KeyCode::Delete => self.ask_remove(sel),
+                    KeyCode::Esc | KeyCode::Char('l') => self.modal = None,
+                    KeyCode::Char('q') => return vec![Action::Quit],
+                    _ => {}
+                }
+                return Vec::new();
+            }
+            Some(Modal::Download { sel }) => {
+                match key.code {
+                    KeyCode::Up => {
+                        self.modal = Some(Modal::Download {
+                            sel: sel.saturating_sub(1),
+                        })
+                    }
+                    KeyCode::Down => {
+                        self.modal = Some(Modal::Download {
+                            sel: (sel + 1).min(DOWNLOAD_OPTIONS.len() - 1),
+                        })
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => return self.download(sel),
+                    KeyCode::Esc | KeyCode::Char('w') => self.modal = None,
+                    _ => {}
+                }
+                return Vec::new();
+            }
             Some(Modal::PushDefaults) if yes => return self.push_defaults(),
             Some(Modal::PushDefaults) if no || key.code == KeyCode::Char('q') => {
                 return vec![Action::Quit]
@@ -774,6 +950,9 @@ impl App {
             }
             KeyCode::Char('0') => return self.reset(self.focus),
             KeyCode::Char('r') => self.open_rates(),
+            KeyCode::Char('s') => return self.save_key(),
+            KeyCode::Char('l') => self.open_modal(Modal::Workspaces { sel: 0 }),
+            KeyCode::Char('w') => self.open_modal(Modal::Download { sel: 0 }),
             KeyCode::Char(c @ ('a' | 'b' | 'c')) => self.mix = usize::from(c as u8 - b'a'),
             KeyCode::Enter if name_of(self.focus).is_some() => {
                 if let Some(name) = name_of(self.focus) {
@@ -859,6 +1038,40 @@ impl App {
                     Vec::new()
                 }
                 (Modal::Rate { .. }, Some(Hit::RateOption(i))) => self.pick_rate(i),
+                (Modal::Workspaces { .. }, Some(Hit::ComboItem(i))) => {
+                    self.modal = Some(Modal::Workspaces { sel: i });
+                    self.pick_combo(i)
+                }
+                (Modal::Workspaces { .. }, Some(Hit::ComboSave(i))) => {
+                    self.ask_overwrite(i);
+                    Vec::new()
+                }
+                (Modal::Workspaces { .. }, Some(Hit::ComboDelete(i))) => {
+                    self.ask_remove(i);
+                    Vec::new()
+                }
+                (Modal::WorkspaceName { then }, Some(Hit::Yes)) => self.submit_name(then),
+                (Modal::Overwrite { then }, Some(Hit::Yes)) => {
+                    let name = self.prompt.clone();
+                    self.finish_name(then, name)
+                }
+                (Modal::RemoveWorkspace, Some(Hit::Yes)) => self.remove_workspace(),
+                (Modal::Download { .. }, Some(Hit::DownloadOption(i))) => {
+                    self.modal = Some(Modal::Download { sel: i });
+                    Vec::new()
+                }
+                (Modal::Download { sel }, Some(Hit::Yes)) => self.download(sel),
+                (
+                    Modal::Workspaces { .. }
+                    | Modal::WorkspaceName { .. }
+                    | Modal::Overwrite { .. }
+                    | Modal::RemoveWorkspace
+                    | Modal::Download { .. },
+                    Some(Hit::No),
+                ) => {
+                    self.modal = None;
+                    Vec::new()
+                }
                 (Modal::Source { bus, .. }, Some(Hit::SourceOption(i))) => self.pick_source(bus, i),
                 _ => Vec::new(),
             };
@@ -918,6 +1131,9 @@ impl App {
                         return self.set_phone_level(high);
                     }
                     Some(Hit::Rate) => self.open_rates(),
+                    Some(Hit::Workspaces) => self.open_modal(Modal::Workspaces { sel: 0 }),
+                    Some(Hit::SaveKey) => return self.save_key(),
+                    Some(Hit::Download) => self.open_modal(Modal::Download { sel: 0 }),
                     _ => {}
                 }
             }
@@ -1393,6 +1609,179 @@ impl App {
         let mut new = self.state.clone();
         *name.slot(&mut new) = (!text.is_empty()).then_some(text);
         self.commit(new)
+    }
+
+    /// Opens `modal`, ending any drag.
+    fn open_modal(&mut self, modal: Modal) {
+        self.modal = Some(modal);
+        self.drag = None;
+    }
+
+    /// Asks for a workspace name, for `then`.
+    fn ask_name(&mut self, then: NameThen) {
+        self.prompt.clear();
+        self.open_modal(Modal::WorkspaceName { then });
+    }
+
+    /// `s`: saves to the open workspace; on Default, asks for a name.
+    fn save_key(&mut self) -> Vec<Action> {
+        match self.workspace.clone() {
+            Some(name) => vec![Action::SaveWorkspace(name)],
+            None => {
+                self.ask_name(NameThen::SaveAs);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Picks combo entry `i`: a workspace loads, Default closes the open
+    /// one (the device is left as it is), New and Save as ask for a name,
+    /// auto-save flips.
+    fn pick_combo(&mut self, i: usize) -> Vec<Action> {
+        match self.combo_items().get(i) {
+            Some(ComboItem::Default) => {
+                self.modal = None;
+                self.workspace = None;
+                vec![Action::SaveWorkspaceSettings]
+            }
+            Some(&ComboItem::Named(k)) => {
+                self.modal = None;
+                vec![Action::LoadWorkspace(self.workspaces[k].clone())]
+            }
+            Some(ComboItem::New) => {
+                self.ask_name(NameThen::New);
+                Vec::new()
+            }
+            Some(ComboItem::SaveAs) => {
+                self.ask_name(NameThen::SaveAs);
+                Vec::new()
+            }
+            Some(ComboItem::AutoSave) => {
+                self.auto_save = !self.auto_save;
+                vec![Action::SaveWorkspaceSettings]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// The named workspace at combo entry `i`, if it is one.
+    fn combo_name(&self, i: usize) -> Option<String> {
+        match self.combo_items().get(i) {
+            Some(&ComboItem::Named(k)) => Some(self.workspaces[k].clone()),
+            _ => None,
+        }
+    }
+
+    /// A named entry's Save: "Overwrite?" first.
+    fn ask_overwrite(&mut self, i: usize) {
+        if let Some(name) = self.combo_name(i) {
+            self.prompt = name;
+            self.modal = Some(Modal::Overwrite {
+                then: NameThen::SaveAs,
+            });
+        }
+    }
+
+    /// A named entry's Delete: "Remove workspace?" first.
+    fn ask_remove(&mut self, i: usize) {
+        if let Some(name) = self.combo_name(i) {
+            self.prompt = name;
+            self.modal = Some(Modal::RemoveWorkspace);
+        }
+    }
+
+    /// Removes the workspace in [`App::prompt`]; the open one goes back to
+    /// Default.
+    fn remove_workspace(&mut self) -> Vec<Action> {
+        self.modal = None;
+        let name = std::mem::take(&mut self.prompt);
+        self.workspaces.retain(|n| *n != name);
+        if self.workspace.as_deref() == Some(name.as_str()) {
+            self.workspace = None;
+        }
+        vec![Action::DeleteWorkspace(name)]
+    }
+
+    /// A key while a workspace name is typed: the characters a name can
+    /// hold (see [`workspace::valid_char`]), Backspace, Enter, Esc.
+    fn name_key(&mut self, code: KeyCode, then: NameThen) -> Vec<Action> {
+        match code {
+            KeyCode::Char(c)
+                if workspace::valid_char(c)
+                    && Span::raw(c.to_string()).width() == 1
+                    && self.prompt.chars().count() < workspace::NAME_MAX =>
+            {
+                self.prompt.push(c)
+            }
+            KeyCode::Backspace => {
+                self.prompt.pop();
+            }
+            KeyCode::Esc => self.modal = None,
+            KeyCode::Enter => return self.submit_name(then),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// The typed name, trimmed: refused with a notice when it isn't a
+    /// valid name, "Overwrite?" when it is taken, else carried out.
+    fn submit_name(&mut self, then: NameThen) -> Vec<Action> {
+        let name = self.prompt.trim().to_string();
+        if name.is_empty() {
+            return Vec::new();
+        }
+        if !workspace::valid_name(&name) {
+            self.notice = Some(format!("{name:?} can't be a workspace name"));
+            return Vec::new();
+        }
+        self.prompt = name.clone();
+        if self.workspaces.contains(&name) {
+            self.modal = Some(Modal::Overwrite { then });
+            return Vec::new();
+        }
+        self.finish_name(then, name)
+    }
+
+    /// Saves under `name` (the defaults first, for New), opens it, and for
+    /// [`NameThen::SaveAsAndStore`] stores to the device after the save.
+    fn finish_name(&mut self, then: NameThen, name: String) -> Vec<Action> {
+        self.modal = None;
+        self.prompt.clear();
+        if !self.workspaces.contains(&name) {
+            self.workspaces.push(name.clone());
+            self.workspaces.sort();
+        }
+        self.workspace = Some(name.clone());
+        let mut out = Vec::new();
+        if then == NameThen::New {
+            let mut new = State {
+                system: self.state.system.clone(),
+                readout: self.state.readout.clone(),
+                ..State::default()
+            };
+            for (n, now) in new.inputs.iter_mut().zip(&self.state.inputs) {
+                n.phantom = now.phantom;
+            }
+            out = self.commit(new);
+        }
+        out.push(Action::SaveWorkspace(name));
+        if then == NameThen::SaveAsAndStore {
+            out.push(Action::StoreToDevice);
+        }
+        out
+    }
+
+    /// The Download dialog's OK on choice `sel`.
+    fn download(&mut self, sel: usize) -> Vec<Action> {
+        self.modal = None;
+        match (sel, self.workspace.clone()) {
+            (0, Some(name)) => vec![Action::SaveWorkspace(name), Action::StoreToDevice],
+            (0 | 1, _) => {
+                self.ask_name(NameThen::SaveAsAndStore);
+                Vec::new()
+            }
+            _ => vec![Action::StoreToDevice],
+        }
     }
 
     /// The PHONE level switch (`11 02`): +17 dBu (`true`) or 0 dBu.

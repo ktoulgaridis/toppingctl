@@ -12,3 +12,4 @@ pub mod state;
 pub mod sync;
 pub mod tui;
 pub mod value;
+pub mod workspace;
