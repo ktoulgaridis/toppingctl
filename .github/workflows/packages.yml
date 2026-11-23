@@ -275,11 +275,15 @@ jobs:
       - name: apt-get install toppingctl from the signed repo
         run: |
           apt-get update
-          apt-get install -y ca-certificates curl
-          keyring=/usr/share/keyrings/ktoulgaridis-archive-keyring.gpg
-          curl -fsSL https://ktoulgaridis.github.io/apt/ktoulgaridis-archive-keyring.gpg -o "$keyring"
-          echo "deb [signed-by=$keyring] https://ktoulgaridis.github.io/apt stable main" \
-            >/etc/apt/sources.list.d/ktoulgaridis.list
+          apt-get install -y ca-certificates curl gpg
+          # The apt signing key: fingerprint 91A86B2085944347FA9C7F92F29E31E08B5B2DCE.
+          install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://ktoulgaridis.github.io/apt/toppingctl.asc |
+            gpg --dearmor -o /etc/apt/keyrings/toppingctl.gpg
+          gpg --show-keys --with-colons /etc/apt/keyrings/toppingctl.gpg |
+            grep -Fx 'fpr:::::::::91A86B2085944347FA9C7F92F29E31E08B5B2DCE:'
+          echo "deb [signed-by=/etc/apt/keyrings/toppingctl.gpg] https://ktoulgaridis.github.io/apt stable main" \
+            >/etc/apt/sources.list.d/toppingctl.list
           # Signature verified: the source is signed-by the keyring only, and any update
           # error (a bad or missing signature included) fails the job.
           # Pages takes a minute or two to serve a fresh push, so wait for the version.

@@ -32,14 +32,17 @@ yay -S toppingctl-bin
 and upgrade with apt as usual.
 
 ```sh
-sudo curl -fsSL https://ktoulgaridis.github.io/apt/ktoulgaridis-archive-keyring.gpg \
-  -o /usr/share/keyrings/ktoulgaridis-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/ktoulgaridis-archive-keyring.gpg] https://ktoulgaridis.github.io/apt stable main" |
-  sudo tee /etc/apt/sources.list.d/ktoulgaridis.list
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://ktoulgaridis.github.io/apt/toppingctl.asc |
+  sudo gpg --dearmor -o /etc/apt/keyrings/toppingctl.gpg
+echo "deb [signed-by=/etc/apt/keyrings/toppingctl.gpg] https://ktoulgaridis.github.io/apt stable main" |
+  sudo tee /etc/apt/sources.list.d/toppingctl.list
 sudo apt-get update
 sudo apt-get install toppingctl
 ```
 
+The key's fingerprint is `91A86B2085944347FA9C7F92F29E31E08B5B2DCE`
+(`gpg --show-keys /etc/apt/keyrings/toppingctl.gpg`).
 Each release also has the `.deb` files attached.
 
 **Homebrew (macOS, Linux):**

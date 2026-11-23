@@ -74,39 +74,45 @@ skips the push with a notice and `check-aur` installs from the rendered PKGBUILD
 instead. Set the secret (step 3) and re-run the workflow for the latest release; from
 then on `check-aur` installs from AUR.
 
-### 2. The two repos
+### 2. The two repos (done)
+
+`ktoulgaridis/homebrew-tap` and `ktoulgaridis/apt` exist (public, `main`, README only);
+`apt` has GitHub Pages serving `main` at `/`, so <https://ktoulgaridis.github.io/apt/>. The
+equivalent commands, for the record:
 
 ```sh
-gh repo create ktoulgaridis/homebrew-tap --public --add-readme \
-  --description "Homebrew tap: brew install ktoulgaridis/tap/toppingctl"
-gh repo create ktoulgaridis/apt --public --add-readme \
-  --description "Signed apt repository for toppingctl"
+gh repo create ktoulgaridis/homebrew-tap --public --add-readme
+gh repo create ktoulgaridis/apt --public --add-readme
+# then apt: Settings -> Pages -> Deploy from a branch -> main, / (root)
 ```
 
-Then turn on GitHub Pages for `ktoulgaridis/apt`: *Settings → Pages → Deploy from a
-branch → `main`, `/ (root)`*. It serves `https://ktoulgaridis.github.io/apt`. Leave `main`
-unprotected on both repos (or allow the token to push), since the workflow pushes to it.
+Leave `main` unprotected on both repos (or let the token push), since the workflow pushes
+to it.
 
-### 3. The apt signing key
+### 3. The apt signing key (done)
 
-A dedicated key that signs only the apt repo, with no passphrase (it lives only in the
-`release` environment):
+A dedicated ed25519 key that signs only the apt repo: uid `toppingctl apt repository`,
+fingerprint `91A86B2085944347FA9C7F92F29E31E08B5B2DCE`, no passphrase (it lives only in
+the `release` environment as `APT_GPG_PRIVATE_KEY`, an armored export). Its public key
+is committed to the apt repo as `toppingctl.asc`; `scripts/package.sh apt-repo` exports
+it only if that file is missing. Users dearmor it into `/etc/apt/keyrings/toppingctl.gpg`
+and point `signed-by=` at it (see the README).
+
+Generating a replacement the same way:
 
 ```sh
 export GNUPGHOME="$(mktemp -d)"
-gpg --batch --passphrase '' --quick-gen-key \
-  'toppingctl apt repository <35013508+ktoulgaridis@users.noreply.github.com>' ed25519 sign 3y
+gpg --batch --passphrase '' --quick-gen-key 'toppingctl apt repository' ed25519 sign 3y
 fpr="$(gpg --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
 gpg --armor --export-secret-keys "$fpr" |
   gh secret set APT_GPG_PRIVATE_KEY --env release -R ktoulgaridis/toppingctl
-gpg --armor --export "$fpr" > toppingctl-apt.pub.asc   # keep; also published by the workflow
-gpg --armor --gen-revoke "$fpr" > toppingctl-apt.revoke.asc   # keep offline
+gpg --armor --export "$fpr" > toppingctl.asc        # commit to ktoulgaridis/apt
+gpg --armor --gen-revoke "$fpr" > toppingctl.revoke.asc   # keep offline
 rm -rf "$GNUPGHOME"
 ```
 
-The workflow publishes the public key as `ktoulgaridis-archive-keyring.gpg` at the root
-of the apt repo. The key expires in three years: extend it (`gpg --quick-set-expire`)
-and update the secret before then.
+A new key also means updating the fingerprint in the README and in `check-apt`
+(`packages.yml`), and users re-fetching `toppingctl.asc`.
 
 ### 4. The token and the `release` environment
 

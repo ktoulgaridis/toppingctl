@@ -24,7 +24,8 @@
 #   scripts/package.sh apt-repo <repo-dir> <deb>...
 #       Adds the debs to the apt repo checkout <repo-dir> (pool/main/<l>/<pkg>/), then
 #       regenerates dists/stable (Packages for amd64 and arm64, Release) and signs it
-#       (InRelease, Release.gpg) with the gpg key named by $APT_SIGNING_KEY. Debs the
+#       (InRelease, Release.gpg) with the gpg key named by $APT_SIGNING_KEY, and exports
+#       its public key to toppingctl.asc if the repo has none. Debs the
 #       pool already has are skipped; when none is new, nothing is touched. A different
 #       deb under a published name is an error. Needs apt-ftparchive (apt-utils) and gpg.
 set -euo pipefail
@@ -186,10 +187,10 @@ render() {
     esac
 }
 
-# The apt repo's suite and architectures, and its public key's file name.
+# The apt repo's suite and architectures, and its public key's file name (armored).
 APT_SUITE=stable
 APT_ARCHES=(amd64 arm64)
-APT_KEYRING=ktoulgaridis-archive-keyring.gpg
+APT_PUBKEY=toppingctl.asc
 
 apt_repo() {
     [[ $# -ge 2 ]] || die "usage: apt-repo <repo-dir> <deb>..."
@@ -248,9 +249,11 @@ apt_repo() {
             --clearsign --output "$dists/InRelease" "$dists/Release"
         gpg --batch --yes --local-user "$key" --digest-algo SHA512 \
             --armor --detach-sign --output "$dists/Release.gpg" "$dists/Release"
-        # The public key users fetch (binary, for signed-by=), and no Jekyll on Pages.
-        gpg --batch --export "$key" >"$APT_KEYRING"
-        [[ -s "$APT_KEYRING" ]] || die "no public key exported for $key"
+        # The public key users fetch, if the repo doesn't publish it yet; no Jekyll.
+        if [[ ! -s "$APT_PUBKEY" ]]; then
+            gpg --batch --armor --export "$key" >"$APT_PUBKEY"
+            [[ -s "$APT_PUBKEY" ]] || die "no public key exported for $key"
+        fi
         touch .nojekyll
     )
 }
