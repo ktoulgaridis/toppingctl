@@ -9,9 +9,11 @@
 //!   Without a cell size in the reply it falls back to the window size
 //!   (TIOCGWINSZ, through crossterm). WezTerm and Konsole are skipped:
 //!   their kitty support is partial.
-//! - [`write_transmit`] sends uncompressed RGBA (`f=32`) in base64 chunks
-//!   of at most 4096 bytes. Images are sent once and cached, so
-//!   compression bought little.
+//! - [`write_transmit`] sends RGBA (`f=32`), compressed with our own small
+//!   zlib encoder ([`zlib`], `o=z`), in base64 chunks of at most 4096
+//!   bytes. The widgets are flat, so a fixed-Huffman deflate with run and
+//!   repeat matches keeps a cold start's data to about what flate2 sent;
+//!   uncompressed it would be 20 to 30 times as much.
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -186,10 +188,10 @@ pub fn base64(data: &[u8]) -> String {
 }
 
 /// Writes the escapes that send `rgba` (`width`×`height`, 4 bytes a
-/// pixel, uncompressed) to the terminal under image id `id`, quietly, in
-/// [`CHUNK`]-byte pieces. Returns the base64 bytes written.
+/// pixel) to the terminal under image id `id`, zlib-compressed, quietly,
+/// in [`CHUNK`]-byte pieces. Returns the base64 bytes written.
 pub fn write_transmit(out: &mut String, id: u32, width: u32, height: u32, rgba: &[u8]) -> usize {
-    let b64 = base64(rgba);
+    let b64 = base64(&zlib(rgba));
     // Base64 is ASCII, so any byte boundary is a char boundary.
     let n = b64.len().div_ceil(CHUNK).max(1);
     for i in 0..n {
@@ -200,11 +202,173 @@ pub fn write_transmit(out: &mut String, id: u32, width: u32, height: u32, rgba: 
         if i == 0 {
             let _ = write!(
                 out,
-                "\x1b_Ga=t,i={id},f=32,s={width},v={height},q=2,m={m};{chunk}\x1b\\"
+                "\x1b_Ga=t,i={id},f=32,o=z,s={width},v={height},q=2,m={m};{chunk}\x1b\\"
             );
         } else {
             let _ = write!(out, "\x1b_Gm={m};{chunk}\x1b\\");
         }
     }
     b64.len()
+}
+
+// ------------------------------------------------------------------ zlib
+//
+// RFC 1950 around one fixed-Huffman deflate block (RFC 1951 §3.2.6).
+// Matches are found greedily among the previous byte, the previous pixel
+// and the last place the next three bytes were seen: enough for flat,
+// anti-aliased widgets.
+
+/// Adler-32 (RFC 1950 §8.2) of `data`.
+pub fn adler32(data: &[u8]) -> u32 {
+    const MOD: u32 = 65521;
+    let (mut a, mut b) = (1u32, 0u32);
+    // 5552 bytes is the most that can't overflow before the modulo.
+    for chunk in data.chunks(5552) {
+        for &x in chunk {
+            a += u32::from(x);
+            b += a;
+        }
+        a %= MOD;
+        b %= MOD;
+    }
+    (b << 16) | a
+}
+
+const LEN_BASE: [u16; 29] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
+];
+const LEN_EXTRA: [u8; 29] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+];
+const DIST_BASE: [u16; 30] = [
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+];
+const DIST_EXTRA: [u8; 30] = [
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
+];
+const WINDOW: usize = 32768;
+const MAX_MATCH: usize = 258;
+const HASH_BITS: u32 = 15;
+
+/// Deflate's bit order: values least significant bit first, Huffman codes
+/// most significant first.
+struct Bits {
+    out: Vec<u8>,
+    acc: u64,
+    n: u32,
+}
+
+impl Bits {
+    fn put(&mut self, v: u32, n: u32) {
+        self.acc |= u64::from(v) << self.n;
+        self.n += n;
+        while self.n >= 8 {
+            self.out.push(self.acc as u8);
+            self.acc >>= 8;
+            self.n -= 8;
+        }
+    }
+
+    fn code(&mut self, code: u32, n: u32) {
+        let rev = code.reverse_bits() >> (32 - n);
+        self.put(rev, n);
+    }
+
+    /// A literal/length symbol in the fixed code.
+    fn symbol(&mut self, sym: u32) {
+        match sym {
+            0..=143 => self.code(0x30 + sym, 8),
+            144..=255 => self.code(0x190 + sym - 144, 9),
+            256..=279 => self.code(sym - 256, 7),
+            _ => self.code(0xc0 + sym - 280, 8),
+        }
+    }
+
+    fn matched(&mut self, len: usize, dist: usize) {
+        let k = LEN_BASE
+            .iter()
+            .rposition(|&b| usize::from(b) <= len)
+            .unwrap_or(0);
+        self.symbol(257 + k as u32);
+        self.put(
+            (len - usize::from(LEN_BASE[k])) as u32,
+            u32::from(LEN_EXTRA[k]),
+        );
+        let d = DIST_BASE
+            .iter()
+            .rposition(|&b| usize::from(b) <= dist)
+            .unwrap_or(0);
+        self.code(d as u32, 5);
+        self.put(
+            (dist - usize::from(DIST_BASE[d])) as u32,
+            u32::from(DIST_EXTRA[d]),
+        );
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.n > 0 {
+            self.out.push(self.acc as u8);
+        }
+        self.out
+    }
+}
+
+fn hash3(b: &[u8]) -> usize {
+    let v = u32::from(b[0]) | (u32::from(b[1]) << 8) | (u32::from(b[2]) << 16);
+    (v.wrapping_mul(0x9E37_79B1) >> (32 - HASH_BITS)) as usize
+}
+
+/// How many bytes at `at` repeat those at `from` (overlapping allowed).
+fn match_len(data: &[u8], from: usize, at: usize) -> usize {
+    let max = (data.len() - at).min(MAX_MATCH);
+    (0..max)
+        .take_while(|&k| data[from + k] == data[at + k])
+        .count()
+}
+
+/// `data` as a zlib stream (RFC 1950): fastest-level header, one final
+/// fixed-Huffman deflate block, Adler-32.
+pub fn zlib(data: &[u8]) -> Vec<u8> {
+    let mut bits = Bits {
+        out: vec![0x78, 0x01],
+        acc: 0,
+        n: 0,
+    };
+    bits.put(1, 1); // BFINAL
+    bits.put(1, 2); // BTYPE: fixed Huffman
+    let mut last = vec![usize::MAX; 1 << HASH_BITS];
+    let mut i = 0;
+    while i < data.len() {
+        let mut best = (0, 0);
+        if i + 3 <= data.len() {
+            let h = hash3(&data[i..]);
+            let seen = last[h];
+            last[h] = i;
+            for from in [i.wrapping_sub(1), i.wrapping_sub(4), seen] {
+                if from < i && i - from <= WINDOW {
+                    let len = match_len(data, from, i);
+                    if len > best.0 {
+                        best = (len, i - from);
+                    }
+                }
+            }
+        }
+        if best.0 >= 3 {
+            bits.matched(best.0, best.1);
+            for j in i + 1..(i + best.0).min(data.len().saturating_sub(2)) {
+                last[hash3(&data[j..])] = j;
+            }
+            i += best.0;
+        } else {
+            bits.symbol(u32::from(data[i]));
+            i += 1;
+        }
+    }
+    bits.symbol(256);
+    let mut out = bits.finish();
+    out.extend(adler32(data).to_be_bytes());
+    out
 }
