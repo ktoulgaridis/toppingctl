@@ -93,3 +93,19 @@ fn uses_value_parses_pins() {
     assert!(!is_sha("v5"));
     assert!(!is_sha(&sha.to_uppercase()));
 }
+
+/// Linux release binaries need the glibc they were built against or newer, so they
+/// build on a pinned, old runner: ubuntu-latest (glibc 2.43) broke Debian stable (2.41).
+#[test]
+fn linux_release_builds_use_an_old_glibc_runner() {
+    let wf = read(".github/workflows/release.yml");
+    for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+        let at = wf.find(&format!("target: {target}")).expect(target);
+        let os = wf[at..]
+            .lines()
+            .nth(1)
+            .and_then(|l| l.trim().strip_prefix("os: "))
+            .expect("os line after target");
+        assert!(os.starts_with("ubuntu-22.04"), "{target} builds on {os}");
+    }
+}

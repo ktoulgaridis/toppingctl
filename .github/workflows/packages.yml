@@ -311,13 +311,17 @@ jobs:
           # Signature verified: the source is signed-by the keyring only, and any update
           # error (a bad or missing signature included) fails the job.
           # Pages takes a minute or two to serve a fresh push, so wait for the version.
+          # Until Pages serves it, update can 404, so the loop tolerates errors; the
+          # strict update after it still fails on any error, a bad signature included.
           for _ in $(seq 1 30); do
-            apt-get update --error-on=any
-            candidate="$(apt-cache policy toppingctl | awk '/Candidate:/ { print $2 }')"
-            [ "${candidate%-*}" = "$VERSION" ] && break
-            echo "candidate '$candidate', waiting for $VERSION"
+            if apt-get update --error-on=any; then
+              candidate="$(apt-cache policy toppingctl | awk '/Candidate:/ { print $2 }')"
+              [ "${candidate%-*}" = "$VERSION" ] && break
+            fi
+            echo "candidate '${candidate:-none}', waiting for $VERSION"
             sleep 20
           done
+          apt-get update --error-on=any
           apt-get install -y toppingctl
           toppingctl --version | tee /dev/stderr | grep -Fx "toppingctl $VERSION"
           test -f /usr/lib/udev/rules.d/70-toppingctl.rules
