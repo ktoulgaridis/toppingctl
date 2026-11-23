@@ -75,6 +75,7 @@ this table in step with it.
 | `s` | save the workspace (on Default: save as…) |
 | `l` | workspaces: pick, save, delete, new, save as |
 | `w` | store to the device's memory (download) |
+| `e` | settings: brightness, standby, mobile apps, versions |
 | `?` | this help |
 | `q` `Ctrl-C` | quit |
 | click | focus a strip; flip a switch; pick a mix; s l w |

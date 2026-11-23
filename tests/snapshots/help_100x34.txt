@@ -15,20 +15,20 @@
 ││ ▆ −36  │   s                save the workspace (on Default: save as…)                 │   ┃ ▕▕ ││
 ││ ▆      │   l                workspaces: pick, save, delete, new, save as              │12╶┃╴▕▕ ││
 ││ ▆ −48  │   w                store to the device's memory (download)                   │24╶┃╴▕▕ ││
-││ ▆      │   ?                this help                                                 │−∞━■━▕▕ ││
-││ ▆ −60  │   q  Ctrl-C        quit                                                      │  Ø S M ││
+││ ▆      │   e                settings: brightness, standby, mobile apps, versions      │−∞━■━▕▕ ││
+││ ▆ −60  │   ?                this help                                                 │  Ø S M ││
+│╰────────│   q  Ctrl-C        quit                                                      │────────╯│
+╰─────────│                                                                              │─────────╯
+╭┤³loopbac│   click            focus a strip; flip a switch; pick a mix; s l w           │─────────╮
+│╭── LOOP │   wheel            turn a knob, move a fader (Shift ×10); next source        │NE ─────╮│
+││   PB 3/│   drag             turn a knob, move a fader (up / down)                     │        ││
+││     LIN│   double-click     reset a knob or fader                                     │el      ││
+││     −0 │                                                                              │        ││
+││▔▔  −0━■│                    LINK: one fader and switch set, or an L and an R of each  │        ││
+││▕▕  −6 ┃│                    loopback, output: 1 dB a step, ×10 is 5 dB, −90 dB is −∞  │ 0 dBu  ││
+││▆▆ −12 ┃│                    PHONE: space or a click sets the level switch             │        ││
+││▆▆  −∞ ┃│                                                                              │        ││
+││     MUT│                                 [Esc] close                                  │        ││
 │╰────────│                                                                              │────────╯│
-╰─────────│   click            focus a strip; flip a switch; pick a mix; s l w           │─────────╯
-╭┤³loopbac│   wheel            turn a knob, move a fader (Shift ×10); next source        │─────────╮
-│╭── LOOP │   drag             turn a knob, move a fader (up / down)                     │NE ─────╮│
-││   PB 3/│   double-click     reset a knob or fader                                     │        ││
-││     LIN│                                                                              │el      ││
-││     −0 │                    LINK: one fader and switch set, or an L and an R of each  │        ││
-││▔▔  −0━■│                    loopback, output: 1 dB a step, ×10 is 5 dB, −90 dB is −∞  │        ││
-││▕▕  −6 ┃│                    PHONE: space or a click sets the level switch             │ 0 dBu  ││
-││▆▆ −12 ┃│                                                                              │        ││
-││▆▆  −∞ ┃│                                 [Esc] close                                  │        ││
-││     MUT│                                                                              │        ││
-│╰────────╰──────────────────────────────────────────────────────────────────────────────╯────────╯│
-╰──────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯
+╰─────────╰──────────────────────────────────────────────────────────────────────────────╯─────────╯
  IN1 · MON on   space toggle   ←→↑↓ move   tab 1-4 panel   ? help   q quit

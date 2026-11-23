@@ -23,8 +23,8 @@ use crate::rate::{format_khz, RATES};
 use crate::state::{Meters, Source};
 use crate::tui::app::{
     App, BusControl, ComboItem, Control, InputControl, MeterId, MixControl, Modal, Name, NameThen,
-    Panel, Phase, BUS_MAX_DB, DOWNLOAD_OPTIONS, MAX_GAIN_DB, MIX_FADER_MAX_DB, OUT_BUS,
-    SOURCE_MENU,
+    Panel, Phase, BRIGHTNESS, BUS_MAX_DB, DOWNLOAD_OPTIONS, MAX_GAIN_DB, MIX_FADER_MAX_DB, OUT_BUS,
+    SETTINGS, SOURCE_MENU,
 };
 use crate::tui::pixel::{
     chip_rgb, clear_under, label_rgb, FaceLabel, PixelLayer, PixelSpot, PixelWidget,
@@ -78,6 +78,9 @@ pub enum Hit {
     ComboDelete(usize),
     /// Choice `i` of the Download dialog ([`DOWNLOAD_OPTIONS`]).
     DownloadOption(usize),
+    /// Setting `row` of the Settings dialog ([`SETTINGS`]) at `value`:
+    /// a brightness (0 ..= 2), or a switch off (0) / on (1).
+    SettingOption { row: usize, value: u8 },
     /// A modal's confirm button.
     Yes,
     /// A modal's cancel (or close) button.
@@ -297,6 +300,7 @@ fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
             &mut hits,
         ),
         Some(Modal::Download { sel }) => download(buf, area, t, sel, &mut hits),
+        Some(Modal::Settings { sel }) => settings(buf, area, app, sel, &mut hits),
         None => {}
     }
     hits
@@ -2099,6 +2103,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ("s", "save the workspace (on Default: save as…)"),
         ("l", "workspaces: pick, save, delete, new, save as"),
         ("w", "store to the device's memory (download)"),
+        ("e", "settings: brightness, standby, mobile apps, versions"),
         ("?", "this help"),
         ("q  Ctrl-C", "quit"),
         ("", ""),
@@ -2287,4 +2292,94 @@ fn download(buf: &mut Buffer, area: Rect, t: Theme, sel: usize, hits: &mut HitMa
         hits.push(Hit::DownloadOption(i), r);
     }
     ok_cancel(buf, inner, t, hits);
+}
+
+/// The Settings dialog (the app's SYSTEMSETTING): the three device
+/// settings, each a row of choices with the current one marked and the
+/// focused row (`sel`) in the accent; the restart notice once mobile
+/// applications was changed; then the versions, "—" when not reported.
+fn settings(buf: &mut Buffer, area: Rect, app: &App, sel: usize, hits: &mut HitMap) {
+    let t = app.theme();
+    let inner = modal_box(buf, area, t, " Settings ", (68, 19), hits);
+    let label_x = inner.x + 3;
+    let value_x = inner.x + 25;
+    put(buf, inner, label_x, inner.y + 1, "Device", t.dim());
+    let system = &app.state().system;
+    let switch = ["Off", "On"];
+    let rows: [(&[&str], u8); 3] = [
+        (&BRIGHTNESS, system.brightness.min(2)),
+        (&switch, u8::from(system.auto_standby)),
+        (&switch, u8::from(system.mobile_apps)),
+    ];
+    for (row, (label, (choices, current))) in SETTINGS.iter().zip(rows).enumerate() {
+        let y = inner.y + 2 + row as u16;
+        let focused = row == sel;
+        if focused {
+            put(buf, inner, inner.x + 1, y, "▸", t.focus());
+        }
+        let label_style = if focused { t.focus() } else { t.text() };
+        put(buf, inner, label_x, y, label, label_style);
+        let mut x = value_x;
+        for (value, choice) in choices.iter().enumerate() {
+            let on = value as u8 == current;
+            let dot = if on { "(•)" } else { "( )" };
+            let style = match (on, focused) {
+                (true, true) => button_style(t, true),
+                (true, false) => t.heading(),
+                _ => t.dim(),
+            };
+            let r = put(buf, inner, x, y, &format!(" {dot} {choice} "), style);
+            hits.push(
+                Hit::SettingOption {
+                    row,
+                    value: value as u8,
+                },
+                r,
+            );
+            x = r.right() + 1;
+        }
+    }
+    if app.restart_required() {
+        put(
+            buf,
+            inner,
+            label_x,
+            inner.y + 6,
+            "Restart the device for mobile applications to take effect.",
+            t.warn(),
+        );
+    }
+    put(buf, inner, label_x, inner.y + 8, "Versions", t.dim());
+    let readout = &app.state().readout;
+    let version = |v: Option<crate::state::Version>| v.map_or("—".to_string(), |v| v.to_string());
+    let versions = [
+        ("Model", "TOPPING E2x2".to_string()),
+        ("Hardware", version(readout.hardware_version)),
+        ("Firmware", version(readout.firmware_version)),
+        ("toppingctl", env!("CARGO_PKG_VERSION").to_string()),
+    ];
+    for (i, (label, value)) in versions.iter().enumerate() {
+        let y = inner.y + 9 + i as u16;
+        put(buf, inner, label_x, y, label, t.text());
+        put(buf, inner, value_x, y, value, t.heading());
+    }
+    let keys = "↑↓ setting   ←→ +/- change   enter next";
+    put_centered(
+        buf,
+        inner,
+        inner.bottom().saturating_sub(3),
+        &[Span::styled(keys, t.dim())],
+        hits,
+    );
+    let close = " [Esc] close ";
+    let x = inner.x + inner.width.saturating_sub(close.chars().count() as u16) / 2;
+    let r = put(
+        buf,
+        inner,
+        x,
+        inner.bottom().saturating_sub(2),
+        close,
+        t.dim(),
+    );
+    hits.push(Hit::No, r);
 }
