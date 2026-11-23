@@ -8,14 +8,13 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Widget;
 
-use toppingctl::tui::pixel::{knob_image, KNOB_ACCENT_RGB, KNOB_DIM_RGB, KNOB_POINTER_RGB};
 use toppingctl::tui::theme::Theme;
 use toppingctl::tui::widgets::dial::{knob_rect, Dial};
 use toppingctl::tui::widgets::fader::{db_at_frac, fader_frac, fmt_db, level_text, Fader};
 use toppingctl::tui::widgets::meter::{
     peak_text, ClipHold, Meter, Scale, CLIP_HOLD, INPUT_SCALE_DB, PEAK_HOT_DB,
 };
-use toppingctl::tui::widgets::pill::{pill, PillKind};
+use toppingctl::tui::widgets::pill::{button, pill, PillKind};
 
 fn render(w: impl Widget, width: u16, height: u16) -> Buffer {
     let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -213,77 +212,6 @@ fn braille_knob_size_and_value() {
     assert_eq!(rows(&buf)[4].trim(), "L40");
 }
 
-// ------------------------------------------------------------ pixel knob
-
-/// The colour of the pixel on the arc at `rel` degrees from the start
-/// (clockwise), at the arc's mid radius.
-fn arc_pixel(img: &image::RgbaImage, rel: f64) -> [u8; 4] {
-    let (w, h) = (img.width() as f64, img.height() as f64);
-    let r = w.min(h) / 2.0;
-    let a = (225.0 - rel).to_radians();
-    let x = w / 2.0 + 0.87 * r * a.cos();
-    let y = h / 2.0 - 0.87 * r * a.sin();
-    img.get_pixel(x as u32, y as u32).0
-}
-
-fn near(p: [u8; 4], c: (u8, u8, u8)) -> bool {
-    p[3] > 200
-        && (i32::from(p[0]) - i32::from(c.0)).abs() < 24
-        && (i32::from(p[1]) - i32::from(c.1)).abs() < 24
-        && (i32::from(p[2]) - i32::from(c.2)).abs() < 24
-}
-
-/// The pixel knob (prototype style J): the image has the requested size,
-/// and the ticked arc is lit in the accent up to the value, dim after it.
-#[test]
-fn pixel_knob_lights_the_arc() {
-    let ticks = 21;
-    let period = 270.0 / f64::from(ticks);
-    // The middle of tick 2 (early on the arc) and of tick 18 (late).
-    let early = 2.3 * period;
-    let late = 18.3 * period;
-
-    let img = knob_image(120, 60, Some(0.5), ticks, false);
-    assert_eq!((img.width(), img.height()), (120, 60));
-    assert!(
-        near(arc_pixel(&img, early), KNOB_ACCENT_RGB),
-        "{:?}",
-        arc_pixel(&img, early)
-    );
-    assert!(
-        near(arc_pixel(&img, late), KNOB_DIM_RGB),
-        "{:?}",
-        arc_pixel(&img, late)
-    );
-    // Between two ticks: see-through.
-    assert!(
-        arc_pixel(&img, 3.0 * period - 1.0)[3] < 60,
-        "a gap between ticks"
-    );
-
-    // Turned up past the late tick, it lights.
-    let img = knob_image(120, 60, Some(0.95), ticks, false);
-    assert!(near(arc_pixel(&img, late), KNOB_ACCENT_RGB));
-
-    // The pointer is white, from the centre toward the value (up at 0.5).
-    let img = knob_image(120, 120, Some(0.5), ticks, false);
-    let p = img.get_pixel(60, 60 - 18).0;
-    assert!(near(p, KNOB_POINTER_RGB), "pointer {p:?}");
-    // Corners are transparent (round knob on a see-through square).
-    assert_eq!(img.get_pixel(0, 0).0[3], 0);
-
-    // Dimmed (Monitor Mix): nothing lit; the pointer shows the value,
-    // and there is none while it is unknown.
-    let img = knob_image(120, 120, Some(0.5), ticks, true);
-    assert!(near(arc_pixel(&img, early), KNOB_DIM_RGB));
-    assert!(near(img.get_pixel(60, 60 - 18).0, KNOB_POINTER_RGB));
-    let img = knob_image(120, 120, None, ticks, true);
-    assert!(!near(img.get_pixel(60, 60 - 18).0, KNOB_POINTER_RGB));
-    // A solid arc (pan, style K) has no gaps.
-    let img = knob_image(80, 80, Some(1.0), 0, false);
-    assert!(near(arc_pixel(&img, 3.0 * period - 1.0), KNOB_ACCENT_RGB));
-}
-
 // ------------------------------------------------------------------ fader
 
 /// Ticks at 0 / −6 / −12 / −24 / −∞ on both sides; the cap sits on the
@@ -297,7 +225,7 @@ fn fader_ticks_and_cap() {
         "     ┃     ",
         "  0  ┃  0  ",
         " −6  ┃  −6 ",
-        "−12━━●━━−12",
+        "−12━━■━━−12",
         "−24  ┃  −24",
         " −∞  ┃  −∞ ",
     ];
@@ -305,13 +233,13 @@ fn fader_ticks_and_cap() {
 
     // 0 dB sits on the 0 tick; −∞ at the bottom.
     let r = rows(&render(Fader::new(0.0, 6.0, Theme::color()), 11, 6));
-    assert_eq!(r[1], "  0━━●━━0  ");
+    assert_eq!(r[1], "  0━━■━━0  ");
     let r = rows(&render(
         Fader::new(f64::NEG_INFINITY, 6.0, Theme::color()),
         11,
         6,
     ));
-    assert_eq!(r[5], " −∞━━●━━−∞ ");
+    assert_eq!(r[5], " −∞━━■━━−∞ ");
 
     // Loopback and output faders top out at 0 dB, labelled −0 as in the
     // app (#15).
@@ -320,7 +248,7 @@ fn fader_ticks_and_cap() {
         r,
         [
             " −0  ┃  −0 ",
-            " −6━━●━━−6 ",
+            " −6━━■━━−6 ",
             "−12  ┃  −12",
             "−24  ┃  −24",
             " −∞  ┃  −∞ ",
@@ -329,7 +257,7 @@ fn fader_ticks_and_cap() {
 
     // Narrower: a 3-wide cap.
     let r = rows(&render(Fader::new(-6.0, 0.0, Theme::color()), 9, 5));
-    assert_eq!(r[1], " −6━●━−6 ");
+    assert_eq!(r[1], " −6━■━−6 ");
 
     // Without labels: tick marks on both sides of the track.
     let r = rows(&render(
@@ -337,14 +265,14 @@ fn fader_ticks_and_cap() {
         3,
         5,
     ));
-    assert_eq!(r, ["╶┃╴", "━●━", "╶┃╴", "╶┃╴", "╶┃╴"]);
+    assert_eq!(r, ["╶┃╴", "━■━", "╶┃╴", "╶┃╴", "╶┃╴"]);
 
     // Taller: the ticks spread out, the cap follows.
     let r = rows(&render(Fader::new(-24.0, 0.0, Theme::color()), 11, 9));
     let at = |label: &str| r.iter().position(|l| l.trim_start().starts_with(label));
     assert_eq!(at("−0"), Some(0));
     assert_eq!(at("−∞"), Some(8));
-    assert!(r[6].contains('●'), "{r:?}");
+    assert!(r[6].contains('■'), "{r:?}");
 }
 
 #[test]
@@ -381,42 +309,6 @@ fn fader_scale_and_value_text() {
 
 fn is_reddish(c: Color) -> bool {
     matches!(c, Color::Rgb(r, g, _) if r > g)
-}
-
-fn is_greenish(c: Color) -> bool {
-    matches!(c, Color::Rgb(r, g, _) if g > r)
-}
-
-/// The meter fills its whole height, green at the bottom to red at the top.
-#[test]
-fn meter_fills_height_with_gradient() {
-    let full = render(Meter::new(0.0, Theme::color()), 1, 10);
-    let r = rows(&full);
-    assert!(r.iter().all(|l| l == "█"), "{r:?}");
-    assert!(is_reddish(full[(0, 0)].fg), "top is red");
-    assert!(is_greenish(full[(0, 9)].fg), "bottom is green");
-
-    // −30 dB on a 60 dB scale: the bottom half.
-    let r = rows(&render(Meter::new(-30.0, Theme::color()), 1, 10));
-    assert_eq!(r[5..].iter().filter(|l| *l == "█").count(), 5, "{r:?}");
-    assert!(r[..5].iter().all(|l| !l.contains('█')), "{r:?}");
-
-    // Two wide, with eighth-cell steps: −33 dB is 4.5 rows of 10.
-    let r = rows(&render(Meter::new(-33.0, Theme::color()).width(2), 2, 10));
-    assert_eq!(r[9], "██");
-    assert_eq!(r[5], "▄▄", "{r:?}");
-
-    // Silence: an empty track.
-    let r = rows(&render(Meter::new(-96.0, Theme::color()), 1, 4));
-    assert!(r.iter().all(|l| !l.contains('█')));
-
-    // A clip light on top: lit or not, the bar starts one row lower.
-    let lit = render(Meter::new(0.0, Theme::color()).clip(Some(true)), 1, 5);
-    let off = render(Meter::new(0.0, Theme::color()).clip(Some(false)), 1, 5);
-    assert_eq!(rows(&lit)[0], "▀");
-    assert_eq!(rows(&off)[0], "▔");
-    assert!(is_reddish(lit[(0, 0)].fg));
-    assert_eq!(rows(&lit)[1..], ["█", "█", "█", "█"]);
 }
 
 /// The clip light stays on 5 s after the last clip, as the app's
@@ -510,174 +402,347 @@ fn pills() {
     assert!(!off.style.add_modifier.contains(Modifier::REVERSED));
 }
 
-// ------------------------------------------- pixel faders, meters, chips
+// ------------------------------------------- flat pixel widgets (#41)
+//
+// The rules of docs/design/mockup-flat.py, at its 12×24 cell.
 
 use toppingctl::tui::pixel::{
-    chip_image, clip_image, fader_image, meter_image, PX_ACCENT, PX_AMBER, PX_CHIP, PX_GREEN,
-    PX_RED, PX_TRACK,
+    chip_image, clip_image, fader_image, knob_image, meter_image, pill_image, PX_ACCENT, PX_AMBER,
+    PX_ARC_OFF, PX_BG, PX_CHIP, PX_CHIP_EDGE, PX_CLIP_OFF, PX_DIM, PX_FADER_CAP, PX_FAINT,
+    PX_GREEN, PX_KNOB_BODY, PX_KNOB_BODY_DIM, PX_POINTER, PX_RED,
 };
 use toppingctl::tui::widgets::fader::fader_row;
 
-const CELL: (u16, u16) = (10, 20);
+const CELL: (u16, u16) = (12, 24);
 
 fn px(img: &image::RgbaImage, x: f64, y: f64) -> [u8; 4] {
     img.get_pixel(x as u32, y as u32).0
 }
 
-/// The pixel fader (docs/design/mockup.py): a capsule track, the value
-/// filled below a light thumb, tick marks on both sides, and the label
-/// columns left see-through for the scale text.
+/// Opaque and within `tol` of `c` on every channel.
+fn is(p: [u8; 4], c: (u8, u8, u8), tol: i32) -> bool {
+    p[3] > 250
+        && (i32::from(p[0]) - i32::from(c.0)).abs() <= tol
+        && (i32::from(p[1]) - i32::from(c.1)).abs() <= tol
+        && (i32::from(p[2]) - i32::from(c.2)).abs() <= tol
+}
+
+/// `c` at 16 % on the background: an unlit LED.
+fn tint(c: (u8, u8, u8)) -> (u8, u8, u8) {
+    let m = |b: u8, c: u8| (f64::from(b) + (f64::from(c) - f64::from(b)) * 0.16) as u8;
+    (m(PX_BG.0, c.0), m(PX_BG.1, c.1), m(PX_BG.2, c.2))
+}
+
+/// The meter is an LED ladder: square 5 px segments with 2 px gaps from
+/// the bottom up (at the 24 px cell), 10 px wide in every meter. Lit by
+/// height: red at the top 8 %, amber to 30 %, green below; unlit segments
+/// are their colour at 16 % on the background.
 #[test]
-fn pixel_fader_track_fill_thumb() {
-    let (cw, ch) = (10.0, 20.0);
+fn pixel_meter_led_segments() {
+    // 10 rows of 24 px: the bar runs from 12 (0 dB) to 228 (−60).
+    let full = meter_image(1, 10, CELL, 0.0);
+    assert_eq!((full.width(), full.height()), (12, 240));
+    // Segment k covers [223 − 7k, 228 − 7k): 5 px lit, then a 2 px gap.
+    for k in [0u32, 1, 15, 30] {
+        let y0 = 223 - 7 * k;
+        for y in y0..y0 + 5 {
+            assert_eq!(full.get_pixel(5, y).0[3], 255, "segment {k} at {y}");
+        }
+        if k < 30 {
+            for y in y0 - 2..y0 {
+                assert_eq!(full.get_pixel(5, y).0[3], 0, "gap above {k} at {y}");
+            }
+        }
+        // Square ends: the segment's corner pixels are fully solid.
+        for (x, y) in [(1, y0), (10, y0), (1, y0 + 4), (10, y0 + 4)] {
+            assert_eq!(full.get_pixel(x, y).0[3], 255, "square corner {k} {x},{y}");
+        }
+        // 10 px wide, centred in the cell.
+        assert_eq!(full.get_pixel(0, y0 + 2).0[3], 0);
+        assert_eq!(full.get_pixel(11, y0 + 2).0[3], 0);
+    }
+    // 31 segments; nothing above the top one.
+    assert_eq!(full.get_pixel(5, 11).0[3], 0);
+    // Flat bands: green at the bottom, amber at ~21 %, red at the top.
+    let seg = |img: &image::RgbaImage, k: u32| img.get_pixel(5, 225 - 7 * k).0;
+    assert!(is(seg(&full, 0), PX_GREEN, 0), "{:?}", seg(&full, 0));
+    assert!(is(seg(&full, 24), PX_AMBER, 0), "{:?}", seg(&full, 24));
+    assert!(is(seg(&full, 28), PX_AMBER, 0), "8 % is still amber");
+    assert!(is(seg(&full, 30), PX_RED, 0), "{:?}", seg(&full, 30));
+
+    // −30 dB lights the bottom half; the rest are tints of their band.
+    let half = meter_image(1, 10, CELL, -30.0);
+    assert!(is(seg(&half, 0), PX_GREEN, 0));
+    assert!(is(seg(&half, 15), PX_GREEN, 0), "the segment at the level");
+    assert!(
+        is(seg(&half, 20), tint(PX_GREEN), 1),
+        "{:?}",
+        seg(&half, 20)
+    );
+    assert!(
+        is(seg(&half, 26), tint(PX_AMBER), 1),
+        "{:?}",
+        seg(&half, 26)
+    );
+    assert!(is(seg(&half, 30), tint(PX_RED), 1), "{:?}", seg(&half, 30));
+    // Silence: every segment unlit.
+    let off = meter_image(1, 10, CELL, f64::NEG_INFINITY);
+    assert!(is(seg(&off, 0), tint(PX_GREEN), 1));
+
+    // One width everywhere: the input meter's two cells hold the same
+    // 10 px bar, centred.
+    let wide = meter_image(2, 10, CELL, 0.0);
+    let opaque: Vec<u32> = (0..24)
+        .filter(|&x| wide.get_pixel(x, 225).0[3] > 0)
+        .collect();
+    assert_eq!(opaque, (7..17).collect::<Vec<_>>());
+    // It scales with the cell: 5 px at 24 px, 10 px at 48 px.
+    let big = meter_image(1, 10, (24, 48), 0.0);
+    let bot = 480 - 24;
+    assert_eq!(big.get_pixel(12, bot - 1).0[3], 255);
+    assert_eq!(big.get_pixel(12, bot - 10).0[3], 255);
+    assert_eq!(big.get_pixel(12, bot - 11).0[3], 0, "the gap, 4 px");
+}
+
+/// The clip light is a square LED over the meter: red when lit, a dark red
+/// when not, no glow.
+#[test]
+fn pixel_clip_light_square() {
+    let lit = clip_image(2, 1, CELL, true);
+    let off = clip_image(2, 1, CELL, false);
+    assert_eq!((lit.width(), lit.height()), (24, 24));
+    assert!(is(px(&lit, 12.0, 12.0), PX_RED, 0));
+    assert!(is(px(&off, 12.0, 12.0), PX_CLIP_OFF, 0));
+    // The meter's 10 px wide, 8 px tall, square corners.
+    assert!(lit.get_pixel(7, 8).0[3] > 250, "square corner");
+    assert!(lit.get_pixel(16, 15).0[3] > 250, "square corner");
+    assert_eq!(lit.get_pixel(6, 12).0[3], 0, "no glow");
+    assert_eq!(lit.get_pixel(12, 7).0[3], 0, "no glow");
+    assert_eq!(lit.get_pixel(17, 12).0[3], 0, "no glow");
+    let narrow = clip_image(1, 1, CELL, true);
+    assert!(is(px(&narrow, 6.0, 12.0), PX_RED, 0));
+}
+
+/// The knob's track radius: the mockup's R = 0.80 of half the box, the
+/// arc 0.13 R wide just inside it.
+fn arc_at(img: &image::RgbaImage, rel: f64) -> [u8; 4] {
+    let (w, h) = (f64::from(img.width()), f64::from(img.height()));
+    let r = w.min(h) / 2.0 * 0.80;
+    let ra = r - 0.13 * r / 2.0;
+    let a = (225.0 - rel).to_radians();
+    px(img, w / 2.0 + ra * a.cos(), h / 2.0 - ra * a.sin())
+}
+
+/// A flat knob: a solid track arc, the lit arc from the minimum, a flat
+/// disc and a pointer. No ticks, no gradient.
+#[test]
+fn pixel_knob_flat() {
+    let img = knob_image(120, 120, Some(0.5), false, false);
+    assert_eq!((img.width(), img.height()), (120, 120));
+    assert!(
+        is(arc_at(&img, 30.0), PX_ACCENT, 8),
+        "{:?}",
+        arc_at(&img, 30.0)
+    );
+    assert!(
+        is(arc_at(&img, 200.0), PX_ARC_OFF, 8),
+        "{:?}",
+        arc_at(&img, 200.0)
+    );
+    // Solid: no gap anywhere along the track.
+    for rel in (2..=268).step_by(2) {
+        assert!(arc_at(&img, f64::from(rel))[3] > 250, "gap at {rel}°");
+    }
+    // The disc is flat: the same colour above and below the centre.
+    let r = 48.0;
+    assert!(is(px(&img, 60.0 - 0.5 * r, 60.0), PX_KNOB_BODY, 0));
+    assert!(is(px(&img, 60.0, 60.0 + 0.5 * r), PX_KNOB_BODY, 0));
+    assert!(is(px(&img, 60.0, 60.0 - 0.64 * r), PX_KNOB_BODY, 0));
+    // The pointer: up at 0.5, from 0.18 R to 0.56 R.
+    assert!(is(px(&img, 60.0, 60.0 - 0.4 * r), PX_POINTER, 8));
+    assert!(
+        is(px(&img, 60.0, 60.0), PX_KNOB_BODY, 0),
+        "not from the centre"
+    );
+    // Outside the track: see-through; the box's corners too.
+    assert_eq!(px(&img, 60.0, 60.0 - r - 2.0)[3], 0);
+    assert_eq!(img.get_pixel(0, 0).0[3], 0);
+    // At the minimum, nothing is lit.
+    let min = knob_image(120, 120, Some(0.0), false, false);
+    assert!(is(arc_at(&min, 10.0), PX_ARC_OFF, 8));
+    // A wide box: the knob takes 0.80 of its height.
+    let wide = knob_image(240, 120, Some(1.0), false, false);
+    assert!(is(arc_at(&wide, 260.0), PX_ACCENT, 8));
+
+    // Pans are bipolar from 12 o'clock.
+    let c = knob_image(120, 120, Some(0.5), false, true);
+    for rel in [20.0, 100.0, 130.0, 140.0, 170.0, 250.0] {
+        assert!(
+            is(arc_at(&c, rel), PX_ARC_OFF, 8),
+            "C: nothing lit at {rel}°"
+        );
+    }
+    let l = knob_image(120, 120, Some(0.25), false, true);
+    assert!(is(arc_at(&l, 100.0), PX_ACCENT, 8), "L: lit to the top");
+    assert!(
+        is(arc_at(&l, 30.0), PX_ARC_OFF, 8),
+        "L: not below the pointer"
+    );
+    assert!(is(arc_at(&l, 170.0), PX_ARC_OFF, 8), "L: not past the top");
+    let rt = knob_image(120, 120, Some(0.75), false, true);
+    assert!(is(arc_at(&rt, 170.0), PX_ACCENT, 8), "R: lit");
+    assert!(
+        is(arc_at(&rt, 100.0), PX_ARC_OFF, 8),
+        "R: not left of the top"
+    );
+
+    // Dimmed (Monitor Mix): nothing lit, a dim disc, and a dim dot at
+    // 0.40 R toward the value instead of the pointer; none when unknown.
+    let dim = knob_image(120, 120, Some(0.5), true, true);
+    assert!(is(arc_at(&dim, 30.0), PX_ARC_OFF, 8));
+    assert!(is(arc_at(&dim, 160.0), PX_ARC_OFF, 8));
+    assert!(is(px(&dim, 60.0 - 0.5 * r, 60.0), PX_KNOB_BODY_DIM, 0));
+    assert!(is(px(&dim, 60.0, 60.0 - 0.40 * r), PX_DIM, 8));
+    assert!(
+        is(px(&dim, 60.0, 60.0 - 0.2 * r), PX_KNOB_BODY_DIM, 0),
+        "a dot, no line"
+    );
+    let left = knob_image(120, 120, Some(0.0), true, true);
+    let a = 225f64.to_radians();
+    let dot = px(&left, 60.0 + 0.4 * r * a.cos(), 60.0 - 0.4 * r * a.sin());
+    assert!(is(dot, PX_DIM, 8), "{dot:?}");
+    let unknown = knob_image(120, 120, None, true, true);
+    assert!(is(px(&unknown, 60.0, 60.0 - 0.40 * r), PX_KNOB_BODY_DIM, 0));
+}
+
+/// The left and right ends of the opaque run on row `y`.
+fn run(img: &image::RgbaImage, y: u32) -> (u32, u32) {
+    let xs: Vec<u32> = (0..img.width())
+        .filter(|&x| img.get_pixel(x, y).0[3] > 0)
+        .collect();
+    (xs[0], *xs.last().unwrap())
+}
+
+/// A button: a flat square face inset in its cells, centred on its label
+/// (the mockup's `pill()`), so a label with odd parity still sits exactly
+/// centred. Unlit: the chip face with a 1-px outline. Lit: a solid fill.
+#[test]
+fn pixel_pill_centred_on_label() {
+    // "LINK" in 7 cells sits at cells 1..5: its centre is 3 cells in.
+    let lit = pill_image(7, 1, CELL, PX_ACCENT, (1, 4));
+    assert_eq!((lit.width(), lit.height()), (84, 24));
+    let (l, r) = run(&lit, 12);
+    assert_eq!(
+        l + r + 1,
+        2 * 3 * 12,
+        "face centre == label centre: {l}..{r}"
+    );
+    assert_eq!(r + 1 - l, 6 * 12, "the face is one cell under the box");
+    // "MON" in 7 sits at 2..5: centred on the box.
+    let mon = pill_image(7, 1, CELL, PX_ACCENT, (2, 3));
+    let (l, r) = run(&mon, 12);
+    assert_eq!(l + r + 1, 84);
+    // 4 px of margin top and bottom, so stacked buttons have gaps.
+    for y in (0..4).chain(20..24) {
+        assert_eq!(lit.get_pixel(36, y).0[3], 0, "margin at {y}");
+    }
+    for y in 4..20 {
+        assert!(is(lit.get_pixel(36, y).0, PX_ACCENT, 0), "lit face at {y}");
+    }
+    // Square, solid: the face's corner is the face's colour.
+    assert!(is(lit.get_pixel(0, 4).0, PX_ACCENT, 0));
+    assert!(is(lit.get_pixel(71, 19).0, PX_ACCENT, 0));
+    // Unlit: the chip face inside a 1-px outline.
+    let off = pill_image(7, 1, CELL, PX_CHIP, (2, 3));
+    assert!(is(off.get_pixel(42, 12).0, PX_CHIP, 0));
+    let edge = off.get_pixel(6, 12).0;
+    let inner = off.get_pixel(8, 12).0;
+    assert!(is(inner, PX_CHIP, 0), "{inner:?}");
+    assert!(edge != inner && edge[0] > inner[0], "outline {edge:?}");
+    assert!(edge[0] <= PX_CHIP_EDGE.0, "outline {edge:?}");
+    assert_eq!(off.get_pixel(4, 12).0[3], 0, "no glow");
+    // Three rows (PHONE): the face fills them, inset 4 px.
+    let tall = pill_image(9, 3, CELL, PX_ACCENT, (1, 7));
+    assert_eq!(tall.get_pixel(54, 3).0[3], 0);
+    assert!(is(tall.get_pixel(54, 4).0, PX_ACCENT, 0));
+    assert!(is(tall.get_pixel(54, 67).0, PX_ACCENT, 0));
+    assert_eq!(tall.get_pixel(54, 68).0[3], 0);
+}
+
+/// A chip with no label to centre on (the active mix tab): the face inset
+/// 3 px across and 4 px down its cells.
+#[test]
+fn pixel_chip_inset() {
+    let tab = chip_image(9, 1, CELL, PX_GREEN);
+    assert_eq!(run(&tab, 12), (3, 104));
+    assert_eq!(tab.get_pixel(50, 3).0[3], 0);
+    assert!(is(tab.get_pixel(50, 4).0, PX_GREEN, 0));
+    assert!(is(tab.get_pixel(3, 4).0, PX_GREEN, 0), "square");
+    // It scales: at 24×48, 6 px and 8 px.
+    let big = chip_image(9, 1, (24, 48), PX_GREEN);
+    assert_eq!(run(&big, 24), (6, 209));
+}
+
+/// A flat fader: a thin track, the value filled in blue below a flat cap
+/// with a dark centre line, flat tick marks; the label columns stay clear.
+#[test]
+fn pixel_fader_flat() {
     let img = fader_image(11, 10, CELL, -12.0, 6.0, true);
-    assert_eq!((img.width(), img.height()), (110, 200));
-    let tx = 5.5 * cw;
-    let row = |r: u16| (f64::from(r) + 0.5) * ch;
-    let cap = fader_row(fader_frac(-12.0, 6.0), 10);
-    // Just above the thumb's accent line.
-    let thumb = px(&img, tx - 1.0 * cw, row(cap) - 0.2 * ch);
-    assert!(thumb[3] > 200 && thumb[0] > 130, "thumb {thumb:?}");
-    // Above the thumb: the bare track; below it: the value fill (blue).
-    let above = px(&img, tx, row(1));
-    assert!(near(above, (52, 57, 80)), "track {above:?}");
-    let below = px(&img, tx, row(8));
-    assert!(below[3] > 200 && below[2] > below[0] + 40, "fill {below:?}");
+    assert_eq!((img.width(), img.height()), (132, 240));
+    let tx = 5.5 * 12.0;
+    let row = |r: u16| (f64::from(r) + 0.5) * 24.0;
+    let cap = row(fader_row(fader_frac(-12.0, 6.0), 10));
+    // The cap: flat (one colour top to bottom), 32 px wide, 14 tall.
+    let (a, b) = (
+        px(&img, tx - 10.0, cap - 5.0),
+        px(&img, tx + 10.0, cap + 5.0),
+    );
+    assert!(
+        is(a, PX_FADER_CAP, 0) && is(b, PX_FADER_CAP, 0),
+        "{a:?} {b:?}"
+    );
+    assert!(is(px(&img, tx - 15.0, cap - 3.0), PX_FADER_CAP, 0));
+    assert_eq!(px(&img, tx - 18.0, cap - 3.0)[3], 0);
+    assert_eq!(px(&img, tx, cap - 9.0)[0], PX_ARC_OFF.0, "the track above");
+    // Its dark centre line.
+    assert!(is(px(&img, tx, cap), PX_BG, 0));
+    assert!(is(px(&img, tx - 12.0, cap), PX_BG, 0));
+    // Above the cap the bare track; below it the value fill.
+    assert!(is(px(&img, tx, row(1)), PX_ARC_OFF, 0));
+    assert!(is(px(&img, tx, row(8)), PX_ACCENT, 0));
+    // The track is 4 px wide.
+    assert_eq!(px(&img, tx - 3.0, row(8))[3], 0);
+    assert_eq!(px(&img, tx + 2.5, row(8))[3], 0);
+    // A flat tick on a tick row, 10 px out; nothing between rows.
+    let ticks = Fader::ticks(6.0, 10);
+    let (r24, _) = ticks.iter().find(|(_, l)| l == "−24").unwrap();
+    assert!(px(&img, tx - 10.0, row(*r24))[3] > 100, "tick mark");
+    assert_eq!(px(&img, tx - 10.0, row(*r24) + 6.0)[3], 0);
+    let tick = px(&img, tx + 10.0, row(*r24));
+    assert!(tick[0] <= PX_FAINT.0 + 1, "{tick:?}");
     // The label columns (0..3, 8..11) stay clear for the scale text.
-    for y in 0..200 {
-        for x in (0..28).chain(83..110) {
+    for y in 0..240 {
+        for x in (0..36).chain(96..132) {
             assert_eq!(img.get_pixel(x, y).0[3], 0, "label column {x},{y}");
         }
     }
-    // A tick mark beside the track on a tick row (−24 is on row 7).
-    let ticks = Fader::ticks(6.0, 10);
-    let (r24, _) = ticks.iter().find(|(_, l)| l == "−24").unwrap();
-    assert!(px(&img, tx - 1.0 * cw, row(*r24))[3] > 100, "tick mark");
-    assert_eq!(
-        px(&img, tx - 1.0 * cw, row(*r24) + 0.5 * ch)[3],
-        0,
-        "between rows"
-    );
-
-    // Turned up, the thumb moves up.
+    // Turned up, the cap moves up.
     let up = fader_image(11, 10, CELL, 0.0, 6.0, true);
-    let cap0 = fader_row(fader_frac(0.0, 6.0), 10);
+    let cap0 = row(fader_row(fader_frac(0.0, 6.0), 10));
     assert!(cap0 < cap);
-    assert!(px(&up, tx - 1.0 * cw, row(cap0) - 0.2 * ch)[0] > 130);
-    assert!(near(px(&up, tx, row(cap0)), (122, 162, 247)), "accent line");
-    // The narrow form (3 columns, no labels) fits its track and thumb.
+    assert!(is(px(&up, tx - 10.0, cap0 - 5.0), PX_FADER_CAP, 0));
+    // The narrow form (3 columns, no labels) fits its cap.
     let narrow = fader_image(3, 10, CELL, -12.0, 6.0, false);
-    assert_eq!((narrow.width(), narrow.height()), (30, 200));
-    assert!(px(&narrow, 15.0, row(cap))[3] > 200);
-}
-
-/// The pixel meter: a dark capsule track, a green → amber → red
-/// gradient up to the level, and a white peak line on top of the fill.
-#[test]
-fn pixel_meter_gradient_and_peak() {
-    let (cw, ch) = (10.0, 20.0);
-    let rows = 20u16;
-    let h = f64::from(rows) * ch;
-    let (top, bot) = (0.5 * ch, h - 0.5 * ch);
-    let level_y = |db: f64| top + (bot - top) * (-db / 60.0);
-    let img = meter_image(1, rows, CELL, -2.0);
-    assert_eq!((img.width(), img.height()), (10, 400));
-    let cx = 0.5 * cw;
-    assert!(
-        near(px(&img, cx, bot - 5.0), PX_GREEN),
-        "green at the bottom"
-    );
-    let hot = px(&img, cx, level_y(-2.0) + 6.0);
-    assert!(near(hot, PX_RED), "red near 0 dB {hot:?}");
-    let peak = px(&img, cx, level_y(-2.0));
-    assert!(
-        peak[0] > 220 && peak[1] > 220 && peak[2] > 220,
-        "peak line {peak:?}"
-    );
-    // Above the level: the empty track.
-    let quiet = meter_image(1, rows, CELL, -40.0);
-    assert!(near(px(&quiet, cx, level_y(-20.0)), PX_TRACK));
-    assert!(near(px(&quiet, cx, bot - 5.0), PX_GREEN));
-    // Silence: just the track, no peak line.
-    let off = meter_image(1, rows, CELL, f64::NEG_INFINITY);
-    assert!(near(px(&off, cx, bot - 5.0), PX_TRACK));
-    // The sides are see-through.
-    assert_eq!(px(&img, 0.0, h / 2.0)[3], 0);
-    // Two columns wide (the input meter): a wider bar.
-    let wide = meter_image(2, rows, CELL, -2.0);
-    assert!(near(px(&wide, 7.0, bot - 5.0), PX_GREEN));
-}
-
-/// The clip light: a red lamp with a glow when lit, a dark one without.
-#[test]
-fn pixel_clip_light() {
-    let lit = clip_image(2, 1, CELL, true);
-    let off = clip_image(2, 1, CELL, false);
-    assert_eq!((lit.width(), lit.height()), (20, 20));
-    assert!(near(px(&lit, 10.0, 10.0), PX_RED));
-    assert!(near(px(&off, 10.0, 10.0), (60, 44, 56)));
-    // The glow reaches past the lamp only when lit.
-    let r = 10.0 * 5.0 / 24.0 * 2.0;
-    assert!(px(&lit, 10.0 + r + 1.5, 10.0)[3] > 0, "glow");
-    assert_eq!(px(&off, 10.0 + r + 1.5, 10.0)[3], 0);
-    let narrow = clip_image(1, 1, CELL, true);
-    assert!(near(px(&narrow, 5.0, 10.0), PX_RED));
-}
-
-/// A chip (button, tab, title): a square cap under the label's cells
-/// (#37 review: Xone-style, no rounded pill ends), its cell corners
-/// see-through, its ends filled right out to the corners.
-#[test]
-fn pixel_chip_square() {
-    let img = chip_image(6, 1, CELL, PX_CHIP);
-    assert_eq!((img.width(), img.height()), (60, 20));
-    assert!(px(&img, 30.0, 10.0)[3] > 250, "a solid face");
-    assert_eq!(px(&img, 0.0, 0.0)[3], 0, "margin");
-    assert_eq!(px(&img, 59.0, 19.0)[3], 0, "margin");
-    assert!(px(&img, 4.0, 5.0)[3] > 250, "square: the corner is filled");
+    assert_eq!((narrow.width(), narrow.height()), (36, 240));
+    assert!(is(px(&narrow, 18.0 - 10.0, cap - 5.0), PX_FADER_CAP, 0));
 }
 
 // ------------------------------------------------------ bipolar pan knobs
 
-/// A pan knob lights its arc from 12 o'clock to the pointer: nothing at C,
-/// toward the left for L, toward the right for R. Gain knobs keep the arc
-/// from the minimum.
+/// The Braille pan knob lights from 12 o'clock: nothing at C; at L, no
+/// more lit dots than a gain knob at the same value, all on the left half.
 #[test]
-fn pan_knobs_light_from_the_top() {
-    use toppingctl::tui::pixel::knob_image_arc;
-    // Pixel, solid arc (style K).
-    let c = knob_image_arc(120, 120, Some(0.5), 0, false, true);
-    for rel in [20.0, 100.0, 130.0, 140.0, 170.0, 250.0] {
-        assert!(
-            near(arc_pixel(&c, rel), KNOB_DIM_RGB),
-            "C: nothing lit at {rel}°"
-        );
-    }
-    let l = knob_image_arc(120, 120, Some(0.25), 0, false, true);
-    assert!(
-        near(arc_pixel(&l, 100.0), KNOB_ACCENT_RGB),
-        "L: lit between pointer and top"
-    );
-    assert!(
-        near(arc_pixel(&l, 30.0), KNOB_DIM_RGB),
-        "L: not below the pointer"
-    );
-    assert!(
-        near(arc_pixel(&l, 170.0), KNOB_DIM_RGB),
-        "L: not right of the top"
-    );
-    let r = knob_image_arc(120, 120, Some(0.75), 0, false, true);
-    assert!(near(arc_pixel(&r, 170.0), KNOB_ACCENT_RGB), "R: lit");
-    assert!(
-        near(arc_pixel(&r, 100.0), KNOB_DIM_RGB),
-        "R: not left of the top"
-    );
-    // Unipolar (gain) at 0.5: lit from the minimum.
-    let g = knob_image_arc(120, 120, Some(0.5), 0, false, false);
-    assert!(near(arc_pixel(&g, 30.0), KNOB_ACCENT_RGB));
-
-    // Braille: nothing lit at C; at L, fewer lit dots than a gain knob at
-    // the same value, all on the left half.
+fn braille_pan_knobs_light_from_the_top() {
     let dial = |v: f64, bipolar: bool| {
         render(
             Dial::new(Theme::color()).value(Some(v)).bipolar(bipolar),
@@ -693,32 +758,93 @@ fn pan_knobs_light_from_the_top() {
     assert!(close(a, 112.0, 30.0), "lit between pointer and top: {a}°");
 }
 
-/// Meters read as meters: the colour at a height is the level there,
-/// green up to −12 dB, amber from −12 to −6, red above −6; the input
-/// meter's bar fills most of its two cells. Controls keep the accent.
+// --------------------------------------------- flat text fallback (#41)
+
+/// Every button label is bold, lit or not; a button of a given width
+/// centres its label the mockup's way, `(w − len) / 2` cells in.
 #[test]
-fn pixel_meter_colours_by_level() {
-    let ch = 20.0;
-    let rows = 20u16;
-    let h = f64::from(rows) * ch;
-    let (top, bot) = (0.5 * ch, h - 0.5 * ch);
-    let y = |db: f64| top + (bot - top) * (-db / 60.0);
-    let full = meter_image(1, rows, CELL, 0.0);
-    for (db, c) in [
-        (-3.0, PX_RED),
-        (-9.0, PX_AMBER),
-        (-20.0, PX_GREEN),
-        (-50.0, PX_GREEN),
-    ] {
-        let p = px(&full, 5.0, y(db));
-        assert!(near(p, c), "{db} dB: {p:?}");
+fn buttons_bold_and_centred() {
+    let t = Theme::color();
+    for on in [false, true] {
+        for kind in [PillKind::Normal, PillKind::Danger, PillKind::Disabled] {
+            let p = pill("MON", on, kind, false, t);
+            assert!(
+                p.style.add_modifier.contains(Modifier::BOLD),
+                "{on} {kind:?}"
+            );
+        }
     }
-    // The input meter: two cells, the bar most of them.
-    let wide = meter_image(2, rows, CELL, 0.0);
-    assert!(near(px(&wide, 3.5, y(-30.0)), PX_GREEN), "wide bar");
-    assert!(near(px(&wide, 16.5, y(-30.0)), PX_GREEN), "wide bar");
-    // No meter colour is the controls' accent.
-    for db in [-1.0, -7.0, -15.0, -40.0] {
-        assert!(!near(px(&full, 5.0, y(db)), PX_ACCENT));
+    assert!(pill("48V", false, PillKind::Danger, false, Theme::plain())
+        .style
+        .add_modifier
+        .contains(Modifier::BOLD));
+    let b = button("LINK", 7, true, PillKind::Normal, false, t);
+    assert_eq!(b.content, " LINK  ");
+    assert_eq!(b.style.bg, Some(Theme::ACCENT));
+    assert!(b.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        button("MON", 7, false, PillKind::Normal, false, t).content,
+        "  MON  "
+    );
+    assert_eq!(
+        button("Ø", 3, false, PillKind::Normal, false, t).content,
+        " Ø "
+    );
+    assert_eq!(
+        button("+17 dBu", 9, false, PillKind::Normal, false, t).content,
+        " +17 dBu "
+    );
+    // Too narrow: the label as is.
+    assert_eq!(
+        button("SOLO", 3, false, PillKind::Normal, false, t).content,
+        "SOLO"
+    );
+}
+
+/// The text meter mirrors the LED ladder: one square `▆` segment a row
+/// (a gap between rows), flat bands by height (red at the top 8 %, amber
+/// to 30 %, green below), unlit rows an empty track.
+#[test]
+fn text_meter_led_ladder() {
+    let full = render(Meter::new(0.0, Theme::color()), 1, 25);
+    let r = rows(&full);
+    assert!(r.iter().all(|l| l == "▆"), "{r:?}");
+    assert_eq!(full[(0, 0)].fg, Theme::METER_RED, "top 8 %");
+    assert_eq!(full[(0, 1)].fg, Theme::METER_RED);
+    assert_eq!(full[(0, 2)].fg, Theme::METER_AMBER, "row 2 is at 10 %");
+    assert_eq!(full[(0, 6)].fg, Theme::METER_AMBER, "row 6 is at 26 %");
+    assert_eq!(full[(0, 7)].fg, Theme::METER_GREEN, "row 7 is at 30 %");
+    assert_eq!(full[(0, 24)].fg, Theme::METER_GREEN);
+    // −30 dB on a 60 dB scale: the bottom half.
+    let r = rows(&render(Meter::new(-30.0, Theme::color()), 1, 10));
+    assert_eq!(r[5..], ["▆"; 5], "{r:?}");
+    assert!(r[..5].iter().all(|l| l == "▕"), "{r:?}");
+    // One column, whatever width is asked for: one meter width.
+    let r = rows(&render(Meter::new(0.0, Theme::color()).width(2), 2, 4));
+    assert!(r.iter().all(|l| l == "▆ "), "{r:?}");
+    // Silence: an empty track; the clip light a square on top.
+    let r = rows(&render(Meter::new(-96.0, Theme::color()), 1, 4));
+    assert!(r.iter().all(|l| l == "▕"));
+    let lit = render(Meter::new(0.0, Theme::color()).clip(Some(true)), 1, 5);
+    assert_eq!(rows(&lit)[0], "▀");
+    assert_eq!(lit[(0, 0)].fg, Theme::METER_RED);
+    assert_eq!(rows(&lit)[1..], ["▆"; 4]);
+}
+
+/// The text fader's cap is square, not a round knob.
+#[test]
+fn text_fader_square_cap() {
+    let r = rows(&render(Fader::new(-12.0, 6.0, Theme::color()), 11, 6));
+    assert_eq!(r[3], "−12━━■━━−12");
+    let r = rows(&render(Fader::new(-6.0, 0.0, Theme::color()), 9, 5));
+    assert_eq!(r[1], " −6━■━−6 ");
+    let r = rows(&render(
+        Fader::new(-6.0, 0.0, Theme::color()).labels(false),
+        3,
+        5,
+    ));
+    assert_eq!(r[1], "━■━");
+    for line in rows(&render(Fader::new(0.0, 6.0, Theme::color()), 11, 6)) {
+        assert!(!line.contains('●'), "{line}");
     }
 }

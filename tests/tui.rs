@@ -1015,7 +1015,7 @@ fn captured_meters_reach_the_screen() {
     let lines: Vec<&str> = t.lines().collect();
     let lit = lines[6..23]
         .iter()
-        .filter(|l| l.chars().take(12).collect::<String>().contains("██"))
+        .filter(|l| l.chars().take(12).collect::<String>().contains("▆"))
         .count();
     assert!(lit >= 8, "IN1 meter lit rows: {lit}\n{t}");
 }
@@ -1642,7 +1642,9 @@ fn pixel_cleanup_and_opt_out() {
 #[test]
 fn pixel_images_are_chunked() {
     let app = synced_app(Theme::color());
-    let mut layer = kitty_layer();
+    // Big cells: flat images compress well (#41), so some need chunks
+    // only at a large size.
+    let mut layer = toppingctl::tui::pixel::PixelLayer::with_cell_size((40, 80));
     let (_, _, out) = draw_pixels(&app, &fake_meters(), 120, 40, &mut layer);
     let mut open = false;
     let mut chunked = 0;
@@ -1751,7 +1753,7 @@ fn pixel_transmit_budget() {
     let app = synced_app(Theme::color());
     let meters = fake_meters();
     // Big cells: the first frame is over budget.
-    let mut layer = PixelLayer::with_cell_size((40, 80));
+    let mut layer = PixelLayer::with_cell_size((64, 128));
     let (buf, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     let first = placements(&out).len();
     assert!(
@@ -1798,7 +1800,6 @@ fn monitor_mix_and_phone_level() {
         monitor.widget,
         PixelWidget::Knob {
             value: Some(0.3),
-            ticks: 0,
             dimmed: true,
             bipolar: true
         }
@@ -2076,23 +2077,16 @@ fn pan_knobs_are_bipolar() {
         .iter()
         .filter_map(|s| match s.widget {
             PixelWidget::Knob {
-                ticks,
-                dimmed,
-                bipolar,
-                ..
-            } => Some((ticks, dimmed, bipolar)),
+                dimmed, bipolar, ..
+            } => Some((dimmed, bipolar)),
             _ => None,
         })
         .collect();
-    let gains = knobs.iter().filter(|k| k.0 > 0).collect::<Vec<_>>();
-    assert_eq!(gains.len(), 2);
-    assert!(gains.iter().all(|k| !k.2), "gain: from the minimum");
-    let pans = knobs
-        .iter()
-        .filter(|k| k.0 == 0 && !k.1)
-        .collect::<Vec<_>>();
-    assert_eq!(pans.len(), 8);
-    assert!(pans.iter().all(|k| k.2), "pans: from the top");
+    // One style for every knob (#41): no ticks; only the lit arc differs.
+    let gains = knobs.iter().filter(|k| !k.0 && !k.1).count();
+    assert_eq!(gains, 2, "gain: from the minimum");
+    let pans = knobs.iter().filter(|k| !k.0 && k.1).count();
+    assert_eq!(pans, 8, "pans: from the top");
 }
 
 /// A drag-resize fires a storm of resizes. The layer frees every image

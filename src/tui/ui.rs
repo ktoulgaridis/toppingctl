@@ -26,7 +26,7 @@ use crate::tui::app::{
     Panel, Phase, BUS_MAX_DB, DOWNLOAD_OPTIONS, MAX_GAIN_DB, MIX_FADER_MAX_DB, OUT_BUS,
     SOURCE_MENU,
 };
-use crate::tui::pixel::{chip_rgb, clear_under, PixelLayer, PixelSpot, PixelWidget, GAIN_TICKS};
+use crate::tui::pixel::{chip_rgb, clear_under, PixelLayer, PixelSpot, PixelWidget};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::dial::{knob_rect, Dial};
 use crate::tui::widgets::fader::{fmt_db, level_text, Fader};
@@ -141,10 +141,23 @@ impl HitMap {
     }
 
     /// Records a chip under text drawn in `style` over `rect`, when the
-    /// style has a background (a pill, a lit tab, a strip title).
+    /// style has a background (the active mix tab): a face inset in its
+    /// cells.
     fn chip(&mut self, rect: Rect, style: Style) {
         if let Some(rgb) = style.bg.and_then(chip_rgb) {
-            self.pixel(rect, PixelWidget::Chip { rgb });
+            self.pixel(rect, PixelWidget::Chip { rgb, label: None });
+        }
+    }
+
+    /// Records a button's face under `span` drawn over `rect` (its label
+    /// on the rect's middle row), when the span has a background: the face
+    /// centres on the label, as the mockup's `pill()`.
+    fn pill(&mut self, rect: Rect, span: &Span) {
+        if let Some(rgb) = span.style.bg.and_then(chip_rgb) {
+            let label = span.content.trim();
+            let lead = span.content.len() - span.content.trim_start().len();
+            let label = Some((lead as u16, Span::raw(label).width() as u16));
+            self.pixel(rect, PixelWidget::Chip { rgb, label });
         }
     }
 }
@@ -266,8 +279,8 @@ fn put(buf: &mut Buffer, area: Rect, x: u16, y: u16, s: &str, style: Style) -> R
 }
 
 /// Writes `spans` centred on row `y` of `area`; returns each span's rect.
-/// A span with a background (a pill) gets a chip under it on the pixel
-/// layer.
+/// A span with a background (a button) gets its face under it on the
+/// pixel layer.
 fn put_centered(
     buf: &mut Buffer,
     area: Rect,
@@ -281,7 +294,7 @@ fn put_centered(
         .iter()
         .map(|s| {
             let r = put(buf, area, x, y, &s.content, s.style);
-            hits.chip(r, s.style);
+            hits.pill(r, s);
             x += s.width() as u16;
             r
         })
@@ -666,7 +679,6 @@ struct Knob {
     focused: bool,
     dimmed: bool,
     max: (u16, u16),
-    ticks: u32,
     /// A pan (or balance): lit from the top.
     bipolar: bool,
 }
@@ -678,7 +690,6 @@ impl Knob {
             rect,
             widget: PixelWidget::Knob {
                 value: self.value,
-                ticks: self.ticks,
                 dimmed: self.dimmed,
                 bipolar: self.bipolar,
             },
@@ -915,7 +926,6 @@ fn draw_input_strip(
             focused: focused(InputControl::Gain),
             dimmed: false,
             max: (kc, kr),
-            ticks: GAIN_TICKS,
             bipolar: false,
         };
         k.draw(buf, knob, t, hits);
@@ -1082,7 +1092,6 @@ fn pan_dials(
             focused: app.focus() == c,
             dimmed: false,
             max: pan_knob(h.width, area.height),
-            ticks: 0,
             bipolar: true,
         };
         k.draw(buf, h, app.theme(), hits);
@@ -1622,7 +1631,6 @@ fn draw_output_panel(
             focused: false,
             dimmed: true,
             max: (kc, kr),
-            ticks: 0,
             bipolar: true,
         };
         k.draw(buf, Rect::new(r.x, r.y, r.width, dial_h), t, hits);

@@ -219,14 +219,14 @@ impl Widget for Fader {
                     put(buf, 3 + track, row, &format!("{l:<3}"), t.scale());
                 }
                 let (s, st) = match (cap, track) {
-                    (true, 5) => ("━━●━━", cap_style),
-                    (true, _) => ("━●━", cap_style),
+                    (true, 5) => ("━━■━━", cap_style),
+                    (true, _) => ("━■━", cap_style),
                     (false, 5) => ("  ┃  ", t.track()),
                     (false, _) => (" ┃ ", t.track()),
                 };
                 put(buf, 3, row, s, st);
             } else if cap {
-                put(buf, 0, row, "━●━", cap_style);
+                put(buf, 0, row, "━■━", cap_style);
             } else {
                 if label.is_some() {
                     put(buf, 0, row, "╶", t.scale());

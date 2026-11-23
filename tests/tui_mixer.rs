@@ -1145,11 +1145,11 @@ fn meters_sit_in_inset_boxes() {
     }
 }
 
-/// Buttons are square, Xone-style lit caps: on, a square face in the
-/// button's colour with a soft glow around it and a top highlight; off, a
-/// dark recessed cap with a faint outline. No rounded pill ends.
+/// Buttons are flat square faces (#41): on, a solid face in the button's
+/// colour, no glow and no highlight; off, the chip face inside a 1-px
+/// outline. No rounded pill ends.
 #[test]
-fn buttons_are_square_lit_caps() {
+fn buttons_are_flat_square_faces() {
     use toppingctl::tui::pixel::{chip_image, PX_ACCENT, PX_CHIP};
     let cell = (10, 20);
     let on = chip_image(6, 1, cell, PX_ACCENT);
@@ -1163,27 +1163,17 @@ fn buttons_are_square_lit_caps() {
     // Square: the corner pixel of the face is as solid as its edges.
     let corner = px(&on, left, top);
     assert!(corner[3] > 200, "square corner: {corner:?}");
-    // A glow outside the face: faint, not empty, not solid.
-    let glow = px(&on, left.saturating_sub(2), mid);
-    assert!(glow[3] > 0 && glow[3] < 160, "glow: {glow:?}");
-    // A top highlight: the face's top rows are lighter than its middle.
-    let (hi, body) = (px(&on, w / 2, top + 1), px(&on, w / 2, mid));
-    assert!(
-        hi[0] as u32 + hi[1] as u32 + hi[2] as u32
-            > body[0] as u32 + body[1] as u32 + body[2] as u32,
-        "highlight {hi:?} over {body:?}"
-    );
-    // Off: a dark cap, darker than the outline around it, no glow.
+    // Flat: the top row is the middle's colour; nothing outside the face.
+    assert_eq!(px(&on, w / 2, top + 1), px(&on, w / 2, mid), "no highlight");
+    assert_eq!(px(&on, left.saturating_sub(2), mid)[3], 0, "no glow");
+    // Off: the chip face, a lighter outline at its edge, no glow.
     let oleft = (0..w).find(|&x| px(&off, x, mid)[3] > 200).unwrap();
     let edge = px(&off, oleft, mid);
     let face = px(&off, w / 2, mid);
-    assert!(
-        face[0] < 60 && face[1] < 60 && face[2] < 70,
-        "dark cap {face:?}"
-    );
+    assert_eq!(&face[..3], &[PX_CHIP.0, PX_CHIP.1, PX_CHIP.2]);
     assert!(
         edge[0] as u32 + edge[1] as u32 > face[0] as u32 + face[1] as u32,
-        "outline"
+        "outline {edge:?} {face:?}"
     );
     assert_eq!(
         px(&off, oleft.saturating_sub(2), mid)[3],
