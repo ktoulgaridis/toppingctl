@@ -7,7 +7,7 @@
 ││ −18 pk │   ↑ ↓              move along an input, or into a strip's controls           │  ⣔⠙⠋⣢  ││
 ││ ▔      │   ← →              next strip; on a knob or fader: 1 dB / 5 %                │  ⠫⠠⠕⠝  ││
 ││ ▕   0  │   Shift ← →        the same ×10                                              │  R100  ││
-││ ▕  −6  │   0                reset the knob or fader (gain −0 dB, fader 0 dB)          │INK     ││
+││ ▕  −6  │   0                reset the knob or fader (gain −0 dB, fader 0 dB)          │NK      ││
 ││ ▕ −12  │   space            toggle the focused switch                                 │   −∞   ││
 ││ ▆      │   enter            on a strip's name: rename it; on a source: its menu       │   ┃ ▔▔ ││
 ││ ▆ −24  │   a  b  c          show mix A / B / C                                        │ 0╶┃╴▕▕ ││
@@ -21,14 +21,14 @@
 ╰─────────│   click            focus a strip; flip a switch; pick a mix; s l w           │─────────╯
 ╭┤³loopbac│   wheel            turn a knob, move a fader (Shift ×10); next source        │─────────╮
 │╭── LOOP │   drag             turn a knob, move a fader (up / down)                     │NE ─────╮│
-││PB 3/4 ▾│   double-click     reset a knob or fader                                     │        ││
-││     MUT│                                                                              │        ││
+││   PB 3/│   double-click     reset a knob or fader                                     │        ││
+││     LIN│                                                                              │el      ││
 ││     −0 │                    LINK: one fader and switch set, or an L and an R of each  │        ││
-││▔▔  −0━■│                    loopback, output: 1 dB a step, Shift 5 dB, −90 dB is −∞   │el      ││
-││▕▕  −6 ┃│                    PHONE: space or a click sets the level switch             │  0 dBu ││
+││▔▔  −0━■│                    loopback, output: 1 dB a step, Shift 5 dB, −90 dB is −∞   │        ││
+││▕▕  −6 ┃│                    PHONE: space or a click sets the level switch             │ 0 dBu  ││
 ││▆▆ −12 ┃│                                                                              │        ││
-││▆▆ −24 ┃│                                 [Esc] close                                  │        ││
-││▆▆  −∞ ┃│                                                                              │        ││
+││▆▆  −∞ ┃│                                 [Esc] close                                  │        ││
+││     MUT│                                                                              │        ││
 │╰────────╰──────────────────────────────────────────────────────────────────────────────╯────────╯│
 ╰──────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯
  tab 1-4 panel   ↑↓←→ move   ←→ adjust ⇧×10   space toggle   0 reset   a b c mix   ? help   q quit
