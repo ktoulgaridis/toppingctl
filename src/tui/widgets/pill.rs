@@ -1,7 +1,8 @@
 //! Buttons: ` MON `, ` 48V `, … on a square background, lit when on, the
 //! label always bold (#41). 48V and MUTE light red, everything else the
 //! accent. A disabled button (IN 1+2 LINK while off) is a button like the
-//! others with its text greyed out. Focus is underlined.
+//! others with its text greyed out. Focus is reversed (and underlined, so
+//! the pixel layer can tell, see `HitMap::pill`).
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
@@ -24,9 +25,9 @@ pub fn pill(label: &str, on: bool, kind: PillKind, focused: bool, t: Theme) -> S
     button(label, w as u16, on, kind, focused, t)
 }
 
-/// A button `width` cells wide, its label `(width − len) / 2` cells in
-/// (the mockup's rule: the pixel face centres on the label, so an odd
-/// remainder still looks centred). Narrower than its label: the label.
+/// A button `width` cells wide, its label `(width − len) / 2` cells in.
+/// An odd remainder can't centre in whole cells: the pixel face draws such
+/// a label itself, exactly centred. Narrower than its label: the label.
 pub fn button(
     label: &str,
     width: u16,
@@ -53,10 +54,7 @@ pub fn button(
         style = style.add_modifier(Modifier::REVERSED);
     }
     if focused {
-        style = style.add_modifier(Modifier::UNDERLINED);
-        if !on && t.is_color() {
-            style = style.fg(Theme::ACCENT);
-        }
+        style = style.add_modifier(Modifier::REVERSED | Modifier::UNDERLINED);
     }
     let style = style.add_modifier(Modifier::BOLD);
     Span::styled(text, Style::default().patch(style))

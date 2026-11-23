@@ -303,12 +303,14 @@ fn sync_workspaces(app: &mut App, workspaces: &Workspaces) {
 /// its actions. Pointer motion is dropped: crossterm's mouse capture
 /// reports every move, and handling them one per frame used to queue clicks
 /// behind seconds of motion. Stopping after one event keeps the hit map in
-/// step with what was drawn: the next one is handled after a redraw.
+/// step with what was drawn: the next one is handled after a redraw. The
+/// arrows follow the layout drawn ([`HitMap::switches_stacked`]).
 pub fn process_input(
     app: &mut App,
     events: &mut dyn Iterator<Item = Input>,
     hits: &HitMap,
 ) -> Vec<Action> {
+    app.set_switches_stacked(hits.switches_stacked());
     for ev in events {
         match ev {
             Input::Key(key) => return app.handle_key(key),

@@ -10,7 +10,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::tui::theme::Theme;
@@ -203,7 +203,11 @@ impl Widget for Fader {
         let Rect { x, width: w, .. } = Fader::rect(self.labels, area);
         let cap_row = fader_row(fader_frac(self.db, self.max_db), h);
         let ticks = Fader::ticks(self.max_db, h);
-        let cap_style = if self.focused { t.focus() } else { t.heading() };
+        let cap_style = if self.focused {
+            t.focus().add_modifier(Modifier::REVERSED)
+        } else {
+            t.heading()
+        };
         let put = |buf: &mut Buffer, dx: u16, y: u16, s: &str, st: Style| {
             if dx < w {
                 buf.set_stringn(x + dx, area.y + y, s, usize::from(w - dx), st);

@@ -37,10 +37,6 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn shift(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::SHIFT)
-}
-
 fn ch(c: char) -> KeyEvent {
     key(KeyCode::Char(c))
 }
@@ -564,21 +560,18 @@ fn input_keys_send_frames() {
     assert!(app.state().inputs[0].phase);
     expect.push(frame(0x21, 0x04, -toppingctl::state::INPUT_GAIN_LEVELS[12]));
 
-    // Gain: ←→ ±1 dB, Shift ×10, clamped to 0 ..= +20; 0 resets.
+    // Gain: + / - ±1 dB, PgUp / PgDn ×10, clamped to 0 ..= +20; 0 resets.
     press(&mut app, key(KeyCode::Down));
     assert_eq!(app.focus(), input(0, Gain));
     let gain_frame = |g: usize| frame(0x21, 0x04, -toppingctl::state::INPUT_GAIN_LEVELS[g]);
-    press(&mut app, key(KeyCode::Right));
+    press(&mut app, ch('+'));
     assert_eq!(app.state().inputs[0].gain_db, 13);
     expect.push(gain_frame(13));
-    press(&mut app, shift(KeyCode::Right));
+    press(&mut app, key(KeyCode::PageUp));
     assert_eq!(app.state().inputs[0].gain_db, 20, "clamped");
     expect.push(gain_frame(20));
-    assert!(
-        press(&mut app, key(KeyCode::Right)).is_empty(),
-        "no change at the top"
-    );
-    press(&mut app, key(KeyCode::Left));
+    assert!(press(&mut app, ch('+')).is_empty(), "no change at the top");
+    press(&mut app, ch('-'));
     expect.push(gain_frame(19));
     press(&mut app, ch('0'));
     assert_eq!(app.state().inputs[0].gain_db, 0, "0 resets to the default");
@@ -588,7 +581,7 @@ fn input_keys_send_frames() {
         "already at the default"
     );
     assert!(
-        press(&mut app, shift(KeyCode::Left)).is_empty(),
+        press(&mut app, key(KeyCode::PageDown)).is_empty(),
         "clamped at 0"
     );
 
@@ -1333,6 +1326,7 @@ fn kind(w: &toppingctl::tui::pixel::PixelWidget) -> &'static str {
         W::ClipLight { .. } => "clip",
         W::Chip { .. } => "chip",
         W::Inset => "inset",
+        W::Focus => "focus",
     }
 }
 
@@ -1409,11 +1403,26 @@ fn pixel_widgets_in_kitty() {
         .find(|s| s.rect == mon)
         .expect("a chip under MON");
     assert_eq!(kind(&chip.widget), "chip");
-    let label: String = (mon.x..mon.right())
+    // MON can't centre in its 6 cells: the face draws it (#47), so its
+    // cells are blank. INST stays terminal text.
+    match chip.widget {
+        toppingctl::tui::pixel::PixelWidget::Chip {
+            label: Some(label), ..
+        } => assert_eq!(label.text(), "MON"),
+        ref w => panic!("MON drawn in its face: {w:?}"),
+    }
+    let blank: String = (mon.x..mon.right())
         .map(|x| buf[(x, mon.y)].symbol())
         .collect();
-    assert_eq!(label.trim(), "MON");
-    assert!((mon.x..mon.right()).all(|x| buf[(x, mon.y)].bg == Color::Reset));
+    assert_eq!(blank.trim(), "");
+    let inst = hits
+        .rect(Hit::Control(input(0, InputControl::Inst)))
+        .unwrap();
+    let label: String = (inst.x..inst.right())
+        .map(|x| buf[(x, inst.y)].symbol())
+        .collect();
+    assert_eq!(label.trim(), "INST");
+    assert!((inst.x..inst.right()).all(|x| buf[(x, inst.y)].bg == Color::Reset));
     // The active mix tab has a chip (strip titles are plain text, #41).
     let tab = hits.rect(Hit::MixTab(0)).unwrap();
     assert!(spots
@@ -1510,14 +1519,15 @@ fn pixel_widgets_redraw() {
     let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     assert_eq!(out, "");
 
-    // A focus change re-places nothing: strip titles are plain text
-    // (#41), so only the text changes.
+    // A focus change re-places only the two marked widgets (#47): MON's
+    // face loses its outline, the mixer strip's name gains one.
     let mut focus_app = synced_app(Theme::color());
     let mut focus_layer = kitty_layer();
     draw_pixels(&focus_app, &meters, 120, 40, &mut focus_layer);
     focus_app.handle_key(key(KeyCode::Tab));
     let (_, _, out) = draw_pixels(&focus_app, &meters, 120, 40, &mut focus_layer);
-    assert_eq!(out, "", "{out:?}");
+    assert_eq!(placements(&out).len(), 2, "{out:?}");
+    assert_eq!(count(&out, "d"), 1, "MON's old placement goes: {out:?}");
 
     // A clip lights IN1's lamps and they go out after the hold.
     let t0 = Instant::now();
@@ -1544,13 +1554,14 @@ fn pixel_widgets_redraw() {
         toppingctl::tui::pixel::PixelWidget::ClipLight { lit: true }
     )));
 
-    // The gain knob turns: one new image.
-    let built = layer.built();
+    // The gain knob turns: one new image (focus on it drawn first).
     app.handle_key(ch('1'));
     for _ in 0..6 {
         app.handle_key(key(KeyCode::Down));
     }
-    app.handle_key(key(KeyCode::Right));
+    draw_pixels(&app, &meters, 120, 40, &mut layer);
+    let built = layer.built();
+    app.handle_key(ch('+'));
     let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     assert_eq!(layer.built(), built + 1);
     assert_eq!(count(&out, "t"), 1);
@@ -1780,7 +1791,8 @@ fn monitor_mix_and_phone_level() {
         PixelWidget::Knob {
             value: Some(0.3),
             dimmed: true,
-            bipolar: true
+            bipolar: true,
+            focused: false,
         }
     );
     // Its value in the strip, as the app shows it (v − 50).

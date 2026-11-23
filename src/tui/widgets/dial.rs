@@ -12,7 +12,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Widget;
 
@@ -209,7 +209,11 @@ impl Widget for Dial {
             }
         }
         if let (Some(label), true) = (&self.label, area.height > 1) {
-            let style = if self.focused { t.focus() } else { t.heading() };
+            let style = if self.focused {
+                t.focus().add_modifier(Modifier::REVERSED)
+            } else {
+                t.heading()
+            };
             let row = Rect::new(area.x, area.bottom() - 1, area.width, 1);
             Line::styled(label.clone(), style)
                 .centered()

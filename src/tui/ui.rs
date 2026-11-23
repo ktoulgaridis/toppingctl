@@ -26,7 +26,9 @@ use crate::tui::app::{
     Panel, Phase, BUS_MAX_DB, DOWNLOAD_OPTIONS, MAX_GAIN_DB, MIX_FADER_MAX_DB, OUT_BUS,
     SOURCE_MENU,
 };
-use crate::tui::pixel::{chip_rgb, clear_under, PixelLayer, PixelSpot, PixelWidget};
+use crate::tui::pixel::{
+    chip_rgb, clear_under, label_rgb, FaceLabel, PixelLayer, PixelSpot, PixelWidget,
+};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::dial::{knob_rect, Dial};
 use crate::tui::widgets::fader::{fmt_db, level_text, Fader};
@@ -91,6 +93,8 @@ pub struct HitMap {
     pixels: Vec<PixelSpot>,
     /// The open modal's box, from the last render.
     modal: Option<Rect>,
+    /// Whether the mix strips stacked their Ø / SOLO / MUTE.
+    stacked: bool,
 }
 
 impl HitMap {
@@ -128,6 +132,13 @@ impl HitMap {
         self.entries.is_empty()
     }
 
+    /// Whether the last render stacked the mix strips' Ø / SOLO / MUTE
+    /// (a tall window) rather than setting them in a row: ↑↓ and ←→
+    /// follow it ([`App::set_switches_stacked`]).
+    pub fn switches_stacked(&self) -> bool {
+        self.stacked
+    }
+
     /// The pixel widgets of the last render, in drawing order.
     pub fn pixels(&self) -> &[PixelSpot] {
         &self.pixels
@@ -145,20 +156,43 @@ impl HitMap {
     /// cells.
     fn chip(&mut self, rect: Rect, style: Style) {
         if let Some(rgb) = style.bg.and_then(chip_rgb) {
-            self.pixel(rect, PixelWidget::Chip { rgb, label: None });
+            self.pixel(
+                rect,
+                PixelWidget::Chip {
+                    rgb,
+                    label: None,
+                    focused: false,
+                },
+            );
         }
     }
 
     /// Records a button's face under `span` drawn over `rect` (its label
-    /// on the rect's middle row), when the span has a background: the face
-    /// centres on the label, as the mockup's `pill()`.
+    /// on the rect's middle row), when the span has a background. The face
+    /// sits on the button's cells, so a column of buttons lines up; a label
+    /// that can't be centred in whole cells (its parity is not the box's)
+    /// is drawn in the face, exactly centred. An underlined button is the
+    /// focused one ([`button`]).
     fn pill(&mut self, rect: Rect, span: &Span) {
-        if let Some(rgb) = span.style.bg.and_then(chip_rgb) {
-            let label = span.content.trim();
-            let lead = span.content.len() - span.content.trim_start().len();
-            let label = Some((lead as u16, Span::raw(label).width() as u16));
-            self.pixel(rect, PixelWidget::Chip { rgb, label });
-        }
+        let Some(rgb) = span.style.bg.and_then(chip_rgb) else {
+            return;
+        };
+        let focused = span.style.add_modifier.contains(Modifier::UNDERLINED);
+        let text = span.content.trim();
+        let tw = Span::raw(text).width() as u16;
+        let label = if rect.width > tw && (rect.width - tw) % 2 == 1 {
+            FaceLabel::new(text, label_rgb(span.style.fg))
+        } else {
+            None
+        };
+        self.pixel(
+            rect,
+            PixelWidget::Chip {
+                rgb,
+                label,
+                focused,
+            },
+        );
     }
 }
 
@@ -540,40 +574,140 @@ fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
         Line::from(vec![Span::raw(" "), Span::styled(notice, t.heading())]).render(area, buf);
         return;
     }
-    if let Control::Mixer(_) | Control::Loopback(_) | Control::Output(0) = app.focus() {
-        // On a strip's name nothing adjusts: point at the controls.
-        let mut spans = vec![Span::raw(" ")];
-        for (k, what) in [
-            ("↓", "into the strip's controls"),
-            ("←→", "strip"),
-            ("enter", "rename"),
-            ("tab 1-4", "panel"),
-            ("a b c", "mix"),
-            ("?", "help"),
-            ("q", "quit"),
-        ] {
-            spans.push(Span::styled(k, t.focus()));
-            spans.push(Span::styled(format!(" {what}   "), t.dim()));
-        }
-        Line::from(spans).render(area, buf);
-        return;
-    }
-    let hints = [
+    // What is focused, what the keys do there, then the keys that always
+    // work.
+    let (what, keys) = focus_hint(app);
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(what, t.heading()),
+        Span::raw("   "),
+    ];
+    let always = [
+        ("←→↑↓", "move"),
         ("tab 1-4", "panel"),
-        ("↑↓←→", "move"),
-        ("←→", "adjust ⇧×10"),
-        ("space", "toggle"),
-        ("0", "reset"),
-        ("a b c", "mix"),
         ("?", "help"),
         ("q", "quit"),
     ];
-    let mut spans = vec![Span::raw(" ")];
-    for (k, what) in hints {
-        spans.push(Span::styled(k, t.focus()));
+    for (k, what) in keys.iter().chain(&always) {
+        spans.push(Span::styled(*k, t.focus()));
         spans.push(Span::styled(format!(" {what}   "), t.dim()));
     }
     Line::from(spans).render(area, buf);
+}
+
+/// The keys that adjust a knob or fader.
+const ADJUST_KEYS: &[(&str, &str)] = &[("+/-", "adjust"), ("0", "reset")];
+/// The key that flips a switch.
+const TOGGLE_KEYS: &[(&str, &str)] = &[("space", "toggle")];
+
+/// `on` / `off`.
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// The footer's account of the focus: "strip · control value", and the
+/// keys that act on it.
+fn focus_hint(app: &App) -> (String, &'static [(&'static str, &'static str)]) {
+    let state = app.state();
+    let name = |n: Name| n.get(state).unwrap_or(n.default_name()).to_string();
+    let side = |linked: bool, c: usize| if linked { "" } else { ["L ", "R "][c.min(1)] };
+    let names: &[(&str, &str)] = &[("enter", "rename"), ("↓", "controls")];
+    match app.focus() {
+        Control::Input { ch, kind } => {
+            let input = &state.inputs[ch];
+            let strip = format!("IN{}", ch + 1);
+            let (label, on) = match kind {
+                InputControl::Gain => {
+                    let what = format!("{strip} · gain {}", gain_text(input.gain_db));
+                    return (what, ADJUST_KEYS);
+                }
+                InputControl::Mon => ("MON", input.mon),
+                InputControl::Phantom => ("48V", input.phantom == Some(true)),
+                InputControl::Inst => ("INST", input.inst),
+                InputControl::Solo => ("SOLO", input.solo),
+                InputControl::Mute => ("MUTE", input.mute),
+                InputControl::Phase => ("Ø", input.phase),
+            };
+            (format!("{strip} · {label} {}", on_off(on)), TOGGLE_KEYS)
+        }
+        Control::Mixer(i) => (format!("{} · name", name(Name::Mixer(i))), names),
+        Control::Loopback(i) => (format!("{} · name", name(Name::Loopback(i))), names),
+        Control::Output(0) => (format!("{} · name", name(Name::Output)), names),
+        Control::Output(1) => ("MONITOR MIX · read-only".into(), &[]),
+        Control::Output(_) => {
+            let level = if state.phone_gain { "+17 dBu" } else { "0 dBu" };
+            (format!("PHONE · level {level}"), TOGGLE_KEYS)
+        }
+        Control::Mix { strip, ctl } => {
+            let mix = &state.mixes[app.mix()];
+            let linked = mix.linked(strip);
+            let strip_name = name(Name::Mixer(strip));
+            let ch = |c: usize| mix.channel(strip, c);
+            let (what, keys) = match ctl {
+                MixControl::Pan(c) => {
+                    let lr = ["left", "right"][c.min(1)];
+                    let pan = pan_text(mix.pans(strip)[c.min(1)]);
+                    (format!("{lr} pan {pan}"), ADJUST_KEYS)
+                }
+                MixControl::Fader(c) => {
+                    let db = fmt_db(ch(c).fader_db);
+                    (format!("{}fader {db}", side(linked, c)), ADJUST_KEYS)
+                }
+                MixControl::Link => (format!("LINK {}", on_off(linked)), TOGGLE_KEYS),
+                MixControl::Phase(c) => {
+                    let on = on_off(ch(c).phase);
+                    (format!("{}Ø {on}", side(linked, c)), TOGGLE_KEYS)
+                }
+                MixControl::Solo(c) => {
+                    let on = on_off(ch(c).solo);
+                    (format!("{}SOLO {on}", side(linked, c)), TOGGLE_KEYS)
+                }
+                MixControl::Mute(c) => {
+                    let on = on_off(ch(c).mute);
+                    (format!("{}MUTE {on}", side(linked, c)), TOGGLE_KEYS)
+                }
+            };
+            (format!("{strip_name} · {what}"), keys)
+        }
+        Control::Bus { bus, ctl } => {
+            let out = bus == OUT_BUS;
+            let (strip_name, source, link, levels, mutes) = if out {
+                let o = &state.output;
+                let levels = [o.level_l_db, o.level_r_db];
+                (name(Name::Output), o.source, o.link, levels, [false; 2])
+            } else {
+                let lb = &state.loopbacks[bus.min(1)];
+                let levels = [lb.level_l_db, lb.level_r_db];
+                let mutes = [lb.mute_l, lb.mute_r];
+                (name(Name::Loopback(bus)), lb.source, lb.link, levels, mutes)
+            };
+            let (what, keys): (String, &'static [(&str, &str)]) = match ctl {
+                BusControl::Source => (
+                    format!("source {}", source_name(source)),
+                    &[("enter", "menu")],
+                ),
+                BusControl::Link => (format!("LINK {}", on_off(link)), TOGGLE_KEYS),
+                BusControl::Mute(c) => {
+                    let on = on_off(mutes[c.min(1)]);
+                    (format!("{}MUTE {on}", side(link, c)), TOGGLE_KEYS)
+                }
+                BusControl::Hp => (
+                    format!("HP {}", on_off(state.output.headphones)),
+                    TOGGLE_KEYS,
+                ),
+                BusControl::Line => (format!("LINE {}", on_off(state.output.line)), TOGGLE_KEYS),
+                BusControl::Fader(c) => {
+                    let level = level_text(levels[c.min(1)]);
+                    (format!("{}level {level} dB", side(link, c)), ADJUST_KEYS)
+                }
+            };
+            (format!("{strip_name} · {what}"), keys)
+        }
+    }
 }
 
 /// A panel: a rounded border with `key` and `name` set into it. Returns
@@ -605,16 +739,55 @@ fn panel(
     (inner, x)
 }
 
+/// How a strip's box shows focus: not at all, on one of its controls
+/// (the accent border and title), or on its name (the title reversed, with
+/// the focus outline round it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StripFocus {
+    None,
+    Inside,
+    Name,
+}
+
+impl StripFocus {
+    fn of(inside: bool, name: bool) -> StripFocus {
+        match (inside, name) {
+            (_, true) => StripFocus::Name,
+            (true, _) => StripFocus::Inside,
+            _ => StripFocus::None,
+        }
+    }
+}
+
 /// A strip: an inner rounded box with its name set into the top border
 /// in plain bold text (the accent when focused).
-fn strip_box(buf: &mut Buffer, area: Rect, t: Theme, name: &str, focused: bool) -> Rect {
-    let title = if focused { t.focus() } else { t.heading() };
+fn strip_box(
+    buf: &mut Buffer,
+    area: Rect,
+    t: Theme,
+    name: &str,
+    focus: StripFocus,
+    hits: &mut HitMap,
+) -> Rect {
+    let focused = focus != StripFocus::None;
+    let title = match focus {
+        StripFocus::None => t.heading(),
+        StripFocus::Inside => t.focus(),
+        StripFocus::Name => t.focus().add_modifier(Modifier::REVERSED),
+    };
+    let label = format!(" {name} ");
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(if focused { t.active() } else { t.track() })
-        .title(Line::from(Span::styled(format!(" {name} "), title)).centered());
+        .title(Line::from(Span::styled(label.clone(), title)).centered());
     let inner = block.inner(area);
     block.render(area, buf);
+    if focus == StripFocus::Name {
+        // The title is centred between the corners.
+        let tw = (Span::raw(&label).width() as u16).min(inner.width);
+        let x = inner.x + (inner.width - tw) / 2;
+        hits.pixel(Rect::new(x, area.y, tw, 1), PixelWidget::Focus);
+    }
     inner
 }
 
@@ -638,8 +811,9 @@ fn columns(area: Rect, n: u16) -> Vec<Rect> {
 }
 
 /// The width of a button on its own (input switches, LINK, MUTE, HP,
-/// LINE): the mockup's 7 columns.
-const BUTTON_W: u16 = 7;
+/// LINE): even, so the four-letter labels stay terminal text centred in
+/// whole cells (Ø, MON and 48V are drawn in the face).
+const BUTTON_W: u16 = 6;
 
 /// A round knob (two columns a row) about `cols` wide, at most `rows`
 /// tall and at least 2: its (cols, rows).
@@ -675,6 +849,7 @@ impl Knob {
                 value: self.value,
                 dimmed: self.dimmed,
                 bipolar: self.bipolar,
+                focused: self.focused,
             },
         });
         Dial::new(t)
@@ -748,7 +923,12 @@ fn fader(
         .render(area, buf);
     hits.pixel(
         Fader::rect(labels, area),
-        PixelWidget::Fader { db, max_db, labels },
+        PixelWidget::Fader {
+            db,
+            max_db,
+            labels,
+            focused,
+        },
     );
 }
 
@@ -828,7 +1008,8 @@ fn draw_input_strip(
         }),
         area,
     );
-    let r = strip_box(buf, area, t, &format!("IN{}", ch + 1), in_strip);
+    let sf = StripFocus::of(in_strip, false);
+    let r = strip_box(buf, area, t, &format!("IN{}", ch + 1), sf, hits);
     if r.height < 2 || r.width < 8 {
         return;
     }
@@ -1230,13 +1411,8 @@ fn draw_mix_strip(
     let mix = &app.state().mixes[app.mix()];
     let linked = mix.linked(strip);
     hits.push(Hit::Focus(Control::Mixer(strip)), area);
-    let r = strip_box(
-        buf,
-        area,
-        t,
-        &strip_name(app, Name::Mixer(strip)),
-        strip_focused(app, strip),
-    );
+    let sf = StripFocus::of(strip_focused(app, strip), focus == Control::Mixer(strip));
+    let r = strip_box(buf, area, t, &strip_name(app, Name::Mixer(strip)), sf, hits);
     if r.height < 8 {
         return;
     }
@@ -1361,6 +1537,7 @@ fn strip_switches(
     ];
     let focused = |k: usize| app.focus() == mix_ctl(strip, ctls[k]);
     if rows >= 3 {
+        hits.stacked = true;
         for (k, label) in ["Ø", "SOLO", "MUTE"].into_iter().enumerate() {
             let span = button(label, BUTTON_W.min(r.width), on[k], kinds[k], focused(k), t);
             let rects = put_centered(buf, r, r.bottom() - 3 + k as u16, &[span], hits);
@@ -1368,10 +1545,12 @@ fn strip_switches(
         }
         return;
     }
-    // A whole strip: Ø / SOLO / MUTE side by side, as in the mockup (5
-    // columns each, a column apart), when they fit.
-    let bw = 5.min(r.width.saturating_sub(2) / 3);
-    if !narrow && bw >= 4 {
+    // A whole strip: Ø / SOLO / MUTE side by side, as in the mockup, a
+    // column apart, when they fit. An even width keeps SOLO and MUTE text centred in whole cells (Ø is
+    // drawn in its face): 6 columns, or 4 when that doesn't fit.
+    let fit = r.width.saturating_sub(2) / 3;
+    let bw = if fit >= BUTTON_W { BUTTON_W } else { 4 };
+    if !narrow && fit >= 4 {
         let mut spans = Vec::new();
         for (k, label) in ["Ø", "SOLO", "MUTE"].into_iter().enumerate() {
             if k > 0 {
@@ -1466,7 +1645,8 @@ fn draw_bus_strip(
     };
     let focused = focus == strip || matches!(focus, Control::Bus { bus: b, .. } if b == bus);
     hits.push(Hit::Focus(strip), area);
-    let r = strip_box(buf, area, t, &strip_name(app, name), focused);
+    let sf = StripFocus::of(focused, focus == strip);
+    let r = strip_box(buf, area, t, &strip_name(app, name), sf, hits);
     if r.height < 5 {
         return;
     }
@@ -1480,7 +1660,7 @@ fn draw_bus_strip(
     let value_y = link_y + 1;
     let bottom_y = r.bottom() - 1;
     let src_style = if is(BusControl::Source) {
-        t.focus().add_modifier(Modifier::UNDERLINED)
+        t.focus().add_modifier(Modifier::REVERSED)
     } else {
         t.active()
     };
@@ -1494,10 +1674,11 @@ fn draw_bus_strip(
         ],
         hits,
     );
-    hits.push(
-        Hit::Control(bus_ctl(bus, BusControl::Source)),
-        rects[0].union(rects[1]),
-    );
+    let src = rects[0].union(rects[1]);
+    hits.push(Hit::Control(bus_ctl(bus, BusControl::Source)), src);
+    if is(BusControl::Source) {
+        hits.pixel(src, PixelWidget::Focus);
+    }
     let link_btn = button(
         "LINK",
         BUTTON_W,
@@ -1640,7 +1821,14 @@ fn draw_output_panel(
     // Monitor Mix: the balance the device reports when its knob turns
     // (`11 01`), shown read-only like the official app: dimmed, and no
     // click target.
-    let r = strip_box(buf, mon_area, t, "MONITOR MIX", focused(1));
+    let r = strip_box(
+        buf,
+        mon_area,
+        t,
+        "MONITOR MIX",
+        StripFocus::of(false, focused(1)),
+        hits,
+    );
     if r.height >= 6 {
         // The dial, about 0.47 of the box's width (78 % of #34's), and
         // its two text rows, centred.
@@ -1679,7 +1867,14 @@ fn draw_output_panel(
 
     // Phone out: the level switch (`11 02`). Its volume is an analog knob
     // that software never sets.
-    let r = strip_box(buf, phone_area, t, "PHONE", focused(2));
+    let r = strip_box(
+        buf,
+        phone_area,
+        t,
+        "PHONE",
+        StripFocus::of(false, focused(2)),
+        hits,
+    );
     if r.height >= 5 {
         // Two big buttons, three rows tall (the mockup's 9 columns each),
         // under the label.
@@ -1892,15 +2087,13 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
     let keys: &[(&str, &str)] = &[
         ("Tab  Shift-Tab", "next / previous panel"),
         ("1  2  3  4", "input, mixer, loopback, output"),
-        ("↑ ↓", "move along an input, or into a strip's controls"),
-        ("← →", "next strip; on a knob or fader: 1 dB / 5 %"),
-        ("Shift ← →", "the same ×10"),
+        ("← →", "move: the control beside, or the next strip"),
+        ("↑ ↓", "move: up / down a strip, from its name"),
+        ("+  =  -  _", "adjust the knob or fader: 1 dB / 5 %"),
+        ("PgUp  PgDn", "the same ×10"),
         ("0", "reset the knob or fader (gain −0 dB, fader 0 dB)"),
-        ("space", "toggle the focused switch"),
-        (
-            "enter",
-            "on a strip's name: rename it; on a source: its menu",
-        ),
+        ("space  enter", "toggle the switch; open a source's menu"),
+        ("enter", "on a strip's name: rename it"),
         ("a  b  c", "show mix A / B / C"),
         ("r", "sample rate list (sets it through PipeWire)"),
         ("s", "save the workspace (on Default: save as…)"),
@@ -1923,7 +2116,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ),
         (
             "",
-            "loopback, output: 1 dB a step, Shift 5 dB, −90 dB is −∞",
+            "loopback, output: 1 dB a step, ×10 is 5 dB, −90 dB is −∞",
         ),
         ("", "PHONE: space or a click sets the level switch"),
     ];

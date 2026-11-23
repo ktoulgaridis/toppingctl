@@ -1,15 +1,15 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ▄█▄ ▄▄▄ ▄▄▄ ▄▄▄ ▄ ▄▄▄ ▄▄▄ ▄▄▄ ▄█▄ █   E2x2                                 Default ▾  │  — kHz ▾ │
-│  █▄ █▄█ ╭ Help ────────────────────────────────────────────────────────────────────────╮● synced │
-╰─────────│                                                                              │─────────╯
-╭┤¹input├─│   Tab  Shift-Tab   next / previous panel                                     │─────────╮
-│╭───── IN│   1  2  3  4       input, mixer, loopback, output                            │ 5/6 ───╮│
-││ −18 pk │   ↑ ↓              move along an input, or into a strip's controls           │  ⣔⠙⠋⣢  ││
-││ ▔      │   ← →              next strip; on a knob or fader: 1 dB / 5 %                │  ⠫⠠⠕⠝  ││
-││ ▕   0  │   Shift ← →        the same ×10                                              │  R100  ││
-││ ▕  −6  │   0                reset the knob or fader (gain −0 dB, fader 0 dB)          │NK      ││
-││ ▕ −12  │   space            toggle the focused switch                                 │   −∞   ││
-││ ▆      │   enter            on a strip's name: rename it; on a source: its menu       │   ┃ ▔▔ ││
+│ ▄█▄ ▄▄▄ ╭ Help ────────────────────────────────────────────────────────────────────────╮ — kHz ▾ │
+│  █▄ █▄█ │                                                                              │● synced │
+╰─────────│   Tab  Shift-Tab   next / previous panel                                     │─────────╯
+╭┤¹input├─│   1  2  3  4       input, mixer, loopback, output                            │─────────╮
+│╭───── IN│   ← →              move: the control beside, or the next strip               │ 5/6 ───╮│
+││ −18 pk │   ↑ ↓              move: up / down a strip, from its name                    │  ⣔⠙⠋⣢  ││
+││ ▔      │   +  =  -  _       adjust the knob or fader: 1 dB / 5 %                      │  ⠫⠠⠕⠝  ││
+││ ▕   0  │   PgUp  PgDn       the same ×10                                              │  R100  ││
+││ ▕  −6  │   0                reset the knob or fader (gain −0 dB, fader 0 dB)          │INK     ││
+││ ▕ −12  │   space  enter     toggle the switch; open a source's menu                   │   −∞   ││
+││ ▆      │   enter            on a strip's name: rename it                              │   ┃ ▔▔ ││
 ││ ▆ −24  │   a  b  c          show mix A / B / C                                        │ 0╶┃╴▕▕ ││
 ││ ▆      │   r                sample rate list (sets it through PipeWire)               │−6╶┃╴▕▕ ││
 ││ ▆ −36  │   s                save the workspace (on Default: save as…)                 │   ┃ ▕▕ ││
@@ -24,11 +24,11 @@
 ││   PB 3/│   double-click     reset a knob or fader                                     │        ││
 ││     LIN│                                                                              │el      ││
 ││     −0 │                    LINK: one fader and switch set, or an L and an R of each  │        ││
-││▔▔  −0━■│                    loopback, output: 1 dB a step, Shift 5 dB, −90 dB is −∞   │        ││
+││▔▔  −0━■│                    loopback, output: 1 dB a step, ×10 is 5 dB, −90 dB is −∞  │        ││
 ││▕▕  −6 ┃│                    PHONE: space or a click sets the level switch             │ 0 dBu  ││
 ││▆▆ −12 ┃│                                                                              │        ││
 ││▆▆  −∞ ┃│                                 [Esc] close                                  │        ││
 ││     MUT│                                                                              │        ││
 │╰────────╰──────────────────────────────────────────────────────────────────────────────╯────────╯│
 ╰──────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯
- tab 1-4 panel   ↑↓←→ move   ←→ adjust ⇧×10   space toggle   0 reset   a b c mix   ? help   q quit
+ IN1 · MON on   space toggle   ←→↑↓ move   tab 1-4 panel   ? help   q quit
