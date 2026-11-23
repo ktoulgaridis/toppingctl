@@ -18,6 +18,41 @@ cells in text. The arrows only move focus, alsamixer-style; `+` and `-` adjust.
 
 ## Install
 
+With a package manager (#22), from the first release after v0.1.0. The Linux packages
+install the udev rule (see [Linux setup](#linux-setup)), so after installing, unplug the
+E2x2 and plug it back in.
+
+**Arch Linux (AUR):** `toppingctl-bin` (prebuilt) or `toppingctl` (built from source).
+
+```sh
+yay -S toppingctl-bin
+```
+
+**Debian and Ubuntu (amd64, arm64):** add the signed apt repository once, then install
+and upgrade with apt as usual.
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://ktoulgaridis.github.io/apt/toppingctl.asc |
+  sudo gpg --dearmor -o /etc/apt/keyrings/toppingctl.gpg
+echo "deb [signed-by=/etc/apt/keyrings/toppingctl.gpg] https://ktoulgaridis.github.io/apt stable main" |
+  sudo tee /etc/apt/sources.list.d/toppingctl.list
+sudo apt-get update
+sudo apt-get install toppingctl
+```
+
+The key's fingerprint is `91A86B2085944347FA9C7F92F29E31E08B5B2DCE`
+(`gpg --show-keys /etc/apt/keyrings/toppingctl.gpg`). Each release also has the `.deb`
+files attached.
+
+**Homebrew (macOS, Linux):**
+
+```sh
+brew install ktoulgaridis/tap/toppingctl
+```
+
+On Linux, Homebrew can't install the udev rule; `brew info toppingctl` shows how.
+
 From a clone of this repository, with a Rust toolchain:
 
 ```sh
@@ -31,7 +66,7 @@ On Linux the build needs libudev's headers (`libudev-dev` on Debian and Ubuntu,
 
 Prebuilt archives for macOS and Linux (x86_64 and arm64) are on the
 [releases page](https://github.com/ktoulgaridis/toppingctl/releases) (#31), each with a
-`SHA256SUMS`. Package managers (#22) come later.
+`SHA256SUMS`.
 
 ## Linux setup
 
