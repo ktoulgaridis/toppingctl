@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use toppingctl::cli::{self, Env};
 use toppingctl::conn::{Connection, HidTransport};
 use toppingctl::error::{message, Platform};
+use toppingctl::official_app::{self, System};
 use toppingctl::open::open_e2x2;
 use toppingctl::sync::Store;
 
@@ -21,6 +22,9 @@ fn main() -> ExitCode {
             stdout: &mut io::stdout(),
             stderr: &mut io::stderr(),
             open: Box::new(|| {
+                if let Some(w) = official_app::warning(&System) {
+                    eprintln!("toppingctl: warning: {w}");
+                }
                 let device = open_e2x2().map_err(|e| message(&e, Platform::current()))?;
                 Ok(Connection::spawn(HidTransport::new(device)))
             }),
