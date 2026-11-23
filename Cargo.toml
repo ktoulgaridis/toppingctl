@@ -6,6 +6,27 @@ description = "Control the TOPPING E2x2 USB audio interface over HID"
 license = "MIT OR Apache-2.0"
 publish = false
 
+# The .deb (#22), built by `cargo deb` in the release workflow only (not a dependency).
+# With --target, `cargo deb` reads target/<triple>/release/ for target/release/.
+[package.metadata.deb]
+maintainer = "Kyriakos Toulgaridis <35013508+ktoulgaridis@users.noreply.github.com>"
+copyright = "Kyriakos Toulgaridis"
+license-file = ["LICENSE-MIT", "0"]
+section = "sound"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+A terminal app (TUI and CLI) for the TOPPING E2x2 USB audio interface, controlling it \
+over its HID interface. Installs a udev rule that gives the device to the user at the \
+local seat."""
+assets = [
+    ["target/release/toppingctl", "usr/bin/", "755"],
+    ["packaging/linux/70-toppingctl.rules", "usr/lib/udev/rules.d/70-toppingctl.rules", "644"],
+    ["LICENSE-MIT", "usr/share/doc/toppingctl/", "644"],
+    ["LICENSE-APACHE", "usr/share/doc/toppingctl/", "644"],
+    ["README.md", "usr/share/doc/toppingctl/", "644"],
+]
+
 [dependencies]
 anyhow = "1"
 crossterm = "0.29"

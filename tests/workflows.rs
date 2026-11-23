@@ -3,7 +3,11 @@
 use std::fs;
 use std::path::Path;
 
-const WORKFLOWS: [&str; 2] = [".github/workflows/ci.yml", ".github/workflows/release.yml"];
+const WORKFLOWS: [&str; 3] = [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/packages.yml",
+];
 
 fn read(rel: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);

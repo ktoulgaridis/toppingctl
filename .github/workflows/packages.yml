@@ -1,0 +1,311 @@
+name: Packages
+
+# Publishes a release to AUR, the Homebrew tap and the apt repo (#22), then installs it
+# from each the way a user would. Runs when a release is *published* (after the draft
+# review in release.yml), never on a tag. Re-running it ("Re-run jobs" on the run) for
+# the same version is a no-op: nothing is committed or pushed unless a file changed.
+#
+# Secrets live in the `release` environment (deployments from v* tags only), and each
+# step reads only the one it needs. Setup: packaging/README.md.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  # Validated as vX.Y.Z by `package.sh render` before any job publishes.
+  TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  # No secrets: fetch the release's checksums and debs, render the AUR and brew files.
+  render:
+    name: Render packaging
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      # The packaging recipes come from the default branch, so a re-run picks up fixes.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Download SHA256SUMS and the debs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --dir dist \
+            --pattern SHA256SUMS --pattern '*.deb'
+          (cd dist && sha256sum --check --ignore-missing SHA256SUMS)
+          # GitHub's tag archive, for the AUR source package.
+          src="toppingctl-$TAG-source.tar.gz"
+          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$TAG.tar.gz" \
+            -o "$src"
+          sha256sum "$src" >>dist/SHA256SUMS
+          rm "$src"
+
+      - name: Render
+        id: version
+        run: |
+          scripts/package.sh render aur "$TAG" dist/SHA256SUMS out/aur
+          scripts/package.sh render brew "$TAG" dist/SHA256SUMS out/brew
+          mkdir -p out/debs
+          find dist -maxdepth 1 -name '*.deb' -exec mv {} out/debs/ \;
+          echo "version=${TAG#v}" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packaging
+          path: out
+          include-hidden-files: true # .SRCINFO
+          if-no-files-found: error
+          retention-days: 1
+
+  aur:
+    name: Push to AUR
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    env:
+      VERSION: ${{ needs.render.outputs.version }}
+    outputs:
+      pushed: ${{ steps.push.outputs.pushed }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packaging
+          path: out
+
+      # The first push creates the package base: cloning a new one gives an empty repo.
+      - name: Push toppingctl-bin and toppingctl
+        id: push
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::notice::AUR_SSH_KEY is not set: skipping the AUR push"
+            echo "pushed=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$AUR_SSH_KEY" >"$ssh_dir/key"
+          chmod 600 "$ssh_dir/key"
+          # Pinned: the Ed25519 host key from aur.archlinux.org's front page
+          # (SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4).
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+            >"$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
+          for pkg in toppingctl-bin toppingctl; do
+            git clone "ssh://aur@aur.archlinux.org/$pkg.git" "aur-$pkg"
+            cp "out/aur/$pkg/PKGBUILD" "out/aur/$pkg/.SRCINFO" "aur-$pkg/"
+            git -C "aur-$pkg" add PKGBUILD .SRCINFO
+            if git -C "aur-$pkg" diff --cached --quiet; then
+              echo "$pkg: already at $VERSION"
+              continue
+            fi
+            git -C "aur-$pkg" -c user.name="Kyriakos Toulgaridis" \
+              -c user.email="35013508+ktoulgaridis@users.noreply.github.com" \
+              commit -m "Update to $VERSION"
+            git -C "aur-$pkg" push origin HEAD:master
+          done
+          echo "pushed=true" >>"$GITHUB_OUTPUT"
+
+  brew:
+    name: Commit the formula to the tap
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    env:
+      VERSION: ${{ needs.render.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packaging
+          path: out
+
+      - name: Stage Formula/toppingctl.rb
+        run: |
+          git clone https://github.com/ktoulgaridis/homebrew-tap.git tap
+          mkdir -p tap/Formula
+          cp out/brew/toppingctl.rb tap/Formula/toppingctl.rb
+          git -C tap add Formula/toppingctl.rb
+
+      - name: Push
+        env:
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+        run: |
+          cd tap
+          if git diff --cached --quiet; then
+            echo "tap: already at $VERSION"
+            exit 0
+          fi
+          git -c user.name="Kyriakos Toulgaridis" \
+            -c user.email="35013508+ktoulgaridis@users.noreply.github.com" \
+            commit -m "toppingctl $VERSION"
+          auth="$(printf 'x-access-token:%s' "$PACKAGES_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push origin HEAD:main
+
+  apt:
+    name: Update and sign the apt repo
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    env:
+      VERSION: ${{ needs.render.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packaging
+          path: out
+
+      - name: Install apt-utils
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+
+      - name: Add the debs, regenerate and sign
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          git clone https://github.com/ktoulgaridis/apt.git apt-repo
+          shopt -s nullglob
+          debs=(out/debs/*.deb)
+          if [ ${#debs[@]} -eq 0 ]; then
+            echo "::warning::$TAG has no .deb assets: the apt repo is unchanged"
+            exit 0
+          fi
+          # The private key lives only in this step's throwaway keyring.
+          export GNUPGHOME="$(mktemp -d)"
+          trap 'gpgconf --kill all; rm -rf "$GNUPGHOME"' EXIT
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          APT_SIGNING_KEY="$(gpg --batch --with-colons --list-secret-keys |
+            awk -F: '$1 == "fpr" { print $10; exit }')"
+          export APT_SIGNING_KEY
+          scripts/package.sh apt-repo apt-repo "${debs[@]}"
+          git -C apt-repo add -A
+
+      - name: Push
+        env:
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+        run: |
+          cd apt-repo
+          if git diff --cached --quiet; then
+            echo "apt repo: already has $VERSION"
+            exit 0
+          fi
+          git -c user.name="Kyriakos Toulgaridis" \
+            -c user.email="35013508+ktoulgaridis@users.noreply.github.com" \
+            commit -m "toppingctl $VERSION"
+          auth="$(printf 'x-access-token:%s' "$PACKAGES_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push origin HEAD:main
+
+  # ---- Post-publish install checks: install as a user would, no secrets. -------------
+
+  check-aur:
+    name: Install from AUR (makepkg -si)
+    needs: [render, aur]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: archlinux:latest
+    env:
+      VERSION: ${{ needs.render.outputs.version }}
+      PUSHED: ${{ needs.aur.outputs.pushed }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packaging
+          path: out
+
+      - name: makepkg -si both PKGBUILDs
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git sudo
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/builder
+          for pkg in toppingctl-bin toppingctl; do
+            dir="/home/builder/$pkg"
+            if [ "$PUSHED" = true ]; then
+              git clone "https://aur.archlinux.org/$pkg.git" "$dir"
+            else
+              echo "::notice::AUR push skipped: installing $pkg from the rendered PKGBUILD"
+              cp -r "out/aur/$pkg" "$dir"
+            fi
+            chown -R builder: "$dir"
+            sudo -u builder bash -c "cd '$dir' && makepkg --printsrcinfo | diff - .SRCINFO && makepkg -si --noconfirm"
+            toppingctl --version | tee /dev/stderr | grep -Fx "toppingctl $VERSION"
+            test -f /usr/lib/udev/rules.d/70-toppingctl.rules
+            test -f "/usr/share/licenses/$pkg/LICENSE-MIT"
+            test -f "/usr/share/licenses/$pkg/LICENSE-APACHE"
+            pacman -Rns --noconfirm "$pkg"
+          done
+
+  check-apt:
+    name: Install from apt (${{ matrix.image }}, ${{ matrix.runner }})
+    needs: [render, apt]
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:stable', 'ubuntu:24.04']
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    container: ${{ matrix.image }}
+    env:
+      VERSION: ${{ needs.render.outputs.version }}
+    steps:
+      - name: apt-get install toppingctl from the signed repo
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates curl
+          keyring=/usr/share/keyrings/ktoulgaridis-archive-keyring.gpg
+          curl -fsSL https://ktoulgaridis.github.io/apt/ktoulgaridis-archive-keyring.gpg -o "$keyring"
+          echo "deb [signed-by=$keyring] https://ktoulgaridis.github.io/apt stable main" \
+            >/etc/apt/sources.list.d/ktoulgaridis.list
+          # Signature verified: the source is signed-by the keyring only, and any update
+          # error (a bad or missing signature included) fails the job.
+          # Pages takes a minute or two to serve a fresh push, so wait for the version.
+          for _ in $(seq 1 30); do
+            apt-get update --error-on=any
+            candidate="$(apt-cache policy toppingctl | awk '/Candidate:/ { print $2 }')"
+            [ "${candidate%-*}" = "$VERSION" ] && break
+            echo "candidate '$candidate', waiting for $VERSION"
+            sleep 20
+          done
+          apt-get install -y toppingctl
+          toppingctl --version | tee /dev/stderr | grep -Fx "toppingctl $VERSION"
+          test -f /usr/lib/udev/rules.d/70-toppingctl.rules
+          test -f /usr/share/doc/toppingctl/LICENSE-MIT
+          test -f /usr/share/doc/toppingctl/LICENSE-APACHE
+
+  check-brew:
+    name: Install from the Homebrew tap
+    needs: [render, brew]
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.render.outputs.version }}
+    steps:
+      - name: brew install ktoulgaridis/tap/toppingctl
+        run: |
+          brew install ktoulgaridis/tap/toppingctl
+          toppingctl --version | tee /dev/stderr | grep -Fx "toppingctl $VERSION"
+          brew test ktoulgaridis/tap/toppingctl
