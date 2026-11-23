@@ -184,16 +184,25 @@ impl std::error::Error for StoreError {
 /// ignored, as the XDG spec says). Otherwise it is `~/.config`, or
 /// `~/Library/Application Support` on macOS.
 pub fn state_path_from(xdg_config_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
-    Some(config_dir_from(xdg_config_home, home)?.join("state.json"))
+    Some(config_dir_from(xdg_config_home, home, None)?.join("state.json"))
 }
 
-/// toppingctl's config directory for these values of `XDG_CONFIG_HOME`
-/// and `HOME` (see [`state_path_from`]).
-pub fn config_dir_from(xdg_config_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
-    let base = match xdg_config_home.filter(|p| p.is_absolute()) {
-        Some(xdg) => xdg.to_path_buf(),
-        None if cfg!(target_os = "macos") => home?.join("Library").join("Application Support"),
-        None => home?.join(".config"),
+/// toppingctl's config directory for these values of `XDG_CONFIG_HOME`,
+/// `HOME` and (on Windows) `APPDATA`: as [`state_path_from`], and on
+/// Windows `%APPDATA%\toppingctl` when `XDG_CONFIG_HOME` is not set.
+pub fn config_dir_from(
+    xdg_config_home: Option<&Path>,
+    home: Option<&Path>,
+    appdata: Option<&Path>,
+) -> Option<PathBuf> {
+    let appdata = appdata.filter(|_| cfg!(windows));
+    let base = match (xdg_config_home.filter(|p| p.is_absolute()), appdata) {
+        (Some(xdg), _) => xdg.to_path_buf(),
+        (None, Some(appdata)) => appdata.to_path_buf(),
+        (None, None) if cfg!(target_os = "macos") => {
+            home?.join("Library").join("Application Support")
+        }
+        (None, None) => home?.join(".config"),
     };
     Some(base.join("toppingctl"))
 }
@@ -231,8 +240,9 @@ impl Store {
         let var = |name| std::env::var_os(name).filter(|v: &OsString| !v.is_empty());
         let xdg = var("XDG_CONFIG_HOME").map(PathBuf::from);
         let home = var("HOME").map(PathBuf::from);
-        state_path_from(xdg.as_deref(), home.as_deref())
-            .map(Store::at)
+        let appdata = var("APPDATA").map(PathBuf::from);
+        config_dir_from(xdg.as_deref(), home.as_deref(), appdata.as_deref())
+            .map(|dir| Store::at(dir.join("state.json")))
             .ok_or(StoreError::NoConfigDir)
     }
 

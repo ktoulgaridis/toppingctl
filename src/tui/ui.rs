@@ -22,8 +22,9 @@ use ratatui::Frame;
 use crate::rate::{format_khz, RATES};
 use crate::state::{Meters, Source};
 use crate::tui::app::{
-    App, BusControl, Control, InputControl, MeterId, MixControl, Modal, Name, Panel, Phase,
-    BUS_MAX_DB, MAX_GAIN_DB, MIX_FADER_MAX_DB, OUT_BUS, SOURCE_MENU,
+    App, BusControl, ComboItem, Control, InputControl, MeterId, MixControl, Modal, Name, NameThen,
+    Panel, Phase, BUS_MAX_DB, DOWNLOAD_OPTIONS, MAX_GAIN_DB, MIX_FADER_MAX_DB, OUT_BUS,
+    SOURCE_MENU,
 };
 use crate::tui::pixel::{chip_rgb, clear_under, PixelLayer, PixelSpot, PixelWidget, GAIN_TICKS};
 use crate::tui::theme::Theme;
@@ -41,6 +42,8 @@ pub const MAX_WIDTH: u16 = 320;
 pub const MAX_HEIGHT: u16 = 100;
 /// From this header width up, the header shows its long labels.
 const WIDE_HEADER: u16 = 128;
+/// The longest workspace name the header shows; longer ones end in "…".
+const HEADER_NAME_MAX: usize = 20;
 
 /// Something clickable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +62,20 @@ pub enum Hit {
     RateOption(usize),
     /// Item `i` of a source menu ([`SOURCE_MENU`]).
     SourceOption(usize),
+    /// The header's workspace combo, or its `l` hint: opens the combo.
+    Workspaces,
+    /// The header's `s` hint: saves the workspace.
+    SaveKey,
+    /// The header's `w` hint: opens the Download dialog.
+    Download,
+    /// Entry `i` of the workspace combo ([`App::combo_items`]).
+    ComboItem(usize),
+    /// Entry `i`'s Save button.
+    ComboSave(usize),
+    /// Entry `i`'s Delete button.
+    ComboDelete(usize),
+    /// Choice `i` of the Download dialog ([`DOWNLOAD_OPTIONS`]).
+    DownloadOption(usize),
     /// A modal's confirm button.
     Yes,
     /// A modal's cancel (or close) button.
@@ -209,6 +226,30 @@ fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
         Some(Modal::Help) => help(buf, area, t, &mut hits),
         Some(Modal::Rate { sel }) => rate_list(buf, area, t, app.sample_rate(), sel, &mut hits),
         Some(Modal::Source { bus, sel }) => source_menu(buf, area, app, bus, sel, &mut hits),
+        Some(Modal::Workspaces { sel }) => combo(buf, area, app, sel, &mut hits),
+        Some(Modal::WorkspaceName { then }) => name_prompt(buf, area, app, then, &mut hits),
+        Some(Modal::Overwrite { .. }) => confirm(
+            buf,
+            area,
+            t,
+            " Overwrite? ",
+            &[&format!("Overwrite workspace {:?}?", app.prompt())],
+            ("Overwrite", "Cancel"),
+            &mut hits,
+        ),
+        Some(Modal::RemoveWorkspace) => confirm(
+            buf,
+            area,
+            t,
+            " Remove workspace? ",
+            &[
+                &format!("Remove workspace {:?}?", app.prompt()),
+                "Its file is deleted.",
+            ],
+            ("Remove", "Cancel"),
+            &mut hits,
+        ),
+        Some(Modal::Download { sel }) => download(buf, area, t, sel, &mut hits),
         None => {}
     }
     hits
@@ -384,61 +425,83 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut Hit
     let sep = || Span::styled("  │  ", t.border());
     let key = |k: &'static str| Span::styled(k, t.focus());
     let lab = |s: &'static str| Span::styled(s, t.dim());
-    let val = |s: &'static str| Span::styled(s, t.heading());
-    // No workspaces yet (#17): a placeholder. The sample rate is read
-    // from the OS (crate::rate); a click on it opens the list.
+    // The workspace combo (a click opens it) and the sample rate, read
+    // from the OS (crate::rate; a click opens the list).
     let rate = Span::styled(format!("{} ▾", format_khz(app.sample_rate())), t.heading());
+    let name = Span::styled(header_name(app.workspace()), t.heading());
     let mut l1 = if wide {
-        vec![
-            lab("workspace  "),
-            val("default"),
-            lab(" ▾"),
-            sep(),
-            lab("sample rate  "),
-        ]
+        vec![lab("workspace  ")]
     } else {
-        vec![val("default"), lab(" ▾"), sep()]
+        vec![]
     };
+    let name_at = l1.len();
+    l1.extend([name, lab(" ▾"), sep()]);
+    if wide {
+        l1.push(lab("sample rate  "));
+    }
     let rate_at = l1.len();
     l1.extend([rate, Span::raw(" ")]);
-    let l1_w: u16 = l1.iter().map(|s| s.width() as u16).sum();
-    let rate_x = inner.right().saturating_sub(l1_w)
-        + l1[..rate_at].iter().map(|s| s.width() as u16).sum::<u16>();
+    let x1 = span_xs(inner, &l1);
+    let combo_w = (l1[name_at].width() + l1[name_at + 1].width()) as u16;
+    hits.push(Hit::Workspaces, Rect::new(x1[name_at], inner.y, combo_w, 1));
     hits.push(
         Hit::Rate,
-        Rect::new(rate_x, inner.y, l1[rate_at].width() as u16, 1),
+        Rect::new(x1[rate_at], inner.y, l1[rate_at].width() as u16, 1),
     );
     let (dot, status) = match app.phase() {
         Phase::Synced if app.rx_stale() => (t.warn(), " no meters "),
         Phase::Synced => (t.fg(Theme::OK), " synced "),
         Phase::Connecting => (t.dim(), " connecting "),
     };
-    let mut l2 = if wide {
-        vec![
-            key("s"),
-            lab(" save workspace"),
-            sep(),
-            key("l"),
-            lab(" load"),
-            sep(),
-            key("w"),
-            lab(" store to device"),
-        ]
+    let (save, store) = if wide {
+        (" save workspace", " store to device")
     } else {
-        vec![
-            key("s"),
-            lab(" save"),
-            sep(),
-            key("l"),
-            lab(" load"),
-            sep(),
-            key("w"),
-            lab(" store"),
-        ]
+        (" save", " store")
     };
+    let mut l2 = vec![
+        key("s"),
+        lab(save),
+        sep(),
+        key("l"),
+        lab(" workspaces"),
+        sep(),
+        key("w"),
+        lab(store),
+    ];
     l2.extend([sep(), Span::styled("●", dot), lab(status)]);
+    let x2 = span_xs(inner, &l2);
+    for (at, hit) in [(0, Hit::SaveKey), (3, Hit::Workspaces), (6, Hit::Download)] {
+        let w = (l2[at].width() + l2[at + 1].width()) as u16;
+        hits.push(hit, Rect::new(x2[at], inner.y + 1, w, 1));
+    }
     Line::from(l1).right_aligned().render(row(inner, 0), buf);
     Line::from(l2).right_aligned().render(row(inner, 1), buf);
+}
+
+/// The workspace's name for the header: "Default" when none is open,
+/// cut to [`HEADER_NAME_MAX`] with "…".
+fn header_name(name: Option<&str>) -> String {
+    let name = name.unwrap_or("Default");
+    if name.chars().count() > HEADER_NAME_MAX {
+        let cut: String = name.chars().take(HEADER_NAME_MAX - 1).collect();
+        format!("{cut}…")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The column each span starts at, with `spans` right-aligned in `area`.
+fn span_xs(area: Rect, spans: &[Span]) -> Vec<u16> {
+    let total: u16 = spans.iter().map(|s| s.width() as u16).sum();
+    let mut x = area.right().saturating_sub(total);
+    spans
+        .iter()
+        .map(|s| {
+            let at = x;
+            x += s.width() as u16;
+            at
+        })
+        .collect()
 }
 
 fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
@@ -1780,10 +1843,13 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ),
         ("a  b  c", "show mix A / B / C"),
         ("r", "sample rate list (sets it through PipeWire)"),
+        ("s", "save the workspace (on Default: save as…)"),
+        ("l", "workspaces: pick, save, delete, new, save as"),
+        ("w", "store to the device's memory (download)"),
         ("?", "this help"),
         ("q  Ctrl-C", "quit"),
         ("", ""),
-        ("click", "focus a strip; flip a switch; pick a mix"),
+        ("click", "focus a strip; flip a switch; pick a mix; s l w"),
         (
             "wheel",
             "turn a knob, move a fader (Shift ×10); next source",
@@ -1819,4 +1885,153 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         t.dim(),
     );
     hits.push(Hit::No, r);
+}
+
+/// A button-like label, highlighted when `on`.
+fn button_style(t: Theme, on: bool) -> Style {
+    if on {
+        t.focus().add_modifier(Modifier::REVERSED)
+    } else {
+        t.text()
+    }
+}
+
+/// The OK and Cancel buttons on the second-last row of `inner`.
+fn ok_cancel(buf: &mut Buffer, inner: Rect, t: Theme, hits: &mut HitMap) {
+    let ok = " [Enter] OK ";
+    let cancel = " [Esc] Cancel ";
+    let gap = 4;
+    let total = (ok.chars().count() + gap + cancel.chars().count()) as u16;
+    let y = inner.bottom().saturating_sub(2);
+    let x = inner.x + inner.width.saturating_sub(total) / 2;
+    let r = put(buf, inner, x, y, ok, button_style(t, true));
+    hits.push(Hit::Yes, r);
+    let r = put(buf, inner, r.right() + gap as u16, y, cancel, t.text());
+    hits.push(Hit::No, r);
+}
+
+/// The workspace combo: Default, each workspace with its Save and Delete,
+/// "New workspace…", "Save workspace as…" and auto-save; the open one
+/// marked, `sel` highlighted.
+fn combo(buf: &mut Buffer, area: Rect, app: &App, sel: usize, hits: &mut HitMap) {
+    let t = app.theme();
+    let items = app.combo_items();
+    let h = items.len() as u16 + 7;
+    let inner = modal_box(buf, area, t, " Workspaces ", (52, h), hits);
+    let name_w = usize::from(inner.width.saturating_sub(26));
+    for (i, item) in items.iter().enumerate() {
+        let y = inner.y + 1 + i as u16;
+        let mark = |open: bool| if open { "●" } else { " " };
+        let label = match *item {
+            ComboItem::Default => format!(" {} Default", mark(app.workspace().is_none())),
+            ComboItem::Named(k) => {
+                let name = &app.workspaces()[k];
+                let open = app.workspace() == Some(name.as_str());
+                format!(" {} {name}", mark(open))
+            }
+            ComboItem::New => "   New workspace…".to_string(),
+            ComboItem::SaveAs => "   Save workspace as…".to_string(),
+            ComboItem::AutoSave => {
+                let x = if app.auto_save() { "x" } else { " " };
+                format!(" [{x}] Auto-save")
+            }
+        };
+        let label = format!("{label:<name_w$}");
+        let r = put(
+            buf,
+            inner,
+            inner.x + 2,
+            y,
+            &label,
+            button_style(t, i == sel),
+        );
+        hits.push(Hit::ComboItem(i), r);
+        if let ComboItem::Named(_) = item {
+            let r = put(buf, inner, r.right() + 1, y, "[save]", t.dim());
+            hits.push(Hit::ComboSave(i), r);
+            let r = put(buf, inner, r.right() + 1, y, "[delete]", t.dim());
+            hits.push(Hit::ComboDelete(i), r);
+        }
+    }
+    let keys = "enter pick   s save   d delete";
+    put_centered(
+        buf,
+        inner,
+        inner.bottom().saturating_sub(3),
+        &[Span::styled(keys, t.dim())],
+        hits,
+    );
+    let close = " [Esc] close ";
+    let x = inner.x + inner.width.saturating_sub(close.chars().count() as u16) / 2;
+    let r = put(
+        buf,
+        inner,
+        x,
+        inner.bottom().saturating_sub(2),
+        close,
+        t.dim(),
+    );
+    hits.push(Hit::No, r);
+}
+
+/// The workspace name being typed, for `then`.
+fn name_prompt(buf: &mut Buffer, area: Rect, app: &App, then: NameThen, hits: &mut HitMap) {
+    let t = app.theme();
+    let title = match then {
+        NameThen::New => " New workspace ",
+        NameThen::SaveAs => " Save workspace as ",
+        NameThen::SaveAsAndStore => " Save as workspace and download ",
+    };
+    let inner = modal_box(buf, area, t, title, (52, 9), hits);
+    put(buf, inner, inner.x + 3, inner.y + 1, "Name:", t.text());
+    let field = format!(
+        " {}▏{} ",
+        app.prompt(),
+        " ".repeat(crate::workspace::NAME_MAX - app.prompt().chars().count())
+    );
+    put(
+        buf,
+        inner,
+        inner.x + 9,
+        inner.y + 1,
+        &field,
+        button_style(t, true),
+    );
+    put(
+        buf,
+        inner,
+        inner.x + 3,
+        inner.y + 3,
+        "No / \\ : * ? \" < > |, up to 32 characters",
+        t.dim(),
+    );
+    ok_cancel(buf, inner, t, hits);
+}
+
+/// The official app's Download dialog: its three choices, `sel` picked.
+fn download(buf: &mut Buffer, area: Rect, t: Theme, sel: usize, hits: &mut HitMap) {
+    let w = DOWNLOAD_OPTIONS
+        .iter()
+        .map(|o| o.chars().count())
+        .max()
+        .unwrap_or(0) as u16
+        + 14;
+    let h = DOWNLOAD_OPTIONS.len() as u16 + 8;
+    let inner = modal_box(buf, area, t, " Download ", (w, h), hits);
+    put(
+        buf,
+        inner,
+        inner.x + 3,
+        inner.y + 1,
+        "Store the settings in the device's own memory:",
+        t.text(),
+    );
+    for (i, option) in DOWNLOAD_OPTIONS.iter().enumerate() {
+        let dot = if i == sel { "(•)" } else { "( )" };
+        let line = format!(" {dot} {option} ");
+        let y = inner.y + 3 + i as u16;
+        let r = put(buf, inner, inner.x + 3, y, &line, button_style(t, i == sel));
+        hits.push(Hit::DownloadOption(i), r);
+    }
+    ok_cancel(buf, inner, t, hits);
 }

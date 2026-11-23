@@ -20,6 +20,7 @@ use ratatui::Terminal;
 
 use crate::conn::{Connection, Event, HidTransport, SendError};
 use crate::error::{message, Platform};
+use crate::frame::Frame;
 use crate::open::open_e2x2;
 use crate::rate;
 use crate::state::Meters;
@@ -28,6 +29,7 @@ use crate::tui::app::{Action, App};
 use crate::tui::pixel::PixelLayer;
 use crate::tui::theme::Theme;
 use crate::tui::ui::{self, HitMap};
+use crate::workspace::Workspaces;
 
 /// How long the loop waits for input before it redraws (~30 fps).
 const TICK: Duration = Duration::from_millis(33);
@@ -124,7 +126,9 @@ where
 /// print.
 pub fn run() -> Result<()> {
     let store = Store::from_env()?;
+    let workspaces = Workspaces::from_env()?;
     let mut app = App::new(Theme::from_env());
+    app.set_workspaces(workspaces.list(), workspaces.settings());
     let _guard = Guard::enter()?;
     // Before any event is read: does the terminal take kitty images?
     let mut pixels = PixelLayer::detect();
@@ -183,17 +187,8 @@ pub fn run() -> Result<()> {
             }
         }
         actions.extend(drain_device(&events, &mut app, &mut meters)?);
-        send_actions(&conn, &actions)?;
-        for action in actions {
+        for action in carry_out(&conn, &mut app, &store, &workspaces, actions)? {
             match action {
-                Action::Send(_) | Action::SendConfirmedPhantom(_) => {}
-                Action::Save => {
-                    let notice = store
-                        .save(app.state())
-                        .err()
-                        .map(|e| format!("could not save the state: {e}"));
-                    app.set_notice(notice);
-                }
                 Action::SetRate(rate) => {
                     // pw-metadata off the loop; a failure comes back as a
                     // notice.
@@ -205,8 +200,99 @@ pub fn run() -> Result<()> {
                     });
                 }
                 Action::Quit => return Ok(()),
+                _ => {}
             }
         }
+    }
+}
+
+/// ParameterSave: store the current state in the device's memory.
+pub const STORE_FRAME: Frame = Frame {
+    group: 0x1a,
+    param: 0x03,
+    value: 0,
+};
+
+/// Carries out `actions` in order: frames to the device (as
+/// [`send_actions`]), the saved state, the workspace files and their
+/// settings, and ParameterSave `1a 03` ([`Action::StoreToDevice`], skipped
+/// when a save before it failed). A file error becomes the app's notice; a
+/// workspace that can't be read changes nothing. Returns what is left for
+/// the event loop ([`Action::SetRate`], [`Action::Quit`]).
+pub fn carry_out(
+    conn: &Connection,
+    app: &mut App,
+    store: &Store,
+    workspaces: &Workspaces,
+    actions: Vec<Action>,
+) -> Result<Vec<Action>, SendError> {
+    let mut left = Vec::new();
+    let mut save_failed = false;
+    for action in actions {
+        match action {
+            Action::Send(f) => conn.send(f)?,
+            Action::SendConfirmedPhantom(f) => conn.send_confirmed_phantom(f)?,
+            Action::Save => {
+                let mut notice = store
+                    .save(app.state())
+                    .err()
+                    .map(|e| format!("could not save the state: {e}"));
+                if let (true, Some(name)) = (app.auto_save(), app.workspace()) {
+                    if let Err(e) = workspaces.save(name, app.state()) {
+                        notice = Some(format!("could not auto-save workspace {name:?}: {e}"));
+                    }
+                }
+                save_failed |= notice.is_some();
+                app.set_notice(notice);
+            }
+            Action::SaveWorkspace(name) => {
+                match workspaces.save(&name, app.state()) {
+                    Ok(()) => app.set_notice(Some(format!("saved workspace {name:?}"))),
+                    Err(e) => {
+                        save_failed = true;
+                        // Back to what is on disk.
+                        app.set_workspaces(workspaces.list(), workspaces.settings());
+                        app.set_notice(Some(format!("could not save workspace {name:?}: {e}")));
+                        continue;
+                    }
+                }
+                sync_workspaces(app, workspaces);
+            }
+            Action::LoadWorkspace(name) => match workspaces.load(&name) {
+                Ok(state) => {
+                    app.set_notice(None);
+                    let more = app.load_workspace(name.clone(), state);
+                    left.extend(carry_out(conn, app, store, workspaces, more)?);
+                    sync_workspaces(app, workspaces);
+                    if app.notice().is_none() {
+                        app.set_notice(Some(format!("loaded workspace {name:?}")));
+                    }
+                }
+                Err(e) => app.set_notice(Some(format!(
+                    "could not load workspace {name:?} ({e}); nothing changed"
+                ))),
+            },
+            Action::DeleteWorkspace(name) => {
+                if let Err(e) = workspaces.delete(&name) {
+                    app.set_notice(Some(format!("could not remove workspace {name:?}: {e}")));
+                }
+                sync_workspaces(app, workspaces);
+            }
+            Action::SaveWorkspaceSettings => sync_workspaces(app, workspaces),
+            Action::StoreToDevice if save_failed => {}
+            Action::StoreToDevice => conn.send(STORE_FRAME)?,
+            Action::SetRate(_) | Action::Quit => left.push(action),
+        }
+    }
+    Ok(left)
+}
+
+/// Takes the workspace list from disk and saves the app's settings (the
+/// open workspace, auto-save); a failure becomes the notice.
+fn sync_workspaces(app: &mut App, workspaces: &Workspaces) {
+    app.set_workspaces(workspaces.list(), app.settings());
+    if let Err(e) = workspaces.save_settings(&app.settings()) {
+        app.set_notice(Some(format!("could not save the workspace settings: {e}")));
     }
 }
 
@@ -241,7 +327,7 @@ pub fn send_actions(conn: &Connection, actions: &[Action]) -> Result<(), SendErr
         match *action {
             Action::Send(f) => conn.send(f)?,
             Action::SendConfirmedPhantom(f) => conn.send_confirmed_phantom(f)?,
-            Action::Save | Action::SetRate(_) | Action::Quit => {}
+            _ => {}
         }
     }
     Ok(())

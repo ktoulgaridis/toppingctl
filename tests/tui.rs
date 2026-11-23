@@ -304,7 +304,7 @@ fn header_compact_and_full() {
         "fw 1.13",
         "▾",
         "s save",
-        "l load",
+        "l workspaces",
         "w store",
         "● synced",
     ] {
@@ -318,7 +318,7 @@ fn header_compact_and_full() {
         "workspace",
         "sample rate",
         "s save workspace",
-        "l load",
+        "l workspaces",
         "w store to device",
         "● synced",
     ] {
