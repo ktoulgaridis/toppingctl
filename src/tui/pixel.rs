@@ -1,6 +1,6 @@
 //! Pixel widgets for terminals with the kitty graphics protocol (kitty,
-//! Ghostty): knobs, faders, level meters, clip lights and chips (pills, mix
-//! tabs, strip titles), drawn anti-aliased and placed directly with kitty
+//! Ghostty): knobs, faders, level meters, clip lights and chips (button
+//! faces, the active mix tab), drawn anti-aliased and placed directly with kitty
 //! graphics commands. The look is flat and follows the widget code of
 //! `docs/design/mockup-flat.py` (#41), scaled from its 12×24 px cell to the
 //! terminal's: LED-ladder meters, flat knobs, square button faces.

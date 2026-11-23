@@ -35,12 +35,11 @@ pub fn meter_frac(db: f64) -> f64 {
     ((db + METER_RANGE_DB) / METER_RANGE_DB).clamp(0.0, 1.0)
 }
 
-/// A meter. [`Meter::clip`] with `Some` reserves the top row for the clip
-/// light.
+/// A meter, one column wide in any area (one meter width everywhere).
+/// [`Meter::clip`] with `Some` reserves the top row for the clip light.
 #[derive(Clone, Debug)]
 pub struct Meter {
     db: f64,
-    width: u16,
     clip: Option<bool>,
     theme: Theme,
 }
@@ -49,17 +48,9 @@ impl Meter {
     pub fn new(db: f64, theme: Theme) -> Self {
         Meter {
             db,
-            width: 1,
             clip: None,
             theme,
         }
-    }
-
-    /// The columns the meter is given (1 or 2); it draws in the first:
-    /// one meter width everywhere.
-    pub fn width(mut self, width: u16) -> Self {
-        self.width = width.max(1);
-        self
     }
 
     /// A clip light on top: `Some(lit)`.

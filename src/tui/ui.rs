@@ -699,7 +699,7 @@ fn meter(
     t: Theme,
     hits: &mut HitMap,
 ) {
-    Meter::new(db, t).width(width).clip(clip).render(area, buf);
+    Meter::new(db, t).clip(clip).render(area, buf);
     let mut bar = Rect {
         width: width.min(area.width),
         ..area
@@ -1243,9 +1243,8 @@ fn draw_mix_strip(
     let d = dial_rows(r);
     let rows = switch_rows(r);
     let (gap, fader_h) = mix_group(r, d, rows);
-    let g = r;
-    pan_dials(buf, g, app, strip, mix.pans(strip), d, hits);
-    let (link_y, value_y) = (g.y + d + gap, g.y + d + 2 * gap + 1);
+    pan_dials(buf, r, app, strip, mix.pans(strip), d, hits);
+    let (link_y, value_y) = (r.y + d + gap, r.y + d + 2 * gap + 1);
     let lc = mix_ctl(strip, MixControl::Link);
     // IN 1+2's LINK greys out while off, as in the design.
     let kind = if strip == 0 {
@@ -1255,7 +1254,7 @@ fn draw_mix_strip(
     };
     let rects = put_centered(
         buf,
-        g,
+        r,
         link_y,
         &[button("LINK", BUTTON_W, linked, kind, focus == lc, t)],
         hits,
@@ -1267,13 +1266,13 @@ fn draw_mix_strip(
         s => MeterId::Playback(s - 1, c),
     });
     let cm = ids.map(|id| ChannelMeter::of(app, meters, id));
-    let body = Rect::new(g.x, value_y + 1, g.width, fader_h);
-    let halves = columns(row(g, value_y - g.y), 2);
+    let body = Rect::new(r.x, value_y + 1, r.width, fader_h);
+    let halves = columns(row(r, value_y - r.y), 2);
     if linked {
         let c = chans[0];
         put_centered(
             buf,
-            g,
+            r,
             value_y,
             &[value_span(c.fader_db, c.mute, t, true)],
             hits,
@@ -1291,7 +1290,7 @@ fn draw_mix_strip(
         );
         hits.push(Hit::Control(fc), f);
         let on = [c.phase, c.solo, c.mute];
-        strip_switches(buf, g, app, strip, 0, on, rows, false, hits);
+        strip_switches(buf, r, app, strip, 0, on, rows, false, hits);
         return;
     }
     for (h, c) in halves.iter().zip(chans) {
@@ -1319,8 +1318,8 @@ fn draw_mix_strip(
     }
     for (k, (h, c)) in halves.iter().zip(chans).enumerate() {
         let col = Rect {
-            y: g.y,
-            height: g.height,
+            y: r.y,
+            height: r.height,
             ..*h
         };
         let on = [c.phase, c.solo, c.mute];

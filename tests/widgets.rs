@@ -819,8 +819,8 @@ fn text_meter_led_ladder() {
     let r = rows(&render(Meter::new(-30.0, Theme::color()), 1, 10));
     assert_eq!(r[5..], ["▆"; 5], "{r:?}");
     assert!(r[..5].iter().all(|l| l == "▕"), "{r:?}");
-    // One column, whatever width is asked for: one meter width.
-    let r = rows(&render(Meter::new(0.0, Theme::color()).width(2), 2, 4));
+    // One column, however wide its area: one meter width.
+    let r = rows(&render(Meter::new(0.0, Theme::color()), 2, 4));
     assert!(r.iter().all(|l| l == "▆ "), "{r:?}");
     // Silence: an empty track; the clip light a square on top.
     let r = rows(&render(Meter::new(-96.0, Theme::color()), 1, 4));
