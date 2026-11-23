@@ -13,7 +13,7 @@
 //! labels of those drawn under the text (z=-1: pills, tabs, chips and the
 //! faders' scales). Text stays real terminal text.
 //!
-//! - Each image is sent once (`a=t`, uncompressed RGBA, in ≤4096-byte base64
+//! - Each image is sent once (`a=t`, zlib RGBA, in ≤4096-byte base64
 //!   chunks) under its own id and cached by what it shows (kind, size in
 //!   cells, quantised value); placing it is a short `a=p` command.
 //! - A placement is tied to its cells (one placement id per cell area). A
@@ -560,7 +560,7 @@ impl PixelLayer {
         p
     }
 
-    /// Queues `img` under id `id` (uncompressed RGBA, chunked); returns
+    /// Queues `img` under id `id` (zlib RGBA, chunked); returns
     /// the base64 bytes queued.
     fn transmit(&mut self, id: u32, img: &RgbaImage) -> usize {
         kitty::write_transmit(&mut self.out, id, img.width(), img.height(), img.as_raw())

@@ -318,3 +318,17 @@ fn cell_size_from_window_size() {
     // Fewer pixels than cells: no usable size.
     assert_eq!(cell_size(80, 24, 40, 480), None);
 }
+
+/// WezTerm and Konsole are not asked (their kitty support is partial):
+/// they keep the text widgets, as before.
+#[test]
+fn partial_kitty_terminals_fall_back() {
+    use std::ffi::OsStr;
+    use toppingctl::tui::kitty::partial_kitty;
+    let set = Some(OsStr::new("1"));
+    let empty = Some(OsStr::new(""));
+    assert!(partial_kitty(set, None));
+    assert!(partial_kitty(None, set));
+    assert!(!partial_kitty(None, None));
+    assert!(!partial_kitty(empty, empty));
+}
