@@ -27,6 +27,7 @@ use crate::rate;
 use crate::state::Meters;
 use crate::sync::{connect, Store, SyncError};
 use crate::tui::app::{Action, App};
+use crate::tui::kitty;
 use crate::tui::pixel::PixelLayer;
 use crate::tui::theme::Theme;
 use crate::tui::ui::{self, HitMap};
@@ -182,7 +183,7 @@ pub fn run() -> Result<()> {
             if let (true, Some(layer)) = (resized, pixels.as_mut()) {
                 // Free the images before the next text frame, and take the
                 // new cell size from the terminal (TIOCGWINSZ).
-                layer.begin_resize(Instant::now(), cell_size());
+                layer.begin_resize(Instant::now(), kitty::window_cell_size());
                 let mut out = io::stdout();
                 out.write_all(layer.take_output().as_bytes())?;
                 out.flush()?;
@@ -335,14 +336,6 @@ pub fn send_actions(conn: &Connection, actions: &[Action]) -> Result<(), SendErr
         }
     }
     Ok(())
-}
-
-/// The terminal's cell size in pixels, from its window size (TIOCGWINSZ),
-/// when it reports one.
-fn cell_size() -> Option<(u16, u16)> {
-    let w = terminal::window_size().ok()?;
-    (w.columns > 0 && w.rows > 0 && w.width > 0 && w.height > 0)
-        .then(|| (w.width / w.columns, w.height / w.rows))
 }
 
 /// Counts anything the device sent, its idle frames included, as a sign of

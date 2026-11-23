@@ -2,6 +2,7 @@
 //! it, [`run`] owns the terminal and the event loop.
 
 pub mod app;
+pub mod kitty;
 pub mod pixel;
 pub mod run;
 pub mod theme;

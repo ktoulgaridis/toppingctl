@@ -32,16 +32,14 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use image::RgbaImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color as TermColor;
 use ratatui::style::Modifier;
-use ratatui_image::picker::{Picker, ProtocolType};
 
+use crate::tui::kitty;
 use crate::tui::theme::Theme;
 use crate::tui::widgets::dial::{START_DEG, SWEEP_DEG};
 use crate::tui::widgets::fader::{fader_frac, fader_row, Fader};
@@ -97,8 +95,6 @@ const KNOB_STEPS: f64 = 200.0;
 /// The most image data (base64 bytes) sent in one frame. One image always
 /// goes, however big.
 pub const TRANSMIT_BUDGET: usize = 256 * 1024;
-/// The most base64 bytes in one kitty escape (the protocol's limit).
-const CHUNK: usize = 4096;
 
 /// Whether `TOPPINGCTL_PIXELS` (its value) allows pixel widgets: anything
 /// but `0`.
@@ -411,13 +407,7 @@ impl PixelLayer {
         if !pixels_wanted(std::env::var_os("TOPPINGCTL_PIXELS").as_deref()) {
             return None;
         }
-        let picker = Picker::from_query_stdio().ok()?;
-        (picker.protocol_type() == ProtocolType::Kitty).then(|| PixelLayer::new(picker))
-    }
-
-    /// A layer with `picker`'s cell size (tests use a halfblocks picker).
-    pub fn new(picker: Picker) -> PixelLayer {
-        PixelLayer::with_cell_size(picker.font_size())
+        kitty::detect().map(PixelLayer::with_cell_size)
     }
 
     /// A layer drawing `cell`-sized cells (width, height in pixels).
@@ -570,34 +560,10 @@ impl PixelLayer {
         p
     }
 
-    /// Queues `img` under id `id` (zlib RGBA, chunked); returns the base64
-    /// bytes queued.
+    /// Queues `img` under id `id` (zlib RGBA, chunked); returns
+    /// the base64 bytes queued.
     fn transmit(&mut self, id: u32, img: &RgbaImage) -> usize {
-        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-        let _ = z.write_all(img.as_raw());
-        let data = z.finish().unwrap_or_default();
-        let b64 = base64_simd::STANDARD.encode_to_string(&data);
-        let chunks: Vec<&str> = b64
-            .as_bytes()
-            .chunks(CHUNK)
-            .map(|c| std::str::from_utf8(c).unwrap_or(""))
-            .collect();
-        let n = chunks.len().max(1);
-        for i in 0..n {
-            let chunk = chunks.get(i).copied().unwrap_or("");
-            let m = u8::from(i + 1 < n);
-            if i == 0 {
-                let _ = write!(
-                    self.out,
-                    "\x1b_Ga=t,i={id},f=32,o=z,s={},v={},q=2,m={m};{chunk}\x1b\\",
-                    img.width(),
-                    img.height()
-                );
-            } else {
-                let _ = write!(self.out, "\x1b_Gm={m};{chunk}\x1b\\");
-            }
-        }
-        b64.len()
+        kitty::write_transmit(&mut self.out, id, img.width(), img.height(), img.as_raw())
     }
 
     /// Queues placing image `id` over `r`, under the text with `z` < 0.
@@ -611,6 +577,61 @@ impl PixelLayer {
             r.width,
             r.height
         );
+    }
+}
+
+// ------------------------------------------------------------ images
+
+/// A pixel's red, green, blue and alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rgba(pub [u8; 4]);
+
+/// A drawn widget: RGBA pixels, row by row (what kitty's `f=32` takes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RgbaImage {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl RgbaImage {
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// (width, height).
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// The pixel at (`x`, `y`). Panics outside the image.
+    pub fn get_pixel(&self, x: u32, y: u32) -> Rgba {
+        assert!(
+            x < self.width && y < self.height,
+            "pixel ({x}, {y}) outside a {}×{} image",
+            self.width,
+            self.height
+        );
+        let i = (y as usize * self.width as usize + x as usize) * 4;
+        let mut p = [0; 4];
+        p.copy_from_slice(&self.data[i..i + 4]);
+        Rgba(p)
+    }
+
+    /// Every pixel with its (x, y), row by row.
+    pub fn enumerate_pixels(&self) -> impl Iterator<Item = (u32, u32, Rgba)> + '_ {
+        (0..self.height)
+            .flat_map(move |y| (0..self.width).map(move |x| (x, y)))
+            .map(|(x, y)| (x, y, self.get_pixel(x, y)))
+    }
+
+    /// The pixel bytes, RGBA row by row.
+    pub fn as_raw(&self) -> &[u8] {
+        &self.data
     }
 }
 
@@ -805,16 +826,20 @@ impl Canvas {
     }
 
     fn into_image(self) -> RgbaImage {
-        let mut out = RgbaImage::new(self.w as u32, self.h as u32);
-        for (px, p) in out.pixels_mut().zip(self.p) {
-            px.0 = [
+        let mut data = Vec::with_capacity(self.p.len() * 4);
+        for p in self.p {
+            data.extend([
                 p[0].clamp(0.0, 255.0) as u8,
                 p[1].clamp(0.0, 255.0) as u8,
                 p[2].clamp(0.0, 255.0) as u8,
                 (p[3] * 255.0).clamp(0.0, 255.0) as u8,
-            ];
+            ]);
         }
-        out
+        RgbaImage {
+            width: self.w as u32,
+            height: self.h as u32,
+            data,
+        }
     }
 }
 

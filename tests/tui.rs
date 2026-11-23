@@ -1219,12 +1219,9 @@ fn zero_db_reads_minus_zero() {
 // ---------------------------------------------------------- pixel widgets
 
 fn kitty_layer() -> toppingctl::tui::pixel::PixelLayer {
-    use ratatui_image::picker::{Picker, ProtocolType};
-    // A kitty picker with a fixed cell size (10×20), without asking a
+    // A kitty layer with a fixed cell size (10×20), without asking a
     // terminal.
-    let mut picker = Picker::halfblocks();
-    picker.set_protocol_type(ProtocolType::Kitty);
-    toppingctl::tui::pixel::PixelLayer::new(picker)
+    toppingctl::tui::pixel::PixelLayer::with_cell_size((10, 20))
 }
 
 /// Draws with the pixel layer; returns the buffer, the hit map and the
