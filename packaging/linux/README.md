@@ -11,7 +11,8 @@ Requires systemd-logind (standard on most desktop distributions).
 
 ## Install
 
-From the repository root:
+From the repository root, or from the unpacked release archive (Linux archives
+include `packaging/linux/`):
 
 ```sh
 sudo install -m 0644 packaging/linux/70-toppingctl.rules /etc/udev/rules.d/
