@@ -42,8 +42,7 @@ sudo apt-get install toppingctl
 ```
 
 The key's fingerprint is `91A86B2085944347FA9C7F92F29E31E08B5B2DCE`
-(`gpg --show-keys /etc/apt/keyrings/toppingctl.gpg`).
-Each release also has the `.deb` files attached.
+(`gpg --show-keys /etc/apt/keyrings/toppingctl.gpg`). Each release also has the `.deb` files attached.
 
 **Homebrew (macOS, Linux):**
 

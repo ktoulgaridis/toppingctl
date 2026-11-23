@@ -29,6 +29,9 @@ the udev rule at `/usr/lib/udev/rules.d/70-toppingctl.rules` (from
 
    Nothing is committed or pushed unless a file changed, so re-running the workflow
    ("Re-run jobs") for the same version is a no-op. Pre-releases are not published.
+   AUR and the tap never go backwards: re-running an older release's run (or publishing
+   a patch for an older line) leaves a newer published version in place, with a notice,
+   and the install checks then report that newer version as a mismatch.
 
 Rendering by hand:
 
