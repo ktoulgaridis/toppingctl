@@ -105,9 +105,16 @@ jobs:
           # (SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4).
           echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
             >"$ssh_dir/known_hosts"
+          # True when version $1 is newer than $2.
+          newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
           export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
           for pkg in toppingctl-bin toppingctl; do
             git clone "ssh://aur@aur.archlinux.org/$pkg.git" "aur-$pkg"
+            cur="$(sed -n 's/^pkgver=//p' "aur-$pkg/PKGBUILD" 2>/dev/null || true)"
+            if [ -n "$cur" ] && newer "$cur" "$VERSION"; then
+              echo "::notice::$pkg: AUR has $cur, newer than $VERSION: not pushing"
+              continue
+            fi
             cp "out/aur/$pkg/PKGBUILD" "out/aur/$pkg/.SRCINFO" "aur-$pkg/"
             git -C "aur-$pkg" add PKGBUILD .SRCINFO
             if git -C "aur-$pkg" diff --cached --quiet; then
@@ -137,7 +144,14 @@ jobs:
 
       - name: Stage Formula/toppingctl.rb
         run: |
+          # True when version $1 is newer than $2.
+          newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
           git clone https://github.com/ktoulgaridis/homebrew-tap.git tap
+          cur="$(sed -n 's/^  version "\(.*\)"$/\1/p' tap/Formula/toppingctl.rb 2>/dev/null || true)"
+          if [ -n "$cur" ] && newer "$cur" "$VERSION"; then
+            echo "::notice::the tap has $cur, newer than $VERSION: not committing"
+            exit 0
+          fi
           mkdir -p tap/Formula
           cp out/brew/toppingctl.rb tap/Formula/toppingctl.rb
           git -C tap add Formula/toppingctl.rb
@@ -150,6 +164,10 @@ jobs:
           if git diff --cached --quiet; then
             echo "tap: already at $VERSION"
             exit 0
+          fi
+          if [ -z "$PACKAGES_TOKEN" ]; then
+            echo "::error::PACKAGES_TOKEN is not set (release environment)"
+            exit 1
           fi
           git -c user.name="Kyriakos Toulgaridis" \
             -c user.email="35013508+ktoulgaridis@users.noreply.github.com" \
@@ -210,6 +228,10 @@ jobs:
           if git diff --cached --quiet; then
             echo "apt repo: already has $VERSION"
             exit 0
+          fi
+          if [ -z "$PACKAGES_TOKEN" ]; then
+            echo "::error::PACKAGES_TOKEN is not set (release environment)"
+            exit 1
           fi
           git -c user.name="Kyriakos Toulgaridis" \
             -c user.email="35013508+ktoulgaridis@users.noreply.github.com" \

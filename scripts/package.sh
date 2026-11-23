@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Release packaging for toppingctl (#31). Called by .github/workflows/release.yml;
-# tests/package.rs runs it locally.
+# Release packaging for toppingctl (#31, #22). Called by .github/workflows/release.yml
+# and packages.yml; tests/package.rs and tests/packaging.rs run it locally.
 #
 #   scripts/package.sh archive <tag> <target> <bin-dir> <out-dir>
 #       Writes <out-dir>/toppingctl-<tag>-<target>.tar.gz with the toppingctl binary

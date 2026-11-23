@@ -327,6 +327,8 @@ fn render_rejects_a_tag_that_is_not_a_plain_version() {
             &[],
         );
         assert!(!out.status.success(), "tag {tag:?} must be rejected");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("bad tag"), "tag {tag:?}: {err}");
     }
 }
 
@@ -440,6 +442,11 @@ fn apt_repo_refuses_to_replace_a_published_deb() {
         &[("APT_SIGNING_KEY", "ABCD")],
     );
     assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("already published with other contents"),
+        "{err}"
+    );
     assert_eq!(
         fs::read_to_string(pool.join("toppingctl_9.9.9-1_amd64.deb")).unwrap(),
         "old bytes"
@@ -627,6 +634,35 @@ fn packages_workflow_publishes_idempotently() {
     assert!(text.contains("scripts/package.sh render brew"));
     assert!(text.contains("scripts/package.sh apt-repo"));
     assert!(text.contains("concurrency:"));
+}
+
+/// Re-running an older release's workflow, or publishing a patch for an older line,
+/// must not push that version over a newer one in AUR or the tap.
+#[test]
+fn packages_workflow_never_downgrades_aur_or_the_tap() {
+    let text = read(".github/workflows/packages.yml");
+    for secret in ["AUR_SSH_KEY", "PACKAGES_TOKEN"] {
+        let r = format!("secrets.{secret}");
+        let (job, body) = jobs(&text)
+            .into_iter()
+            .find(|(_, b)| b.contains(&r) && !b.contains("apt-repo"))
+            .unwrap();
+        assert!(
+            body.contains("sort -V") && body.contains("newer than"),
+            "job {job} must skip when the published version is newer"
+        );
+    }
+}
+
+#[test]
+fn packages_workflow_fails_clearly_without_the_token() {
+    let text = read(".github/workflows/packages.yml");
+    assert_eq!(
+        text.matches("-z \"$PACKAGES_TOKEN\"").count(),
+        2,
+        "both pushes check the token first"
+    );
+    assert!(text.contains("::error::PACKAGES_TOKEN is not set"));
 }
 
 // ---- docs ------------------------------------------------------------------
