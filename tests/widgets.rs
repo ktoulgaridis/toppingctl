@@ -407,9 +407,9 @@ fn pills() {
 // The rules of docs/design/mockup-flat.py, at its 12×24 cell.
 
 use toppingctl::tui::pixel::{
-    chip_image, clip_image, fader_image, knob_image, meter_image, pill_image, PX_ACCENT, PX_AMBER,
-    PX_ARC_OFF, PX_BG, PX_CHIP, PX_CHIP_EDGE, PX_CLIP_OFF, PX_DIM, PX_FADER_CAP, PX_FAINT,
-    PX_GREEN, PX_KNOB_BODY, PX_KNOB_BODY_DIM, PX_POINTER, PX_RED,
+    button_image, chip_image, clip_image, fader_image, knob_image, meter_image, PX_ACCENT,
+    PX_AMBER, PX_ARC_OFF, PX_BG, PX_CHIP, PX_CHIP_EDGE, PX_CLIP_OFF, PX_DIM, PX_FADER_CAP,
+    PX_FAINT, PX_GREEN, PX_KNOB_BODY, PX_KNOB_BODY_DIM, PX_POINTER, PX_RED,
 };
 use toppingctl::tui::widgets::fader::fader_row;
 
@@ -623,25 +623,15 @@ fn run(img: &image::RgbaImage, y: u32) -> (u32, u32) {
     (xs[0], *xs.last().unwrap())
 }
 
-/// A button: a flat square face inset in its cells, centred on its label
-/// (the mockup's `pill()`), so a label with odd parity still sits exactly
-/// centred. Unlit: the chip face with a 1-px outline. Lit: a solid fill.
+/// A button: a flat square face inset in its cells, on its cell box
+/// whatever its label (#47), so faces of one width line up. Unlit: the chip
+/// face with a 1-px outline. Lit: a solid fill.
 #[test]
-fn pixel_pill_centred_on_label() {
-    // "LINK" in 7 cells sits at cells 1..5: its centre is 3 cells in.
-    let lit = pill_image(7, 1, CELL, PX_ACCENT, (1, 4));
-    assert_eq!((lit.width(), lit.height()), (84, 24));
+fn pixel_button_face_on_cell_box() {
+    let lit = button_image(6, 1, CELL, PX_ACCENT, None, false);
+    assert_eq!((lit.width(), lit.height()), (72, 24));
     let (l, r) = run(&lit, 12);
-    assert_eq!(
-        l + r + 1,
-        2 * 3 * 12,
-        "face centre == label centre: {l}..{r}"
-    );
-    assert_eq!(r + 1 - l, 6 * 12, "the face is one cell under the box");
-    // "MON" in 7 sits at 2..5: centred on the box.
-    let mon = pill_image(7, 1, CELL, PX_ACCENT, (2, 3));
-    let (l, r) = run(&mon, 12);
-    assert_eq!(l + r + 1, 84);
+    assert_eq!((l, r), (3, 68), "inset 3 px each side");
     // 4 px of margin top and bottom, so stacked buttons have gaps.
     for y in (0..4).chain(20..24) {
         assert_eq!(lit.get_pixel(36, y).0[3], 0, "margin at {y}");
@@ -650,19 +640,19 @@ fn pixel_pill_centred_on_label() {
         assert!(is(lit.get_pixel(36, y).0, PX_ACCENT, 0), "lit face at {y}");
     }
     // Square, solid: the face's corner is the face's colour.
-    assert!(is(lit.get_pixel(0, 4).0, PX_ACCENT, 0));
-    assert!(is(lit.get_pixel(71, 19).0, PX_ACCENT, 0));
+    assert!(is(lit.get_pixel(3, 4).0, PX_ACCENT, 0));
+    assert!(is(lit.get_pixel(68, 19).0, PX_ACCENT, 0));
     // Unlit: the chip face inside a 1-px outline.
-    let off = pill_image(7, 1, CELL, PX_CHIP, (2, 3));
-    assert!(is(off.get_pixel(42, 12).0, PX_CHIP, 0));
-    let edge = off.get_pixel(6, 12).0;
-    let inner = off.get_pixel(8, 12).0;
+    let off = button_image(6, 1, CELL, PX_CHIP, None, false);
+    assert!(is(off.get_pixel(36, 12).0, PX_CHIP, 0));
+    let edge = off.get_pixel(3, 12).0;
+    let inner = off.get_pixel(5, 12).0;
     assert!(is(inner, PX_CHIP, 0), "{inner:?}");
     assert!(edge != inner && edge[0] > inner[0], "outline {edge:?}");
     assert!(edge[0] <= PX_CHIP_EDGE.0, "outline {edge:?}");
-    assert_eq!(off.get_pixel(4, 12).0[3], 0, "no glow");
+    assert_eq!(off.get_pixel(1, 12).0[3], 0, "no glow");
     // Three rows (PHONE): the face fills them, inset 4 px.
-    let tall = pill_image(9, 3, CELL, PX_ACCENT, (1, 7));
+    let tall = button_image(9, 3, CELL, PX_ACCENT, None, false);
     assert_eq!(tall.get_pixel(54, 3).0[3], 0);
     assert!(is(tall.get_pixel(54, 4).0, PX_ACCENT, 0));
     assert!(is(tall.get_pixel(54, 67).0, PX_ACCENT, 0));

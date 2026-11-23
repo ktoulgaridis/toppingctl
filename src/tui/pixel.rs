@@ -39,6 +39,7 @@ use image::RgbaImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color as TermColor;
+use ratatui::style::Modifier;
 use ratatui_image::picker::{Picker, ProtocolType};
 
 use crate::tui::theme::Theme;
@@ -65,6 +66,12 @@ pub const PX_ARC_OFF: Rgb = (48, 53, 76);
 pub const PX_POINTER: Rgb = (236, 238, 248);
 /// The fader's cap.
 pub const PX_FADER_CAP: Rgb = (210, 214, 230);
+/// A focused knob's unlit track: the accent, dimmed.
+pub const PX_ACCENT_DIM: Rgb = (81, 102, 153);
+/// A label drawn in a lit face (the text form's [`Theme::PILL_ON_FG`]).
+pub const PX_LABEL_ON: Rgb = (20, 22, 28);
+/// The focus outline's width, in pixels.
+pub const FOCUS_PX: f32 = 2.0;
 /// An unlit clip light.
 pub const PX_CLIP_OFF: Rgb = (58, 42, 54);
 
@@ -108,24 +115,37 @@ pub enum PixelWidget {
         dimmed: bool,
         /// Lit from the top (a pan), not from the minimum.
         bipolar: bool,
+        /// The focus outline, and the track in accent-dim.
+        focused: bool,
     },
     /// A fader at `db` on a scale topping out at `max_db`; with `labels`
     /// its first and last 3 columns are the scale's text.
-    Fader { db: f64, max_db: f64, labels: bool },
+    Fader {
+        db: f64,
+        max_db: f64,
+        labels: bool,
+        /// The focus outline, and the cap in the accent.
+        focused: bool,
+    },
     /// A level meter's bar at `db`.
     Meter { db: f64 },
     /// A clip light.
     ClipLight { lit: bool },
-    /// A flat square face under a label, lit in `rgb` (unlit: [`PX_CHIP`],
-    /// outlined). A button gives its `label`'s first cell and width in the
-    /// rect, and the face centres on it (the mockup's `pill()`); without,
-    /// the face is inset in its cells (the active mix tab).
+    /// A flat square face inset in its cells, lit in `rgb` (unlit:
+    /// [`PX_CHIP`], outlined): a button, or the active mix tab. Every face
+    /// sits on its cell box, so a column of buttons lines up. A `label`
+    /// that can't be centred in whole cells is drawn in the face instead
+    /// of as text, exactly centred.
     Chip {
         rgb: (u8, u8, u8),
-        label: Option<(u16, u16)>,
+        label: Option<FaceLabel>,
+        focused: bool,
     },
     /// A meter's flat box, under its bar, clip light and labels.
     Inset,
+    /// The focus outline alone, around a text widget (a source menu, a
+    /// strip's name).
+    Focus,
 }
 
 impl PixelWidget {
@@ -134,7 +154,7 @@ impl PixelWidget {
     pub fn z(&self) -> i32 {
         match self {
             PixelWidget::Inset => -2,
-            PixelWidget::Chip { .. } | PixelWidget::Fader { .. } => -1,
+            PixelWidget::Chip { .. } | PixelWidget::Fader { .. } | PixelWidget::Focus => -1,
             _ => 0,
         }
     }
@@ -151,12 +171,51 @@ pub struct PixelSpot {
 /// quantised values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Key {
-    Knob(u16, u16, Option<u16>, bool, bool),
-    Fader(u16, u16, u16, i16, bool),
+    Knob(u16, u16, Option<u16>, bool, bool, bool),
+    Fader(u16, u16, u16, i16, bool, bool),
     Meter(u16, u16, u16),
     Clip(u16, u16, bool),
-    Chip(u16, u16, (u8, u8, u8), Option<(u16, u16)>),
+    Chip(u16, u16, (u8, u8, u8), Option<FaceLabel>, bool),
     Inset(u16, u16),
+    Focus(u16, u16),
+}
+
+/// A button label drawn in its face: up to four characters of the built-in
+/// bitmap font (and Ø, a ring and a slash), in `rgb`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FaceLabel {
+    chars: [char; 4],
+    len: u8,
+    rgb: Rgb,
+}
+
+impl FaceLabel {
+    /// `text` in `rgb`, when every character can be drawn and there are at
+    /// most four.
+    pub fn new(text: &str, rgb: Rgb) -> Option<FaceLabel> {
+        let n = text.chars().count();
+        if n == 0 || n > 4 || !text.chars().all(|c| c == 'Ø' || glyph_rows(c).is_some()) {
+            return None;
+        }
+        let mut chars = [' '; 4];
+        for (slot, c) in chars.iter_mut().zip(text.chars()) {
+            *slot = c;
+        }
+        Some(FaceLabel {
+            chars,
+            len: n as u8,
+            rgb,
+        })
+    }
+
+    /// The label's text.
+    pub fn text(&self) -> String {
+        self.chars[..usize::from(self.len)].iter().collect()
+    }
+
+    pub fn rgb(&self) -> Rgb {
+        self.rgb
+    }
 }
 
 fn quantise(v: f64, steps: f64) -> u16 {
@@ -171,34 +230,62 @@ impl PixelSpot {
                 value,
                 dimmed,
                 bipolar,
+                focused,
             } => Key::Knob(
                 w,
                 h,
                 value.map(|v| quantise(v, KNOB_STEPS)),
                 dimmed,
                 bipolar,
+                focused,
             ),
-            PixelWidget::Fader { db, max_db, labels } => Key::Fader(
+            PixelWidget::Fader {
+                db,
+                max_db,
+                labels,
+                focused,
+            } => Key::Fader(
                 w,
                 h,
                 quantise(fader_frac(db, max_db), FADER_STEPS),
                 max_db.round() as i16,
                 labels,
+                focused,
             ),
             PixelWidget::Meter { db } => Key::Meter(w, h, quantise(meter_frac(db), METER_STEPS)),
             PixelWidget::ClipLight { lit } => Key::Clip(w, h, lit),
-            PixelWidget::Chip { rgb, label } => Key::Chip(w, h, rgb, label),
+            PixelWidget::Chip {
+                rgb,
+                label,
+                focused,
+            } => Key::Chip(w, h, rgb, label, focused),
             PixelWidget::Inset => Key::Inset(w, h),
+            PixelWidget::Focus => Key::Focus(w, h),
         }
     }
 
     /// Blanks what the text draw put in this widget's cells, keeping its
-    /// labels: a chip keeps its text (on no background), a fader with
-    /// labels its scale columns.
+    /// labels: a chip keeps its text (on no background, not reversed)
+    /// unless the face draws its label, a fader with labels its scale
+    /// columns. The focus outline keeps everything.
     fn clear(&self, buf: &mut Buffer) {
         let r = self.rect.intersection(buf.area);
         let (x0, x1) = match self.widget {
-            PixelWidget::Chip { .. } | PixelWidget::Inset => {
+            PixelWidget::Focus => return,
+            PixelWidget::Chip { label, .. } => {
+                for y in r.top()..r.bottom() {
+                    for x in r.left()..r.right() {
+                        let cell = &mut buf[(x, y)];
+                        cell.set_bg(TermColor::Reset);
+                        cell.modifier.remove(Modifier::REVERSED);
+                        if label.is_some() {
+                            cell.set_symbol(" ");
+                        }
+                    }
+                }
+                return;
+            }
+            PixelWidget::Inset => {
                 for y in r.top()..r.bottom() {
                     for x in r.left()..r.right() {
                         buf[(x, y)].set_bg(TermColor::Reset);
@@ -227,24 +314,25 @@ fn draw(key: Key, cell: (u16, u16)) -> RgbaImage {
         )
     };
     match key {
-        Key::Knob(c, r, q, dimmed, bipolar) => {
+        Key::Knob(c, r, q, dimmed, bipolar, focused) => {
             let (w, h) = px(c, r);
             let v = q.map(|q| f64::from(q) / KNOB_STEPS);
-            knob_image(w, h, v, dimmed, bipolar)
+            knob_image_at(w, h, v, dimmed, bipolar, focused)
         }
-        Key::Fader(c, r, q, max_db, labels) => fader_image_at(
+        Key::Fader(c, r, q, max_db, labels, focused) => fader_image_at(
             c,
             r,
             cell,
             f64::from(q) / FADER_STEPS,
             f64::from(max_db),
             labels,
+            focused,
         ),
         Key::Meter(c, r, q) => meter_image_at(c, r, cell, f64::from(q) / METER_STEPS),
         Key::Clip(c, r, lit) => clip_image(c, r, cell, lit),
-        Key::Chip(c, r, rgb, None) => chip_image(c, r, cell, rgb),
-        Key::Chip(c, r, rgb, Some(label)) => pill_image(c, r, cell, rgb, label),
+        Key::Chip(c, r, rgb, label, focused) => button_image(c, r, cell, rgb, label, focused),
         Key::Inset(c, r) => inset_image(c, r, cell),
+        Key::Focus(c, r) => focus_image(c, r, cell),
     }
 }
 
@@ -271,6 +359,16 @@ pub fn chip_rgb(c: TermColor) -> Option<(u8, u8, u8)> {
         c if c == Theme::MIX[2] => PX_AMBER,
         _ => (r, g, b),
     })
+}
+
+/// The colour of a label drawn in a face, from its text colour: dark on a
+/// lit face, else the text's own colour (the plain text colour without).
+pub fn label_rgb(fg: Option<TermColor>) -> Rgb {
+    match fg {
+        Some(Theme::PILL_ON_FG) => PX_LABEL_ON,
+        Some(TermColor::Rgb(r, g, b)) => (r, g, b),
+        _ => (205, 210, 220),
+    }
 }
 
 /// The most images kept; past it the cache (and the terminal's copies) are
@@ -554,6 +652,13 @@ enum Shape {
         a0: f32,
         a1: f32,
     },
+    /// A circle's edge as a line `w` wide (Ø's ring).
+    Ring {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        w: f32,
+    },
     /// A rectangle's edge as a line `w` wide (an outline).
     Edge {
         x0: f32,
@@ -569,6 +674,7 @@ impl Shape {
     fn dist(&self, x: f32, y: f32) -> f32 {
         match *self {
             Shape::Circle { cx, cy, r } => (x - cx).hypot(y - cy) - r,
+            Shape::Ring { cx, cy, r, w } => ((x - cx).hypot(y - cy) - r).abs() - w / 2.0,
             Shape::Capsule { ax, ay, bx, by, r } => {
                 let (dx, dy) = (bx - ax, by - ay);
                 let l = (dx * dx + dy * dy).max(1e-9);
@@ -631,6 +737,7 @@ impl Shape {
     fn bbox(&self) -> (f32, f32, f32, f32) {
         match *self {
             Shape::Circle { cx, cy, r } => (cx - r, cy - r, cx + r, cy + r),
+            Shape::Ring { cx, cy, r, w } => (cx - r - w, cy - r - w, cx + r + w, cy + r + w),
             Shape::Capsule { ax, ay, bx, by, r } => (
                 ax.min(bx) - r,
                 ay.min(by) - r,
@@ -826,22 +933,13 @@ pub fn clip_image(cols: u16, rows: u16, cell: (u16, u16), lit: bool) -> RgbaImag
 /// A meter box's face (the text form's [`Theme::INSET_BG`]).
 const PX_INSET: Rgb = (20, 21, 30);
 
-/// A flat face `face_w` wide centred on `cx`, inset 4 px (at the mockup's
-/// cell) from the top and bottom: solid when lit, the chip face and a
-/// 1-px outline when not ([`PX_CHIP`]).
-fn face(
-    cols: u16,
-    rows: u16,
-    cell: (u16, u16),
-    rgb: Rgb,
-    cx: Option<f32>,
-    face_w: Option<f32>,
-) -> RgbaImage {
+/// A flat face inset 3 px across and 4 px down (at the mockup's cell) in
+/// `cols`×`rows` cells: solid when lit, the chip face and a 1-px outline
+/// when not ([`PX_CHIP`]). Returns the canvas and the face's box.
+fn face(cols: u16, rows: u16, cell: (u16, u16), rgb: Rgb) -> (Canvas, (f32, f32, f32, f32)) {
     let (mut cv, sx, sy) = canvas(cols, rows, cell);
     let (w, h) = (cv.w as f32, cv.h as f32);
-    let cx = cx.unwrap_or(w / 2.0);
-    let fw = face_w.unwrap_or(w - 6.0 * sx);
-    let (x0, y0, x1, y1) = (cx - fw / 2.0, 4.0 * sy, cx + fw / 2.0, h - 4.0 * sy);
+    let (x0, y0, x1, y1) = (3.0 * sx, 4.0 * sy, w - 3.0 * sx, h - 4.0 * sy);
     let rad = 0.5;
     cv.fill(
         Shape::RRect {
@@ -864,31 +962,147 @@ fn face(
         };
         cv.fill(edge, PX_CHIP_EDGE);
     }
-    cv.into_image()
+    (cv, (x0, y0, x1, y1))
+}
+
+/// The focus marker: a flat [`FOCUS_PX`] accent outline on the canvas's
+/// edge (the widget's cell box), square.
+fn focus_outline(cv: &mut Canvas) {
+    let (w, h) = (cv.w as f32, cv.h as f32);
+    let b = FOCUS_PX;
+    for (x0, y0, x1, y1) in [
+        (0.0, 0.0, w, b),
+        (0.0, h - b, w, h),
+        (0.0, 0.0, b, h),
+        (w - b, 0.0, w, h),
+    ] {
+        let rect = Shape::RRect {
+            x0,
+            y0,
+            x1,
+            y1,
+            rad: 0.0,
+        };
+        cv.fill(rect, PX_ACCENT);
+    }
 }
 
 /// A chip in `cols`×`rows` cells (the active mix tab): a flat square face
 /// inset 3 px across and 4 px down (at the mockup's cell), lit in `rgb`;
 /// [`PX_CHIP`] is unlit, with an outline. The label goes on top (z −1).
 pub fn chip_image(cols: u16, rows: u16, cell: (u16, u16), rgb: Rgb) -> RgbaImage {
-    face(cols, rows, cell, rgb, None, None)
+    button_image(cols, rows, cell, rgb, None, false)
 }
 
-/// A button in `cols`×`rows` cells whose label takes `label.1` cells from
-/// cell `label.0`: the mockup's `pill()`. The face is a cell narrower than
-/// the button and centred on the label, so a label half a cell off the
-/// button's centre (odd parity) still sits exactly in the face's middle.
-pub fn pill_image(
+/// A button in `cols`×`rows` cells: the face of [`chip_image`], always on
+/// the cell box, so faces of one width line up whatever their labels.
+/// With `label` the face draws it, centred on the face to the pixel (a
+/// label whose parity doesn't match the box can't be centred as text);
+/// `focused` adds the accent outline round the cell box.
+pub fn button_image(
     cols: u16,
     rows: u16,
     cell: (u16, u16),
     rgb: Rgb,
-    label: (u16, u16),
+    label: Option<FaceLabel>,
+    focused: bool,
 ) -> RgbaImage {
-    let cw = f32::from(cell.0.max(1));
-    let cx = (f32::from(label.0) + f32::from(label.1) / 2.0) * cw;
-    let fw = f32::from(cols.saturating_sub(1).max(1)) * cw;
-    face(cols, rows, cell, rgb, Some(cx), Some(fw))
+    let (mut cv, (x0, y0, x1, y1)) = face(cols, rows, cell, rgb);
+    if let Some(label) = label {
+        face_label(&mut cv, label, cell, ((x0 + x1) / 2.0, (y0 + y1) / 2.0));
+    }
+    if focused {
+        focus_outline(&mut cv);
+    }
+    cv.into_image()
+}
+
+/// The focus outline alone over `cols`×`rows` cells (a source menu, a
+/// strip's name): see-through inside.
+pub fn focus_image(cols: u16, rows: u16, cell: (u16, u16)) -> RgbaImage {
+    let (mut cv, _, _) = canvas(cols, rows, cell);
+    focus_outline(&mut cv);
+    cv.into_image()
+}
+
+/// The built-in bitmap font's rows (5 columns, top to bottom, the high bit
+/// on the left) for the characters button labels use.
+fn glyph_rows(c: char) -> Option<[u8; 7]> {
+    Some(match c {
+        'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
+        'H' => [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        'I' => [0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
+        'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
+        'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
+        'T' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
+        '4' => [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
+        '8' => [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
+        _ => return None,
+    })
+}
+
+/// Draws `label` centred on (`cx`, `cy`): one character a cell, as the
+/// terminal would set it, each glyph 5 of 6 units of its cell's width and
+/// seven rows half the cell's height. Ø is a ring and a slash.
+fn face_label(cv: &mut Canvas, label: FaceLabel, cell: (u16, u16), (cx, cy): (f32, f32)) {
+    let (cw, ch) = (f32::from(cell.0.max(1)), f32::from(cell.1.max(1)));
+    let (u, v) = (cw / 6.0, ch * 0.5 / 7.0);
+    let n = f32::from(label.len);
+    let left = cx - n * cw / 2.0;
+    for (i, c) in label.chars[..usize::from(label.len)].iter().enumerate() {
+        let gx = left + i as f32 * cw + u / 2.0;
+        let gy = cy - 3.5 * v;
+        if *c == 'Ø' {
+            let (ox, oy) = (gx + 2.5 * u, cy);
+            let w = u.max(1.0);
+            let r = (2.5 * u).min(3.5 * v) - w / 2.0;
+            cv.fill(
+                Shape::Ring {
+                    cx: ox,
+                    cy: oy,
+                    r,
+                    w,
+                },
+                label.rgb,
+            );
+            let d = (r + w / 2.0) * 1.15 / std::f32::consts::SQRT_2;
+            let slash = Shape::Capsule {
+                ax: ox - d,
+                ay: oy + d,
+                bx: ox + d,
+                by: oy - d,
+                r: w / 2.0,
+            };
+            cv.fill(slash, label.rgb);
+            continue;
+        }
+        let Some(rows) = glyph_rows(*c) else {
+            continue;
+        };
+        for (row, bits) in rows.iter().enumerate() {
+            for col in 0..5 {
+                if bits & (0x10 >> col) != 0 {
+                    let x0 = gx + col as f32 * u;
+                    let y0 = gy + row as f32 * v;
+                    let rect = Shape::RRect {
+                        x0,
+                        y0,
+                        x1: x0 + u,
+                        y1: y0 + v,
+                        rad: 0.0,
+                    };
+                    cv.fill(rect, label.rgb);
+                }
+            }
+        }
+    }
 }
 
 /// A meter's box in `cols`×`rows` cells: a flat square face, a shade under
@@ -922,7 +1136,36 @@ pub fn fader_image(
     max_db: f64,
     labels: bool,
 ) -> RgbaImage {
-    fader_image_at(cols, rows, cell, fader_frac(db, max_db), max_db, labels)
+    fader_image_at(
+        cols,
+        rows,
+        cell,
+        fader_frac(db, max_db),
+        max_db,
+        labels,
+        false,
+    )
+}
+
+/// [`fader_image`] with focus: the cap filled with the accent and the
+/// accent outline round the cell box.
+pub fn fader_image_focused(
+    cols: u16,
+    rows: u16,
+    cell: (u16, u16),
+    db: f64,
+    max_db: f64,
+    labels: bool,
+) -> RgbaImage {
+    fader_image_at(
+        cols,
+        rows,
+        cell,
+        fader_frac(db, max_db),
+        max_db,
+        labels,
+        true,
+    )
 }
 
 fn fader_image_at(
@@ -932,6 +1175,7 @@ fn fader_image_at(
     frac: f64,
     max_db: f64,
     labels: bool,
+    focused: bool,
 ) -> RgbaImage {
     let (mut cv, sx, sy) = canvas(cols, rows, cell);
     let (cw, ch) = (f32::from(cell.0.max(1)), f32::from(cell.1.max(1)));
@@ -977,9 +1221,12 @@ fn fader_image_at(
             y1: y + hh,
             rad: 1.5,
         },
-        PX_FADER_CAP,
+        if focused { PX_ACCENT } else { PX_FADER_CAP },
     );
     cv.fill(rect(tx - hw, y - sy, tx + hw, y + sy), PX_BG);
+    if focused {
+        focus_outline(&mut cv);
+    }
     cv.into_image()
 }
 
@@ -991,6 +1238,23 @@ fn fader_image_at(
 /// and a pointer. Dimmed (Monitor Mix): nothing lit, a darker disc, and a
 /// dim dot toward a known value instead of the pointer.
 pub fn knob_image(w: u32, h: u32, value: Option<f64>, dimmed: bool, bipolar: bool) -> RgbaImage {
+    knob_image_at(w, h, value, dimmed, bipolar, false)
+}
+
+/// [`knob_image`] with focus: the track arc in accent-dim and the accent
+/// outline round the cell box.
+pub fn knob_image_focused(w: u32, h: u32, value: Option<f64>, bipolar: bool) -> RgbaImage {
+    knob_image_at(w, h, value, false, bipolar, true)
+}
+
+fn knob_image_at(
+    w: u32,
+    h: u32,
+    value: Option<f64>,
+    dimmed: bool,
+    bipolar: bool,
+    focused: bool,
+) -> RgbaImage {
     let mut cv = Canvas::new(w, h);
     let (cx, cy) = (cv.w as f32 / 2.0, cv.h as f32 / 2.0);
     let r = cv.w.min(cv.h) as f32 / 2.0 * 0.80;
@@ -1005,7 +1269,8 @@ pub fn knob_image(w: u32, h: u32, value: Option<f64>, dimmed: bool, bipolar: boo
         a0,
         a1,
     };
-    cv.fill(arc(start, end), PX_ARC_OFF);
+    let track = if focused { PX_ACCENT_DIM } else { PX_ARC_OFF };
+    cv.fill(arc(start, end), track);
     let at = value.map(|v| start - SWEEP_DEG as f32 * v.clamp(0.0, 1.0) as f32);
     if let (Some(av), false) = (at, dimmed) {
         let (a0, a1) = match bipolar {
@@ -1049,6 +1314,9 @@ pub fn knob_image(w: u32, h: u32, value: Option<f64>, dimmed: bool, bipolar: boo
             );
         }
         (None, _) => {}
+    }
+    if focused {
+        focus_outline(&mut cv);
     }
     cv.into_image()
 }

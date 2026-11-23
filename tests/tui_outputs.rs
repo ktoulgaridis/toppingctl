@@ -47,10 +47,6 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn shift(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::SHIFT)
-}
-
 fn ch(c: char) -> KeyEvent {
     key(KeyCode::Char(c))
 }
@@ -192,7 +188,7 @@ fn step(app: &mut App, dev: &Device, f: impl FnOnce(&mut App) -> Vec<Action>) ->
 }
 
 /// Moves focus to `target` with keys only: `3` / `4` (the panel), → to
-/// the strip, ↓ into its controls.
+/// the strip, ↓ into its controls, → along a row of two.
 fn focus(app: &mut App, target: Control) {
     let Control::Bus { bus: b, .. } = target else {
         panic!("not a loopback or output control: {target:?}");
@@ -207,13 +203,26 @@ fn focus(app: &mut App, target: Control) {
         }
         assert_eq!(app.focus(), Control::Loopback(b));
     }
+    // The second of a pair (R fader, R MUTE, LINE) is right of the first.
+    let Control::Bus { ctl, .. } = target else {
+        unreachable!()
+    };
+    let (down_to, right) = match ctl {
+        BusControl::Fader(1) => (BusControl::Fader(0), true),
+        BusControl::Mute(1) => (BusControl::Mute(0), true),
+        BusControl::Line => (BusControl::Hp, true),
+        c => (c, false),
+    };
     for _ in 0..10 {
-        if app.focus() == target {
-            return;
+        if app.focus() == bus(b, down_to) {
+            break;
         }
         assert!(app.handle_key(key(KeyCode::Down)).is_empty());
     }
-    assert_eq!(app.focus(), target, "↓ never reached it");
+    if right {
+        assert!(app.handle_key(key(KeyCode::Right)).is_empty());
+    }
+    assert_eq!(app.focus(), target, "the arrows never reached it");
 }
 
 fn mouse(kind: MouseEventKind, x: u16, y: u16, modifiers: KeyModifiers) -> MouseEvent {
@@ -285,7 +294,7 @@ fn controls_send_expected_frames() {
     focus(&mut app, bus(OUT_BUS, Fader(0)));
     let mut all = Vec::new();
     for _ in 0..6 {
-        all.extend(step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left))));
+        all.extend(step(&mut app, &dev, |a| a.handle_key(ch('-'))));
     }
     assert_eq!(
         all[all.len() - 2..],
@@ -306,13 +315,13 @@ fn controls_send_expected_frames() {
     assert!(!app.state().output.link);
     focus(&mut app, bus(OUT_BUS, Fader(1)));
     let mut all = Vec::new();
-    // ⇧ is the app's page step, 5 dB.
-    for k in [shift(KeyCode::Left), shift(KeyCode::Left)] {
+    // PgDn (×10) is the app's page step, 5 dB.
+    for k in [key(KeyCode::PageDown), key(KeyCode::PageDown)] {
         all.extend(step(&mut app, &dev, |a| a.handle_key(k)));
     }
     assert_eq!(app.state().output.level_r_db, -10.0);
     for _ in 0..2 {
-        all.extend(step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left))));
+        all.extend(step(&mut app, &dev, |a| a.handle_key(ch('-'))));
     }
     assert_eq!(all.last(), Some(&frame(0x31, 0x02, lvl(-12.0))));
     assert!(all.iter().all(|f| (f.group, f.param) == (0x31, 0x02)));
@@ -376,7 +385,7 @@ fn controls_send_expected_frames() {
     let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
     assert_eq!(frames, [frame(0x33, 0x02, 0)]);
     focus(&mut app, bus(1, Fader(0)));
-    let frames = step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(ch('-')));
     assert_eq!(frames, [frame(0x33, 0x01, lvl(-1.0))]);
     // Linking ORs the mutes: never unmutes by surprise.
     focus(&mut app, bus(1, Link));
@@ -391,20 +400,20 @@ fn controls_send_expected_frames() {
     let mut app = app_with(State::default());
     let dev = Device::new();
     focus(&mut app, bus(0, Fader(0)));
-    assert!(step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Right))).is_empty());
+    assert!(step(&mut app, &dev, |a| a.handle_key(ch('+'))).is_empty());
     for _ in 0..17 {
-        step(&mut app, &dev, |a| a.handle_key(shift(KeyCode::Left)));
+        step(&mut app, &dev, |a| a.handle_key(key(KeyCode::PageDown)));
     }
     assert_eq!(app.state().loopbacks[0].level_l_db, -85.0);
     for _ in 0..4 {
-        step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left)));
+        step(&mut app, &dev, |a| a.handle_key(ch('-')));
     }
     assert_eq!(app.state().loopbacks[0].level_l_db, -89.0);
-    let frames = step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left)));
+    let frames = step(&mut app, &dev, |a| a.handle_key(ch('-')));
     assert_eq!(app.state().loopbacks[0].level_l_db, f64::NEG_INFINITY);
     assert_eq!(frames, [frame(0x32, 0x01, 0), frame(0x32, 0x02, 0)]);
-    assert!(step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Left))).is_empty());
-    step(&mut app, &dev, |a| a.handle_key(key(KeyCode::Right)));
+    assert!(step(&mut app, &dev, |a| a.handle_key(ch('-'))).is_empty());
+    step(&mut app, &dev, |a| a.handle_key(ch('+')));
     assert_eq!(app.state().loopbacks[0].level_l_db, -89.0);
     step(&mut app, &dev, |a| a.handle_key(ch('0')));
     assert_eq!(app.state().loopbacks[0].level_r_db, 0.0);
@@ -412,8 +421,9 @@ fn controls_send_expected_frames() {
     assert!(written.iter().all(|f| f.group == 0x32), "{written:?}");
 }
 
-/// Focus walks a strip's controls in the drawn order, and the page swap
-/// changes them; ←→ beside a toggle goes to the other loopback.
+/// Focus walks a strip's controls in the drawn order (#47): source, LINK,
+/// the fader(s), then MUTE (or HP and LINE) at the bottom; ←→ across a
+/// pair, then to the strip beside; the page swap changes them.
 #[test]
 fn focus_walks_loopback_and_output() {
     use BusControl::*;
@@ -430,12 +440,11 @@ fn focus_walks_loopback_and_output() {
             Control::Loopback(0),
             bus(0, Source),
             bus(0, Link),
+            bus(0, Fader(0)),
             bus(0, Mute(0)),
-            bus(0, Fader(0)),
-            bus(0, Fader(0)),
+            bus(0, Mute(0)),
         ]
     );
-    app.handle_key(key(KeyCode::Up));
     app.handle_key(key(KeyCode::Right));
     assert_eq!(app.focus(), bus(1, Mute(0)));
     for _ in 0..5 {
@@ -448,8 +457,15 @@ fn focus_walks_loopback_and_output() {
     let mut app = app_with(s);
     app.handle_key(ch('4'));
     let mut seen = vec![app.focus()];
-    for _ in 0..6 {
-        app.handle_key(key(KeyCode::Down));
+    for k in [
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Right,
+        KeyCode::Down,
+        KeyCode::Left,
+    ] {
+        app.handle_key(key(k));
         seen.push(app.focus());
     }
     assert_eq!(
@@ -458,22 +474,22 @@ fn focus_walks_loopback_and_output() {
             Control::Output(0),
             bus(OUT_BUS, Source),
             bus(OUT_BUS, Link),
-            bus(OUT_BUS, Hp),
-            bus(OUT_BUS, Line),
             bus(OUT_BUS, Fader(0)),
             bus(OUT_BUS, Fader(1)),
+            bus(OUT_BUS, Line),
+            bus(OUT_BUS, Hp),
         ]
     );
-    // Linking takes the R fader away: focus falls back to the one fader.
-    for _ in 0..4 {
+    // Linked: one fader, so → from it goes on to MONITOR MIX.
+    for _ in 0..2 {
         app.handle_key(key(KeyCode::Up));
     }
     assert_eq!(app.focus(), bus(OUT_BUS, Link));
     app.handle_key(ch(' '));
-    for _ in 0..5 {
-        app.handle_key(key(KeyCode::Down));
-    }
+    app.handle_key(key(KeyCode::Down));
     assert_eq!(app.focus(), bus(OUT_BUS, Fader(0)));
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(app.focus(), Control::Output(1));
 }
 
 /// Loopback and output names are editable like the mixer's: Enter on the

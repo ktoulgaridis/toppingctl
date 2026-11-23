@@ -151,10 +151,6 @@ impl InputControl {
         InputControl::Phase,
         InputControl::Gain,
     ];
-
-    fn index(self) -> usize {
-        Self::ORDER.iter().position(|&k| k == self).unwrap_or(0)
-    }
 }
 
 /// A control on a mixer strip. `usize` is the channel: IN1 (0) / IN2 (1)
@@ -172,8 +168,8 @@ pub enum MixControl {
 }
 
 impl MixControl {
-    /// A linked strip's controls in focus order (↑↓): left dial, right
-    /// dial, fader, LINK, Ø, SOLO, MUTE.
+    /// A linked strip's controls: left dial, right dial, fader, LINK, Ø,
+    /// SOLO, MUTE. The arrows walk them as drawn (see [`App::focus`]).
     pub const LINKED: [MixControl; 7] = [
         MixControl::Pan(0),
         MixControl::Pan(1),
@@ -183,8 +179,8 @@ impl MixControl {
         MixControl::Solo(0),
         MixControl::Mute(0),
     ];
-    /// An unlinked strip's controls in focus order: the same, with the two
-    /// channels' fader and switches side by side.
+    /// An unlinked strip's controls: the same, with the two channels'
+    /// fader and switches side by side.
     pub const UNLINKED: [MixControl; 11] = [
         MixControl::Pan(0),
         MixControl::Pan(1),
@@ -199,7 +195,7 @@ impl MixControl {
         MixControl::Mute(1),
     ];
 
-    /// A strip's controls on its linked or unlinked page, in focus order.
+    /// A strip's controls on its linked or unlinked page.
     pub fn order(linked: bool) -> &'static [MixControl] {
         if linked {
             &Self::LINKED
@@ -382,33 +378,6 @@ impl Control {
             Control::Output(_) | Control::Bus { .. } => Panel::Output,
         }
     }
-
-    /// The strip to the left (`step` −1) or right (+1) in the same panel,
-    /// clamped at the ends: the same control there (see [`App::valid`] for
-    /// one the page there lacks). From the output's controls, → goes to
-    /// MONITOR MIX.
-    fn beside(self, step: isize) -> Control {
-        let mv = |i: usize, n: usize| (i as isize + step).clamp(0, n as isize - 1) as usize;
-        match self {
-            Control::Input { ch, kind } => Control::Input {
-                ch: mv(ch, 2),
-                kind,
-            },
-            Control::Mixer(i) => Control::Mixer(mv(i, 4)),
-            Control::Mix { strip, ctl } => Control::Mix {
-                strip: mv(strip, 4),
-                ctl,
-            },
-            Control::Loopback(i) => Control::Loopback(mv(i, 2)),
-            Control::Output(i) => Control::Output(mv(i, 3)),
-            Control::Bus { bus, ctl } if bus < OUT_BUS => Control::Bus {
-                bus: mv(bus, 2),
-                ctl,
-            },
-            Control::Bus { .. } if step > 0 => Control::Output(1),
-            bus @ Control::Bus { .. } => bus,
-        }
-    }
 }
 
 /// A dialog on top of the screen. While one is open, keys and clicks go
@@ -574,6 +543,28 @@ pub struct App {
     auto_save: bool,
     /// The workspace name a modal is about (typed, or to confirm).
     prompt: String,
+    /// Whether the mix strips show Ø / SOLO / MUTE stacked (a tall
+    /// window) or in a row: the arrows follow what is drawn.
+    switches_stacked: bool,
+}
+
+/// A strip the arrows move within.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StripId {
+    /// IN1 (0), IN2 (1).
+    Input(usize),
+    /// A mixer strip (numbered as in [`Control::Mixer`]).
+    Mixer(usize),
+    /// A loopback (0, 1) or the output ([`OUT_BUS`]).
+    Bus(usize),
+}
+
+/// What is beside a strip: another strip, a control outside any strip
+/// (MONITOR MIX), or nothing (the panel's edge).
+enum Beside {
+    Strip(StripId),
+    Control(Control),
+    Edge,
 }
 
 /// The PHONE strip's index among the output strips.
@@ -606,7 +597,15 @@ impl App {
             workspace: None,
             auto_save: false,
             prompt: String::new(),
+            switches_stacked: false,
         }
+    }
+
+    /// Whether the mix strips' Ø / SOLO / MUTE are drawn stacked (one a
+    /// row) or in a row, from the last render
+    /// ([`HitMap::switches_stacked`]): ↑↓ and ←→ follow the layout.
+    pub fn set_switches_stacked(&mut self, stacked: bool) {
+        self.switches_stacked = stacked;
     }
 
     /// The saved workspaces and the settings, as on disk. A pointer to a
@@ -779,7 +778,12 @@ impl App {
         if self.modal.is_none() && self.editing.is_some() {
             if matches!(
                 key.code,
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down
+                KeyCode::Tab
+                    | KeyCode::BackTab
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Left
+                    | KeyCode::Right
             ) {
                 // Moving focus away keeps the name and never gets eaten.
                 let mut out = self.finish_edit();
@@ -907,10 +911,15 @@ impl App {
         if self.phase != Phase::Synced {
             return Vec::new();
         }
-        let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
-            10
-        } else {
-            1
+        // `+` and `_` are typed with Shift on most keyboards: only `=` and
+        // `-` with Shift step ten.
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let steps = |c: char| {
+            if shift && matches!(c, '=' | '-') {
+                10
+            } else {
+                1
+            }
         };
         let adjustable = matches!(
             self.focus,
@@ -931,19 +940,19 @@ impl App {
             KeyCode::Char(c @ '1'..='4') => {
                 self.focus = Panel::ALL[usize::from(c as u8 - b'1')].first();
             }
+            // The arrows only ever move.
             KeyCode::Up => self.move_vertical(-1),
             KeyCode::Down => self.move_vertical(1),
-            KeyCode::Left | KeyCode::Right => {
-                let delta = if key.code == KeyCode::Left {
-                    -step
-                } else {
-                    step
-                };
-                if adjustable {
-                    return self.adjust(self.focus, delta);
-                }
-                self.focus = self.focus.beside(delta.signum() as isize);
+            KeyCode::Left => self.move_horizontal(-1),
+            KeyCode::Right => self.move_horizontal(1),
+            KeyCode::Char(c @ ('+' | '=')) if adjustable => {
+                return self.adjust(self.focus, steps(c));
             }
+            KeyCode::Char(c @ ('-' | '_')) if adjustable => {
+                return self.adjust(self.focus, -steps(c));
+            }
+            KeyCode::PageUp if adjustable => return self.adjust(self.focus, 10),
+            KeyCode::PageDown if adjustable => return self.adjust(self.focus, -10),
             KeyCode::Char('?') => {
                 self.modal = Some(Modal::Help);
                 self.drag = None;
@@ -1817,56 +1826,155 @@ impl App {
         self.focus = Panel::ALL[(i + step).rem_euclid(n) as usize].first();
     }
 
-    /// Up/Down: along an input's column, or from a strip's name down
-    /// through its controls (as drawn on its page); clamped at the ends.
-    fn move_vertical(&mut self, step: isize) {
-        self.focus = match self.focus {
-            Control::Input { ch, kind } => {
-                let n = InputControl::ORDER.len() as isize;
-                let i = (kind.index() as isize + step).clamp(0, n - 1) as usize;
-                Control::Input {
-                    ch,
-                    kind: InputControl::ORDER[i],
-                }
-            }
-            Control::Mixer(strip) if step > 0 => Control::Mix {
-                strip,
-                ctl: MixControl::order(self.state.mixes[self.mix].linked(strip))[0],
-            },
-            Control::Mix { strip, ctl } => {
-                let order = MixControl::order(self.state.mixes[self.mix].linked(strip));
-                let i = order.iter().position(|&c| c == ctl).unwrap_or(0) as isize + step;
-                if i < 0 {
-                    Control::Mixer(strip)
+    /// The strip `c` is in, if any (MONITOR MIX and PHONE are in none).
+    fn strip_of(c: Control) -> Option<StripId> {
+        match c {
+            Control::Input { ch, .. } => Some(StripId::Input(ch)),
+            Control::Mixer(i) | Control::Mix { strip: i, .. } => Some(StripId::Mixer(i)),
+            Control::Loopback(i) => Some(StripId::Bus(i)),
+            Control::Output(0) => Some(StripId::Bus(OUT_BUS)),
+            Control::Bus { bus, .. } => Some(StripId::Bus(bus)),
+            Control::Output(_) => None,
+        }
+    }
+
+    /// A strip's controls as drawn on its page: rows top to bottom, each
+    /// left to right; a mixer, loopback or output strip's first row is its
+    /// name. Ø / SOLO / MUTE are one row, or three when stacked.
+    fn grid(&self, strip: StripId) -> Vec<Vec<Control>> {
+        match strip {
+            StripId::Input(ch) => InputControl::ORDER
+                .iter()
+                .map(|&kind| vec![Control::Input { ch, kind }])
+                .collect(),
+            StripId::Mixer(i) => {
+                use MixControl::*;
+                let m = |ctl| Control::Mix { strip: i, ctl };
+                let chans: &[usize] = if self.state.mixes[self.mix].linked(i) {
+                    &[0]
                 } else {
-                    Control::Mix {
-                        strip,
-                        ctl: order[(i as usize).min(order.len() - 1)],
+                    &[0, 1]
+                };
+                let mut rows = vec![
+                    vec![Control::Mixer(i)],
+                    vec![m(Pan(0)), m(Pan(1))],
+                    vec![m(Link)],
+                    chans.iter().map(|&c| m(Fader(c))).collect(),
+                ];
+                let switches: [fn(usize) -> MixControl; 3] = [Phase, Solo, Mute];
+                if self.switches_stacked {
+                    for k in switches {
+                        rows.push(chans.iter().map(|&c| m(k(c))).collect());
                     }
+                } else {
+                    let row = chans
+                        .iter()
+                        .flat_map(|&c| switches.map(|k| m(k(c))))
+                        .collect();
+                    rows.push(row);
                 }
+                rows
             }
-            Control::Loopback(bus) if step > 0 => Control::Bus {
-                bus,
-                ctl: BusControl::Source,
-            },
-            Control::Output(0) if step > 0 => Control::Bus {
-                bus: OUT_BUS,
-                ctl: BusControl::Source,
-            },
-            Control::Bus { bus, ctl } => {
-                let order = BusControl::order(bus, self.bus_linked(bus));
-                let i = order.iter().position(|&c| c == ctl).unwrap_or(0) as isize + step;
-                match i {
-                    i if i >= 0 => Control::Bus {
-                        bus,
-                        ctl: order[(i as usize).min(order.len() - 1)],
-                    },
-                    _ if bus == OUT_BUS => Control::Output(0),
-                    _ => Control::Loopback(bus),
-                }
+            StripId::Bus(bus) => {
+                let b = |ctl| Control::Bus { bus, ctl };
+                let chans: &[usize] = if self.bus_linked(bus) { &[0] } else { &[0, 1] };
+                let name = if bus == OUT_BUS {
+                    Control::Output(0)
+                } else {
+                    Control::Loopback(bus)
+                };
+                let bottom = if bus == OUT_BUS {
+                    vec![b(BusControl::Hp), b(BusControl::Line)]
+                } else {
+                    chans.iter().map(|&c| b(BusControl::Mute(c))).collect()
+                };
+                vec![
+                    vec![name],
+                    vec![b(BusControl::Source)],
+                    vec![b(BusControl::Link)],
+                    chans.iter().map(|&c| b(BusControl::Fader(c))).collect(),
+                    bottom,
+                ]
             }
-            other => other,
+        }
+    }
+
+    /// The strip left (`step` −1) or right (+1) of `strip` in its panel.
+    fn beside(strip: StripId, step: isize) -> Beside {
+        let mv = |i: usize, n: usize| {
+            let j = i as isize + step;
+            (0..n as isize).contains(&j).then_some(j as usize)
         };
+        match strip {
+            StripId::Input(ch) => {
+                mv(ch, 2).map_or(Beside::Edge, |c| Beside::Strip(StripId::Input(c)))
+            }
+            StripId::Mixer(i) => {
+                mv(i, 4).map_or(Beside::Edge, |c| Beside::Strip(StripId::Mixer(c)))
+            }
+            StripId::Bus(OUT_BUS) if step > 0 => Beside::Control(Control::Output(1)),
+            StripId::Bus(OUT_BUS) => Beside::Edge,
+            StripId::Bus(b) => mv(b, 2).map_or(Beside::Edge, |c| Beside::Strip(StripId::Bus(c))),
+        }
+    }
+
+    /// Where `c` is in `grid`: (row, column).
+    fn locate(grid: &[Vec<Control>], c: Control) -> Option<(usize, usize)> {
+        grid.iter()
+            .enumerate()
+            .find_map(|(r, row)| row.iter().position(|&x| x == c).map(|k| (r, k)))
+    }
+
+    /// ←/→: the control beside in the same row, else the next strip's
+    /// row (its first control going right, its last going left); from the
+    /// output on to MONITOR MIX and PHONE. Clamped at the panel's edge.
+    fn move_horizontal(&mut self, step: isize) {
+        let c = self.focus;
+        if let Control::Output(i @ 1..) = c {
+            self.focus = Control::Output((i as isize + step).clamp(0, 2) as usize);
+            return;
+        }
+        let Some(strip) = Self::strip_of(c) else {
+            return;
+        };
+        let grid = self.grid(strip);
+        let Some((row, col)) = Self::locate(&grid, c) else {
+            return;
+        };
+        let k = col as isize + step;
+        if (0..grid[row].len() as isize).contains(&k) {
+            self.focus = grid[row][k as usize];
+            return;
+        }
+        self.focus = match Self::beside(strip, step) {
+            Beside::Strip(next) => {
+                let g = self.grid(next);
+                let r = &g[row.min(g.len() - 1)];
+                if step > 0 {
+                    r[0]
+                } else {
+                    r[r.len() - 1]
+                }
+            }
+            Beside::Control(to) => to,
+            Beside::Edge => c,
+        };
+    }
+
+    /// ↑/↓: the row above or below in the strip (from a strip's name down
+    /// into its controls), at the same place across the row; clamped.
+    fn move_vertical(&mut self, step: isize) {
+        let c = self.focus;
+        let Some(strip) = Self::strip_of(c) else {
+            return;
+        };
+        let grid = self.grid(strip);
+        let Some((row, col)) = Self::locate(&grid, c) else {
+            return;
+        };
+        let r = (row as isize + step).clamp(0, grid.len() as isize - 1) as usize;
+        let (from, to) = (grid[row].len(), grid[r].len());
+        self.focus = grid[r][(col * to / from).min(to - 1)];
     }
 }
 

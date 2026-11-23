@@ -12,8 +12,9 @@ The TUI shows the official app's four panels side by side: **Input** (gain knobs
 switches per channel), **Mixer** (one strip per source, for mix A, B or C), **Loopback**
 and **Output** (faders, sources and levels). Meters run before and after the faders, with
 clip lights. The header shows the device, the sample rate and the open workspace; the
-footer shows the keys for what is focused, or a notice. Switches are coloured pills, and
-the focused control is drawn in the accent colour, in bold.
+footer names what is focused and the keys that act on it, or a notice. Switches are
+coloured pills. The focused control has a flat accent outline in pixel mode and reversed
+cells in text. The arrows only move focus, alsamixer-style; `+` and `-` adjust.
 
 ## Install
 
@@ -62,12 +63,13 @@ this table in step with it.
 |---|---|
 | `Tab` `Shift-Tab` | next / previous panel |
 | `1` `2` `3` `4` | input, mixer, loopback, output |
-| `↑` `↓` | move along an input, or into a strip's controls |
-| `←` `→` | next strip; on a knob or fader: 1 dB / 5 % |
-| `Shift` `←` `→` | the same ×10 |
+| `←` `→` | move: the control beside, or the next strip |
+| `↑` `↓` | move: up / down a strip, from its name |
+| `+` `=` `-` `_` | adjust the knob or fader: 1 dB / 5 % |
+| `PgUp` `PgDn` | the same ×10 |
 | `0` | reset the knob or fader (gain −0 dB, fader 0 dB) |
-| `space` | toggle the focused switch |
-| `enter` | on a strip's name: rename it; on a source: its menu |
+| `space` `enter` | toggle the switch; open a source's menu |
+| `enter` | on a strip's name: rename it |
 | `a` `b` `c` | show mix A / B / C |
 | `r` | sample rate list (sets it through PipeWire) |
 | `s` | save the workspace (on Default: save as…) |
@@ -80,7 +82,7 @@ this table in step with it.
 | drag | turn a knob, move a fader (up / down) |
 | double-click | reset a knob or fader |
 | | LINK: one fader and switch set, or an L and an R of each |
-| | loopback, output: 1 dB a step, Shift 5 dB, −90 dB is −∞ |
+| | loopback, output: 1 dB a step, ×10 is 5 dB, −90 dB is −∞ |
 | | PHONE: space or a click sets the level switch |
 
 ## Mouse
