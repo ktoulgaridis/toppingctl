@@ -953,10 +953,7 @@ fn layout_scales_with_the_window() {
 // ------------------------------------------------ responsiveness (#37)
 
 fn kitty_layer() -> toppingctl::tui::pixel::PixelLayer {
-    use ratatui_image::picker::{Picker, ProtocolType};
-    let mut picker = Picker::halfblocks();
-    picker.set_protocol_type(ProtocolType::Kitty);
-    toppingctl::tui::pixel::PixelLayer::new(picker)
+    toppingctl::tui::pixel::PixelLayer::with_cell_size((10, 20))
 }
 
 /// The event loop's own steps, in a kitty terminal, after startup: draw a
@@ -1173,7 +1170,7 @@ fn buttons_are_flat_square_faces() {
     let on = chip_image(6, 1, cell, PX_ACCENT);
     let off = chip_image(6, 1, cell, PX_CHIP);
     let (w, h) = on.dimensions();
-    let px = |img: &image::RgbaImage, x: u32, y: u32| img.get_pixel(x, y).0;
+    let px = |img: &toppingctl::tui::pixel::RgbaImage, x: u32, y: u32| img.get_pixel(x, y).0;
     // The face: find its top-left corner from the middle row going left.
     let mid = h / 2;
     let left = (0..w).find(|&x| px(&on, x, mid)[3] > 200).unwrap();

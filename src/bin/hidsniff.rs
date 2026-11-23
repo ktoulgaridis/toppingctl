@@ -88,7 +88,7 @@ fn main() -> ExitCode {
 fn run(out: Option<PathBuf>) -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     let handler_stop = Arc::clone(&stop);
-    ctrlc::set_handler(move || handler_stop.store(true, Ordering::SeqCst))
+    signal_hook::flag::register(signal_hook::consts::SIGINT, handler_stop)
         .context("installing the Ctrl-C handler")?;
 
     let device = open()?;

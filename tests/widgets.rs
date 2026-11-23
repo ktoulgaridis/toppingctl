@@ -415,7 +415,7 @@ use toppingctl::tui::widgets::fader::fader_row;
 
 const CELL: (u16, u16) = (12, 24);
 
-fn px(img: &image::RgbaImage, x: f64, y: f64) -> [u8; 4] {
+fn px(img: &toppingctl::tui::pixel::RgbaImage, x: f64, y: f64) -> [u8; 4] {
     img.get_pixel(x as u32, y as u32).0
 }
 
@@ -464,7 +464,7 @@ fn pixel_meter_led_segments() {
     // 31 segments; nothing above the top one.
     assert_eq!(full.get_pixel(5, 11).0[3], 0);
     // Flat bands: green at the bottom, amber at ~21 %, red at the top.
-    let seg = |img: &image::RgbaImage, k: u32| img.get_pixel(5, 225 - 7 * k).0;
+    let seg = |img: &toppingctl::tui::pixel::RgbaImage, k: u32| img.get_pixel(5, 225 - 7 * k).0;
     assert!(is(seg(&full, 0), PX_GREEN, 0), "{:?}", seg(&full, 0));
     assert!(is(seg(&full, 24), PX_AMBER, 0), "{:?}", seg(&full, 24));
     assert!(is(seg(&full, 28), PX_AMBER, 0), "8 % is still amber");
@@ -525,7 +525,7 @@ fn pixel_clip_light_square() {
 
 /// The knob's track radius: the mockup's R = 0.80 of half the box, the
 /// arc 0.13 R wide just inside it.
-fn arc_at(img: &image::RgbaImage, rel: f64) -> [u8; 4] {
+fn arc_at(img: &toppingctl::tui::pixel::RgbaImage, rel: f64) -> [u8; 4] {
     let (w, h) = (f64::from(img.width()), f64::from(img.height()));
     let r = w.min(h) / 2.0 * 0.80;
     let ra = r - 0.13 * r / 2.0;
@@ -616,7 +616,7 @@ fn pixel_knob_flat() {
 }
 
 /// The left and right ends of the opaque run on row `y`.
-fn run(img: &image::RgbaImage, y: u32) -> (u32, u32) {
+fn run(img: &toppingctl::tui::pixel::RgbaImage, y: u32) -> (u32, u32) {
     let xs: Vec<u32> = (0..img.width())
         .filter(|&x| img.get_pixel(x, y).0[3] > 0)
         .collect();
