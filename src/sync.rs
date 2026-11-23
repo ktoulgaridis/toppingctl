@@ -184,12 +184,33 @@ impl std::error::Error for StoreError {
 /// ignored, as the XDG spec says). Otherwise it is `~/.config`, or
 /// `~/Library/Application Support` on macOS.
 pub fn state_path_from(xdg_config_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    Some(config_dir_from(xdg_config_home, home)?.join("state.json"))
+}
+
+/// toppingctl's config directory for these values of `XDG_CONFIG_HOME`
+/// and `HOME` (see [`state_path_from`]).
+pub fn config_dir_from(xdg_config_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
     let base = match xdg_config_home.filter(|p| p.is_absolute()) {
         Some(xdg) => xdg.to_path_buf(),
         None if cfg!(target_os = "macos") => home?.join("Library").join("Application Support"),
         None => home?.join(".config"),
     };
-    Some(base.join("toppingctl").join("state.json"))
+    Some(base.join("toppingctl"))
+}
+
+/// Writes `bytes` to `path` through a temp file next to it, renamed over,
+/// so a crash never leaves a half-written file. Creates the directory.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(dir)?;
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(format!(".tmp{}", std::process::id()));
+    let tmp = dir.join(tmp_name);
+    let result = fs::write(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// The saved state: a JSON file, written atomically.
@@ -239,17 +260,8 @@ impl Store {
     /// half-written file. Refuses to replace a corrupt file.
     pub fn save(&self, state: &State) -> Result<(), StoreError> {
         self.load()?;
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(dir).map_err(|e| self.io_error(e))?;
         let json = serde_json::to_vec_pretty(state).expect("State serializes to JSON");
-        let mut tmp_name = self.path.file_name().unwrap_or_default().to_os_string();
-        tmp_name.push(format!(".tmp{}", std::process::id()));
-        let tmp = dir.join(tmp_name);
-        let result = fs::write(&tmp, json).and_then(|()| fs::rename(&tmp, &self.path));
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        result.map_err(|e| self.io_error(e))
+        write_atomic(&self.path, &json).map_err(|e| self.io_error(e))
     }
 
     fn io_error(&self, source: io::Error) -> StoreError {
