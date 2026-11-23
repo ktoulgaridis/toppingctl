@@ -1,4 +1,4 @@
-# toppingctl
+<h1 align="center"><img src="docs/assets/logo.svg" alt="toppingctl" width="480"></h1>
 
 A terminal app for the TOPPING E2x2 USB audio interface, on macOS and Linux. It controls
 the device over its HID interface (USB `152a:8752`), the way TOPPING's own Professional
@@ -6,7 +6,7 @@ Control Center does: inputs (gain, 48V, mute, solo, phase, monitor, instrument),
 three mixes, loopback, the output, and the device's settings. It has a TUI and a CLI for
 scripts.
 
-> Screenshot: to come, once the restyled TUI (#41) lands.
+![Screenshot of the toppingctl TUI: input, mixer, loopback and output panels](docs/assets/screenshot.png)
 
 The TUI shows the official app's four panels side by side: **Input** (gain knobs and
 switches per channel), **Mixer** (one strip per source, for mix A, B or C), **Loopback**
@@ -29,7 +29,9 @@ cargo build --release      # target/release/toppingctl
 On Linux the build needs libudev's headers (`libudev-dev` on Debian and Ubuntu,
 `systemd-devel` on Fedora).
 
-Release archives (#31) and package registries (#22) come later.
+Prebuilt archives for macOS and Linux (x86_64 and arm64) are on the
+[releases page](https://github.com/ktoulgaridis/toppingctl/releases) (#31), each with a
+`SHA256SUMS`. Package managers (#22) come later.
 
 ## Linux setup
 
