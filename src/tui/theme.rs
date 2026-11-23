@@ -1,5 +1,5 @@
 //! The TUI's palette (docs/design → Style): the terminal's own background,
-//! dim borders, one soft-blue accent, a green → amber → red meter gradient,
+//! dim borders, one soft-blue accent, green / amber / red meter bands,
 //! red for 48V, MUTE and clips. The mix tabs (A green, B blue, C amber) are
 //! the one exception to the single accent. With `NO_COLOR` set no colour is
 //! used at all; bold, dim, underline and reverse still mark focus and state.
@@ -43,6 +43,11 @@ impl Theme {
     pub const KNOB_DIM: Color = Color::Rgb(59, 66, 97);
     pub const KNOB_RIM: Color = Color::Rgb(120, 126, 150);
     pub const KNOB_POINTER: Color = Color::Rgb(235, 235, 245);
+    /// The meters' LED bands (docs/design/mockup-flat.py): red at the top,
+    /// amber below it, green for the rest.
+    pub const METER_RED: Color = Color::Rgb(247, 118, 142);
+    pub const METER_AMBER: Color = Color::Rgb(224, 175, 104);
+    pub const METER_GREEN: Color = Color::Rgb(158, 206, 106);
     /// Mix A, B, C tab colours.
     pub const MIX: [Color; 3] = [
         Color::Rgb(80, 200, 120),
@@ -157,9 +162,17 @@ impl Theme {
         self.fg(Self::ACCENT)
     }
 
-    /// A meter cell `t` of the way up (0 = bottom, 1 = top).
-    pub fn meter(self, t: f64) -> Style {
-        self.fg(gradient(t))
+    /// A lit meter segment `f` of the way down from the top: red in the
+    /// top 8 %, amber to 30 %, green below, flat bands as on the pixel
+    /// meter.
+    pub fn meter(self, f: f64) -> Style {
+        self.fg(if f < 0.08 {
+            Self::METER_RED
+        } else if f < 0.30 {
+            Self::METER_AMBER
+        } else {
+            Self::METER_GREEN
+        })
     }
 
     /// The input peak readout at `db`: red near 0, else the gradient.

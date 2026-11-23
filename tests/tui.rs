@@ -288,7 +288,7 @@ fn layout_matches_app() {
         order(&["IN 1+2", "PB 1/2", "PB 3/4", "PB 5/6"]);
         order(&["LOOP 1+2", "LOOP 3+4", "OUT 1+2", "MONITOR MIX", "PHONE"]);
         // The mix tabs, A boxed (active).
-        assert!(t.contains("┤a mix A├"), "{t}");
+        assert!(t.contains("┤ a mix A ├"), "{t}");
     }
 }
 
@@ -360,7 +360,10 @@ fn mix_tabs() {
     assert_eq!(app.mix(), 1);
     let (buf, hits) = render(&app, &meters, 120, 40);
     let t = text(&buf);
-    assert!(t.contains("┤b mix B├") && !t.contains("┤a mix A├"), "{t}");
+    assert!(
+        t.contains("┤ b mix B ├") && !t.contains("┤ a mix A ├"),
+        "{t}"
+    );
     assert!(!t.contains("−12.0 dB"), "mix B is at defaults:\n{t}");
 
     let c = hits.rect(Hit::MixTab(2)).unwrap();
@@ -1015,7 +1018,7 @@ fn captured_meters_reach_the_screen() {
     let lines: Vec<&str> = t.lines().collect();
     let lit = lines[6..23]
         .iter()
-        .filter(|l| l.chars().take(12).collect::<String>().contains("██"))
+        .filter(|l| l.chars().take(12).collect::<String>().contains("▆"))
         .count();
     assert!(lit >= 8, "IN1 meter lit rows: {lit}\n{t}");
 }
@@ -1411,24 +1414,11 @@ fn pixel_widgets_in_kitty() {
         .collect();
     assert_eq!(label.trim(), "MON");
     assert!((mon.x..mon.right()).all(|x| buf[(x, mon.y)].bg == Color::Reset));
-    // The active mix tab and every strip title have a chip.
+    // The active mix tab has a chip (strip titles are plain text, #41).
     let tab = hits.rect(Hit::MixTab(0)).unwrap();
     assert!(spots
         .iter()
-        .any(|s| kind(&s.widget) == "chip" && s.rect.y == tab.y && s.rect.x >= tab.x));
-    for name in [
-        "IN1", "IN2", "IN 1+2", "PB 1/2", "LOOP 1+2", "OUT 1+2", "PHONE",
-    ] {
-        assert!(
-            spots.iter().any(|s| {
-                let t: String = (s.rect.x..s.rect.right())
-                    .map(|x| buf[(x, s.rect.y)].symbol())
-                    .collect();
-                kind(&s.widget) == "chip" && t.trim() == name
-            }),
-            "a chip under {name}"
-        );
-    }
+        .any(|s| kind(&s.widget) == "chip" && s.rect.intersects(tab)));
     // Graphics without labels leave their cells blank (no Braille or
     // blocks under the image); a fader keeps its scale labels.
     for s in spots
@@ -1520,25 +1510,14 @@ fn pixel_widgets_redraw() {
     let (_, _, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     assert_eq!(out, "");
 
-    // A focus change re-places only the strip titles' chips (the
-    // focused title is lit), with no blanket delete.
+    // A focus change re-places nothing: strip titles are plain text
+    // (#41), so only the text changes.
     let mut focus_app = synced_app(Theme::color());
     let mut focus_layer = kitty_layer();
     draw_pixels(&focus_app, &meters, 120, 40, &mut focus_layer);
     focus_app.handle_key(key(KeyCode::Tab));
-    let (_, hits, out) = draw_pixels(&focus_app, &meters, 120, 40, &mut focus_layer);
-    assert!(!out.contains("d=a"), "{out:?}");
-    let placed = placements(&out);
-    assert!(!placed.is_empty());
-    assert_eq!(count(&out, "d"), placed.len());
-    for p in &placed {
-        let s = hits
-            .pixels()
-            .iter()
-            .find(|s| (s.rect.x, s.rect.y) == (p.x, p.y))
-            .unwrap();
-        assert_eq!(kind(&s.widget), "chip", "{s:?}");
-    }
+    let (_, _, out) = draw_pixels(&focus_app, &meters, 120, 40, &mut focus_layer);
+    assert_eq!(out, "", "{out:?}");
 
     // A clip lights IN1's lamps and they go out after the hold.
     let t0 = Instant::now();
@@ -1642,7 +1621,9 @@ fn pixel_cleanup_and_opt_out() {
 #[test]
 fn pixel_images_are_chunked() {
     let app = synced_app(Theme::color());
-    let mut layer = kitty_layer();
+    // Big cells: flat images compress well (#41), so some need chunks
+    // only at a large size.
+    let mut layer = toppingctl::tui::pixel::PixelLayer::with_cell_size((40, 80));
     let (_, _, out) = draw_pixels(&app, &fake_meters(), 120, 40, &mut layer);
     let mut open = false;
     let mut chunked = 0;
@@ -1751,7 +1732,7 @@ fn pixel_transmit_budget() {
     let app = synced_app(Theme::color());
     let meters = fake_meters();
     // Big cells: the first frame is over budget.
-    let mut layer = PixelLayer::with_cell_size((40, 80));
+    let mut layer = PixelLayer::with_cell_size((64, 128));
     let (buf, hits, out) = draw_pixels(&app, &meters, 120, 40, &mut layer);
     let first = placements(&out).len();
     assert!(
@@ -1798,7 +1779,6 @@ fn monitor_mix_and_phone_level() {
         monitor.widget,
         PixelWidget::Knob {
             value: Some(0.3),
-            ticks: 0,
             dimmed: true,
             bipolar: true
         }
@@ -2076,23 +2056,16 @@ fn pan_knobs_are_bipolar() {
         .iter()
         .filter_map(|s| match s.widget {
             PixelWidget::Knob {
-                ticks,
-                dimmed,
-                bipolar,
-                ..
-            } => Some((ticks, dimmed, bipolar)),
+                dimmed, bipolar, ..
+            } => Some((dimmed, bipolar)),
             _ => None,
         })
         .collect();
-    let gains = knobs.iter().filter(|k| k.0 > 0).collect::<Vec<_>>();
-    assert_eq!(gains.len(), 2);
-    assert!(gains.iter().all(|k| !k.2), "gain: from the minimum");
-    let pans = knobs
-        .iter()
-        .filter(|k| k.0 == 0 && !k.1)
-        .collect::<Vec<_>>();
-    assert_eq!(pans.len(), 8);
-    assert!(pans.iter().all(|k| k.2), "pans: from the top");
+    // One style for every knob (#41): no ticks; only the lit arc differs.
+    let gains = knobs.iter().filter(|k| !k.0 && !k.1).count();
+    assert_eq!(gains, 2, "gain: from the minimum");
+    let pans = knobs.iter().filter(|k| !k.0 && k.1).count();
+    assert_eq!(pans, 8, "pans: from the top");
 }
 
 /// A drag-resize fires a storm of resizes. The layer frees every image

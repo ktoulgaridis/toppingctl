@@ -1,8 +1,10 @@
-//! A vertical level meter over the whole height it is given: eighth-cell
-//! steps, a green → amber → red gradient up the bar, and an optional clip
-//! light on top, held for [`CLIP_HOLD`] after the last clip (like the app's
-//! overload lights). Also the dB [`Scale`] next to it and the input's peak
-//! readout.
+//! A vertical level meter over the whole height it is given, the text form
+//! of the pixel LED ladder (#41): one square `▆` segment a row (the gap
+//! above it parts the rows), flat bands by height (red at the top 8 %,
+//! amber to 30 %, green below), unlit rows an empty track; and an optional
+//! square clip light on top, held for [`CLIP_HOLD`] after the last clip
+//! (like the app's overload lights). Also the dB [`Scale`] next to it and
+//! the input's peak readout.
 
 use std::time::{Duration, Instant};
 
@@ -24,19 +26,20 @@ pub const CLIP_HOLD: Duration = Duration::from_secs(5);
 /// At or above this the peak readout turns red.
 pub const PEAK_HOT_DB: f64 = -3.0;
 
-const EIGHTHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+/// A lit segment, and an unlit one.
+const LED: &str = "▆";
+const OFF: &str = "▕";
 
 /// `db` as a fraction of the meter: 0 = bottom, 1 = top.
 pub fn meter_frac(db: f64) -> f64 {
     ((db + METER_RANGE_DB) / METER_RANGE_DB).clamp(0.0, 1.0)
 }
 
-/// A meter. [`Meter::clip`] with `Some` reserves the top row for the clip
-/// light.
+/// A meter, one column wide in any area (one meter width everywhere).
+/// [`Meter::clip`] with `Some` reserves the top row for the clip light.
 #[derive(Clone, Debug)]
 pub struct Meter {
     db: f64,
-    width: u16,
     clip: Option<bool>,
     theme: Theme,
 }
@@ -45,16 +48,9 @@ impl Meter {
     pub fn new(db: f64, theme: Theme) -> Self {
         Meter {
             db,
-            width: 1,
             clip: None,
             theme,
         }
-    }
-
-    /// Columns, 1 or 2.
-    pub fn width(mut self, width: u16) -> Self {
-        self.width = width.max(1);
-        self
     }
 
     /// A clip light on top: `Some(lit)`.
@@ -70,29 +66,26 @@ impl Widget for Meter {
             return;
         }
         let t = self.theme;
-        let w = self.width.min(area.width);
-        let mut bar = Rect { width: w, ..area };
+        let mut bar = Rect { width: 1, ..area };
         if let Some(lit) = self.clip {
             let (s, st) = if lit {
-                ("▀", t.warn())
+                ("▀", t.fg(Theme::METER_RED))
             } else {
                 ("▔", t.track())
             };
-            buf.set_string(bar.x, bar.y, s.repeat(usize::from(w)), st);
+            buf.set_string(bar.x, bar.y, s, st);
             bar.y += 1;
             bar.height -= 1;
         }
         let h = bar.height;
-        let lit = (meter_frac(self.db) * f64::from(h) * 8.0).round() as i64;
+        let lit = (meter_frac(self.db) * f64::from(h)).round() as u16;
         for i in 0..h {
             let y = bar.bottom() - 1 - i;
-            let fill = (lit - i64::from(i) * 8).clamp(0, 8) as usize;
-            if fill == 0 {
-                let empty = "▕".to_string() + &" ".repeat(usize::from(w - 1));
-                buf.set_string(bar.x, y, empty, t.track());
+            if i < lit {
+                let from_top = (f64::from(h - 1 - i) + 0.5) / f64::from(h.max(1));
+                buf.set_string(bar.x, y, LED, t.meter(from_top));
             } else {
-                let top = f64::from(i) / f64::from(h.max(1));
-                buf.set_string(bar.x, y, EIGHTHS[fill].repeat(usize::from(w)), t.meter(top));
+                buf.set_string(bar.x, y, OFF, t.track());
             }
         }
     }

@@ -1,8 +1,9 @@
 //! Pixel widgets for terminals with the kitty graphics protocol (kitty,
-//! Ghostty): knobs, faders, level meters, clip lights and chips (pills, mix
-//! tabs, strip titles), drawn anti-aliased and placed directly with kitty
-//! graphics commands. The look follows `docs/design/mockup.py`; the knobs
-//! follow `docs/design/knobs/hires.py`.
+//! Ghostty): knobs, faders, level meters, clip lights and chips (button
+//! faces, the active mix tab), drawn anti-aliased and placed directly with kitty
+//! graphics commands. The look is flat and follows the widget code of
+//! `docs/design/mockup-flat.py` (#41), scaled from its 12×24 px cell to the
+//! terminal's: LED-ladder meters, flat knobs, square button faces.
 //!
 //! The text UI is always drawn first and records a [`PixelSpot`] for each
 //! widget. [`PixelLayer::update`] then works out what changed since the
@@ -29,7 +30,6 @@
 //! the text widgets stay, and so do the golden snapshots.
 
 use std::collections::HashMap;
-use std::f32::consts::PI;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -40,39 +40,45 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color as TermColor;
 use ratatui_image::picker::{Picker, ProtocolType};
-use tiny_skia::{
-    Color, FillRule, GradientStop, LineCap, LinearGradient, Paint, Path, PathBuilder, Pixmap,
-    Point, SpreadMode, Stroke, Transform,
-};
 
 use crate::tui::theme::Theme;
-use crate::tui::widgets::dial::{lit_span, START_DEG, SWEEP_DEG};
+use crate::tui::widgets::dial::{START_DEG, SWEEP_DEG};
 use crate::tui::widgets::fader::{fader_frac, fader_row, Fader};
 use crate::tui::widgets::meter::meter_frac;
 
-/// The knobs' palette (docs/design/knobs/hires.py, style J).
-pub const KNOB_ACCENT_RGB: (u8, u8, u8) = (122, 162, 247);
-pub const KNOB_DIM_RGB: (u8, u8, u8) = (59, 66, 97);
-pub const KNOB_BODY_RGB: (u8, u8, u8) = (40, 44, 60);
-pub const KNOB_BODY_TOP_RGB: (u8, u8, u8) = (58, 63, 84);
-pub const KNOB_RIM_RGB: (u8, u8, u8) = (130, 136, 160);
-pub const KNOB_POINTER_RGB: (u8, u8, u8) = (240, 240, 250);
+/// The flat mockup's palette (docs/design/mockup-flat.py).
+pub const PX_BG: Rgb = (26, 27, 38);
+pub const PX_DIM: Rgb = (86, 95, 137);
+pub const PX_FAINT: Rgb = (59, 66, 97);
+pub const PX_ACCENT: Rgb = (122, 162, 247);
+pub const PX_RED: Rgb = (247, 118, 142);
+pub const PX_GREEN: Rgb = (158, 206, 106);
+pub const PX_AMBER: Rgb = (224, 175, 104);
+/// An unlit button's face, and its 1-px outline.
+pub const PX_CHIP: Rgb = (41, 46, 66);
+pub const PX_CHIP_EDGE: Rgb = (52, 58, 82);
+/// A knob's disc (dimmed: Monitor Mix), its unlit track arc and pointer;
+/// the fader's track is the same unlit colour.
+pub const PX_KNOB_BODY: Rgb = (44, 49, 70);
+pub const PX_KNOB_BODY_DIM: Rgb = (38, 42, 58);
+pub const PX_ARC_OFF: Rgb = (48, 53, 76);
+pub const PX_POINTER: Rgb = (236, 238, 248);
+/// The fader's cap.
+pub const PX_FADER_CAP: Rgb = (210, 214, 230);
+/// An unlit clip light.
+pub const PX_CLIP_OFF: Rgb = (58, 42, 54);
 
-/// The mockup's palette (docs/design/mockup.py).
-pub const PX_ACCENT: (u8, u8, u8) = (122, 162, 247);
-pub const PX_RED: (u8, u8, u8) = (247, 118, 142);
-pub const PX_GREEN: (u8, u8, u8) = (158, 206, 106);
-pub const PX_AMBER: (u8, u8, u8) = (224, 175, 104);
-pub const PX_CHIP: (u8, u8, u8) = (41, 46, 66);
-pub const PX_TRACK: (u8, u8, u8) = (36, 40, 58);
-const PX_FAINT: (u8, u8, u8) = (59, 66, 97);
-const PX_FADER_TRACK: (u8, u8, u8) = (52, 57, 80);
-const PX_CLIP_OFF: (u8, u8, u8) = (60, 44, 56);
-const PX_WHITE: (u8, u8, u8) = (235, 235, 245);
-
-/// The ticks on the gain knob's arc (style J); pan and Monitor Mix have a
-/// solid arc (styles K, L).
-pub const GAIN_TICKS: u32 = 21;
+/// The mockup's cell, which its pixel sizes are given at.
+const MOCK_CELL: (f32, f32) = (12.0, 24.0);
+/// A meter's width (one for every meter), its LED segments' height and the
+/// gap between them, at the mockup's cell. The mockup's bar is 14 px; ours
+/// are pre/post pairs in adjacent cells, so the width is the cell less the
+/// segments' 2 px gap.
+const METER_W: f32 = 10.0;
+const SEG_H: f32 = 5.0;
+const SEG_GAP: f32 = 2.0;
+/// An unlit LED: its colour at this much on the background.
+const LED_OFF: f32 = 0.16;
 
 /// Steps a meter's level is quantised to (0.5 dB over its 60 dB).
 const METER_STEPS: f64 = 120.0;
@@ -99,7 +105,6 @@ pub enum PixelWidget {
     /// A knob at `value` (0 ..= 1, `None` unknown).
     Knob {
         value: Option<f64>,
-        ticks: u32,
         dimmed: bool,
         /// Lit from the top (a pan), not from the minimum.
         bipolar: bool,
@@ -111,9 +116,15 @@ pub enum PixelWidget {
     Meter { db: f64 },
     /// A clip light.
     ClipLight { lit: bool },
-    /// A square lit cap under a label: a button, a mix tab, a strip title.
-    Chip { rgb: (u8, u8, u8) },
-    /// A meter's sunken box, under its bar, clip light and labels.
+    /// A flat square face under a label, lit in `rgb` (unlit: [`PX_CHIP`],
+    /// outlined). A button gives its `label`'s first cell and width in the
+    /// rect, and the face centres on it (the mockup's `pill()`); without,
+    /// the face is inset in its cells (the active mix tab).
+    Chip {
+        rgb: (u8, u8, u8),
+        label: Option<(u16, u16)>,
+    },
+    /// A meter's flat box, under its bar, clip light and labels.
     Inset,
 }
 
@@ -140,11 +151,11 @@ pub struct PixelSpot {
 /// quantised values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Key {
-    Knob(u16, u16, Option<u16>, u32, bool, bool),
+    Knob(u16, u16, Option<u16>, bool, bool),
     Fader(u16, u16, u16, i16, bool),
     Meter(u16, u16, u16),
     Clip(u16, u16, bool),
-    Chip(u16, u16, (u8, u8, u8)),
+    Chip(u16, u16, (u8, u8, u8), Option<(u16, u16)>),
     Inset(u16, u16),
 }
 
@@ -158,14 +169,12 @@ impl PixelSpot {
         match self.widget {
             PixelWidget::Knob {
                 value,
-                ticks,
                 dimmed,
                 bipolar,
             } => Key::Knob(
                 w,
                 h,
                 value.map(|v| quantise(v, KNOB_STEPS)),
-                ticks,
                 dimmed,
                 bipolar,
             ),
@@ -178,7 +187,7 @@ impl PixelSpot {
             ),
             PixelWidget::Meter { db } => Key::Meter(w, h, quantise(meter_frac(db), METER_STEPS)),
             PixelWidget::ClipLight { lit } => Key::Clip(w, h, lit),
-            PixelWidget::Chip { rgb } => Key::Chip(w, h, rgb),
+            PixelWidget::Chip { rgb, label } => Key::Chip(w, h, rgb, label),
             PixelWidget::Inset => Key::Inset(w, h),
         }
     }
@@ -218,10 +227,10 @@ fn draw(key: Key, cell: (u16, u16)) -> RgbaImage {
         )
     };
     match key {
-        Key::Knob(c, r, q, ticks, dimmed, bipolar) => {
+        Key::Knob(c, r, q, dimmed, bipolar) => {
             let (w, h) = px(c, r);
             let v = q.map(|q| f64::from(q) / KNOB_STEPS);
-            knob_image_arc(w, h, v, ticks, dimmed, bipolar)
+            knob_image(w, h, v, dimmed, bipolar)
         }
         Key::Fader(c, r, q, max_db, labels) => fader_image_at(
             c,
@@ -233,7 +242,8 @@ fn draw(key: Key, cell: (u16, u16)) -> RgbaImage {
         ),
         Key::Meter(c, r, q) => meter_image_at(c, r, cell, f64::from(q) / METER_STEPS),
         Key::Clip(c, r, lit) => clip_image(c, r, cell, lit),
-        Key::Chip(c, r, rgb) => chip_image(c, r, cell, rgb),
+        Key::Chip(c, r, rgb, None) => chip_image(c, r, cell, rgb),
+        Key::Chip(c, r, rgb, Some(label)) => pill_image(c, r, cell, rgb, label),
         Key::Inset(c, r) => inset_image(c, r, cell),
     }
 }
@@ -533,6 +543,26 @@ enum Shape {
         y1: f32,
         rad: f32,
     },
+    /// A ring segment of radius `r`, `t` wide, clockwise from `a0` to `a1`
+    /// degrees (counter-clockwise from the right, `a0` > `a1`), with round
+    /// caps: the mockup's `arc_sdf`.
+    Arc {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        t: f32,
+        a0: f32,
+        a1: f32,
+    },
+    /// A rectangle's edge as a line `w` wide (an outline).
+    Edge {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        rad: f32,
+        w: f32,
+    },
 }
 
 impl Shape {
@@ -558,6 +588,43 @@ impl Shape {
                 let (qx, qy) = ((x - cx).abs() - hx, (y - cy).abs() - hy);
                 qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - rad
             }
+            Shape::Arc {
+                cx,
+                cy,
+                r,
+                t,
+                a0,
+                a1,
+            } => {
+                let ang = (-(y - cy)).atan2(x - cx).to_degrees().rem_euclid(360.0);
+                if (a0 - ang).rem_euclid(360.0) <= a0 - a1 {
+                    return ((x - cx).hypot(y - cy) - r).abs() - t / 2.0;
+                }
+                [a0, a1]
+                    .map(|a| {
+                        let (ex, ey) = polar(cx, cy, r, a);
+                        (x - ex).hypot(y - ey) - t / 2.0
+                    })
+                    .into_iter()
+                    .fold(f32::INFINITY, f32::min)
+            }
+            Shape::Edge {
+                x0,
+                y0,
+                x1,
+                y1,
+                rad,
+                w,
+            } => {
+                let rect = Shape::RRect {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    rad,
+                };
+                rect.dist(x, y).abs() - w / 2.0
+            }
         }
     }
 
@@ -571,6 +638,10 @@ impl Shape {
                 ay.max(by) + r,
             ),
             Shape::RRect { x0, y0, x1, y1, .. } => (x0, y0, x1, y1),
+            Shape::Arc { cx, cy, r, t, .. } => (cx - r - t, cy - r - t, cx + r + t, cy + r + t),
+            Shape::Edge {
+                x0, y0, x1, y1, w, ..
+            } => (x0 - w, y0 - w, x1 + w, y1 + w),
         }
     }
 }
@@ -607,8 +678,9 @@ impl Canvas {
         p[3] = oa;
     }
 
-    /// Fills `shape` with `color(x, y)` at `alpha`.
-    fn fill_with(&mut self, shape: Shape, alpha: f32, color: impl Fn(f32, f32) -> [f32; 3]) {
+    /// Fills `shape` with `c`.
+    fn fill(&mut self, shape: Shape, c: Rgb) {
+        let c = f3(c);
         let (x0, y0, x1, y1) = shape.bbox();
         let xa = (x0.floor() as i64 - 1).max(0) as usize;
         let ya = (y0.floor() as i64 - 1).max(0) as usize;
@@ -617,18 +689,12 @@ impl Canvas {
         for y in ya..yb {
             let py = y as f32 + 0.5;
             for x in xa..xb {
-                let px = x as f32 + 0.5;
-                let a = (0.5 - shape.dist(px, py)).clamp(0.0, 1.0);
+                let a = (0.5 - shape.dist(x as f32 + 0.5, py)).clamp(0.0, 1.0);
                 if a > 0.0 {
-                    self.blend(x, y, color(px, py), a * alpha);
+                    self.blend(x, y, c, a);
                 }
             }
         }
-    }
-
-    fn fill(&mut self, shape: Shape, c: Rgb, alpha: f32) {
-        let c = f3(c);
-        self.fill_with(shape, alpha, |_, _| c);
     }
 
     fn into_image(self) -> RgbaImage {
@@ -649,71 +715,79 @@ fn f3(c: Rgb) -> [f32; 3] {
     [f32::from(c.0), f32::from(c.1), f32::from(c.2)]
 }
 
-fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
+/// `a` toward `b` by `t`, as the mockup's `mix` (truncated to bytes).
+fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let m = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t) as u8;
+    (m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
 }
 
-/// The meter colour at `f` of the way down from the top (0 dB at the top,
-/// −60 at the bottom): green up to −12 dB, amber from −12 to −6, red above
-/// −6, blended over a dB either side of each step.
-fn meter_colour(f: f32) -> [f32; 3] {
-    let db = -60.0 * f;
-    let (g, a, r) = (f3(PX_GREEN), f3(PX_AMBER), f3(PX_RED));
-    let step = |edge: f32| ((db - edge + 1.0) / 2.0).clamp(0.0, 1.0);
-    mix(mix(g, a, step(-12.0)), r, step(-6.0))
-}
-
-/// A meter bar from `x0` to `x1` between `top` and `bot`, the signal
-/// reaching `level` (0 = empty, 1 = full): a capsule track, the gradient
-/// up to the level, and a peak line on it.
-fn bar(cv: &mut Canvas, (x0, x1): (f32, f32), (top, bot): (f32, f32), level: f32, sy: f32) {
-    let rad = (x1 - x0) / 2.0;
-    let track = |inset: f32| Shape::RRect {
-        x0: x0 + inset,
-        y0: top - rad + inset,
-        x1: x1 - inset,
-        y1: bot + rad - inset,
-        rad: rad - inset,
-    };
-    // A faint rim around the track, so an empty meter still reads as one.
-    cv.fill(track(0.0), PX_FAINT, 1.0);
-    cv.fill(track(0.8 * sy.max(0.75)), PX_TRACK, 1.0);
-    if level <= 0.0 {
-        return;
-    }
-    let ly = top + (bot - top) * (1.0 - level.clamp(0.0, 1.0));
-    let span = (bot - top).max(1.0);
-    cv.fill_with(
-        Shape::RRect {
-            x0,
-            y0: ly,
-            x1,
-            y1: bot + rad,
-            rad,
-        },
-        1.0,
-        |_, y| meter_colour((y - top) / span),
-    );
-    cv.fill(
-        Shape::Capsule {
-            ax: x0 + 1.0,
-            ay: ly,
-            bx: x1 - 1.0,
-            by: ly,
-            r: 1.2 * sy,
-        },
-        PX_WHITE,
-        1.0,
-    );
-}
-
+/// A canvas of `cols`×`rows` cells, and the scale from the mockup's cell
+/// to ours (x, y).
 fn canvas(cols: u16, rows: u16, cell: (u16, u16)) -> (Canvas, f32, f32) {
-    let (cw, ch) = (f32::from(cell.0.max(1)), f32::from(cell.1.max(1)));
+    let (cw, ch) = (cell.0.max(1), cell.1.max(1));
     let cv = Canvas::new(
-        u32::from(cols) * u32::from(cell.0.max(1)),
-        u32::from(rows) * u32::from(cell.1.max(1)),
+        u32::from(cols) * u32::from(cw),
+        u32::from(rows) * u32::from(ch),
     );
-    (cv, cw, ch)
+    (cv, f32::from(cw) / MOCK_CELL.0, f32::from(ch) / MOCK_CELL.1)
+}
+
+/// A point on a circle, screen coordinates (y down), `deg` counter-clockwise
+/// from the right.
+fn polar(cx: f32, cy: f32, r: f32, deg: f32) -> (f32, f32) {
+    let a = deg.to_radians();
+    (cx + r * a.cos(), cy - r * a.sin())
+}
+
+// ----------------------------------------------------------------- meter
+
+/// An LED's colour at `f` of the way down from the top: red in the top
+/// 8 %, amber to 30 %, green below; unlit, a tint on the background.
+fn led_colour(f: f32, lit: bool) -> Rgb {
+    let c = if f < 0.08 {
+        PX_RED
+    } else if f < 0.30 {
+        PX_AMBER
+    } else {
+        PX_GREEN
+    };
+    if lit {
+        c
+    } else {
+        mix(PX_BG, c, LED_OFF)
+    }
+}
+
+/// A meter's columns in a `w`-px wide image: the one meter width, centred,
+/// on whole pixels.
+fn meter_x(w: f32, sx: f32) -> (f32, f32) {
+    let mw = (METER_W * sx).round().clamp(1.0, w);
+    let x0 = ((w - mw) / 2.0).floor();
+    (x0, x0 + mw)
+}
+
+/// The LED ladder from `top` to `bot`, the signal reaching `level` (0 =
+/// empty, 1 = full): square segments from the bottom up, each lit when
+/// its middle is at or under the level.
+fn ladder(cv: &mut Canvas, (x0, x1): (f32, f32), (top, bot): (f32, f32), level: f32, sy: f32) {
+    let seg = (SEG_H * sy).round().max(1.0);
+    let gap = (SEG_GAP * sy).round().max(1.0);
+    let span = (bot - top).max(1.0);
+    let ly = top + span * (1.0 - level.clamp(0.0, 1.0));
+    let mut y = bot.round();
+    while y - seg >= top {
+        let mid = y - seg / 2.0;
+        let lit = level > 0.0 && mid >= ly;
+        let shape = Shape::RRect {
+            x0,
+            y0: y - seg,
+            x1,
+            y1: y,
+            rad: 0.0,
+        };
+        cv.fill(shape, led_colour((mid - top) / span, lit));
+        y -= seg + gap;
+    }
 }
 
 /// A level meter's bar, `cols`×`rows` cells, at `db`. Its top and bottom
@@ -723,109 +797,123 @@ pub fn meter_image(cols: u16, rows: u16, cell: (u16, u16), db: f64) -> RgbaImage
 }
 
 fn meter_image_at(cols: u16, rows: u16, cell: (u16, u16), level: f64) -> RgbaImage {
-    let (mut cv, cw, ch) = canvas(cols, rows, cell);
+    let (mut cv, sx, sy) = canvas(cols, rows, cell);
     let (w, h) = (cv.w as f32, cv.h as f32);
-    // One cell: a bar of about 60 %; two or more (the input meter): most
-    // of them.
-    let bw = if cols >= 2 {
-        w * 0.8
-    } else {
-        (w * 0.6).min(cw)
-    };
-    let cx = w / 2.0;
-    bar(
-        &mut cv,
-        (cx - bw / 2.0, cx + bw / 2.0),
-        (0.5 * ch, h - 0.5 * ch),
-        level as f32,
-        ch / 24.0,
-    );
+    let half = f32::from(cell.1.max(1)) / 2.0;
+    ladder(&mut cv, meter_x(w, sx), (half, h - half), level as f32, sy);
     cv.into_image()
 }
 
-/// A clip light in `cols`×`rows` cells: a red lamp with a glow when lit, a
-/// dark one when not.
+/// A clip light in `cols`×`rows` cells: a square LED the meter's width,
+/// red when lit.
 pub fn clip_image(cols: u16, rows: u16, cell: (u16, u16), lit: bool) -> RgbaImage {
-    let (mut cv, _, ch) = canvas(cols, rows, cell);
-    let (cx, cy) = (cv.w as f32 / 2.0, cv.h as f32 / 2.0);
-    let r = (ch * 5.0 / 24.0).min(cv.w as f32 * 0.3);
-    if lit {
-        for k in (1..=6).rev() {
-            let gr = r + k as f32 * 0.26 * r;
-            cv.fill(Shape::Circle { cx, cy, r: gr }, PX_RED, 0.08);
-        }
-    }
-    let c = if lit { PX_RED } else { PX_CLIP_OFF };
-    cv.fill(Shape::Circle { cx, cy, r }, c, 1.0);
+    let (mut cv, sx, sy) = canvas(cols, rows, cell);
+    let (x0, x1) = meter_x(cv.w as f32, sx);
+    let cy = cv.h as f32 / 2.0;
+    let shape = Shape::RRect {
+        x0,
+        y0: cy - 4.0 * sy,
+        x1,
+        y1: cy + 4.0 * sy,
+        rad: 0.5,
+    };
+    cv.fill(shape, if lit { PX_RED } else { PX_CLIP_OFF });
     cv.into_image()
 }
 
-/// An unlit cap's face and its faint outline.
-const PX_CAP_OFF: Rgb = (26, 28, 39);
-const PX_CAP_EDGE: Rgb = (62, 68, 92);
-/// A meter box's border.
-const PX_INSET_EDGE: Rgb = (44, 47, 64);
+// --------------------------------------------------------------- buttons
+
 /// A meter box's face (the text form's [`Theme::INSET_BG`]).
 const PX_INSET: Rgb = (20, 21, 30);
 
-/// A button cap in `cols`×`rows` cells, square like an Allen & Heath Xone
-/// lit button. Unlit (`rgb` is [`PX_CHIP`]): a dark recessed cap with a
-/// faint 1-px outline and a shadow under its top edge. Lit: the face in
-/// `rgb` with a soft glow of a few px around it and a highlight along its
-/// top. The label goes on top (z −1).
-pub fn chip_image(cols: u16, rows: u16, cell: (u16, u16), rgb: Rgb) -> RgbaImage {
-    let (mut cv, _, ch) = canvas(cols, rows, cell);
-    let sy = ch / 24.0;
+/// A flat face `face_w` wide centred on `cx`, inset 4 px (at the mockup's
+/// cell) from the top and bottom: solid when lit, the chip face and a
+/// 1-px outline when not ([`PX_CHIP`]).
+fn face(
+    cols: u16,
+    rows: u16,
+    cell: (u16, u16),
+    rgb: Rgb,
+    cx: Option<f32>,
+    face_w: Option<f32>,
+) -> RgbaImage {
+    let (mut cv, sx, sy) = canvas(cols, rows, cell);
     let (w, h) = (cv.w as f32, cv.h as f32);
-    let (x0, y0, x1, y1) = (3.5, 4.0 * sy + 0.5, w - 3.5, h - 4.0 * sy - 0.5);
-    let rect = |d: f32, top: Option<f32>| Shape::RRect {
-        x0: x0 - d,
-        y0: y0 - d,
-        x1: x1 + d,
-        y1: top.unwrap_or(y1 + d),
-        rad: 0.5 + d.max(0.0),
-    };
+    let cx = cx.unwrap_or(w / 2.0);
+    let fw = face_w.unwrap_or(w - 6.0 * sx);
+    let (x0, y0, x1, y1) = (cx - fw / 2.0, 4.0 * sy, cx + fw / 2.0, h - 4.0 * sy);
+    let rad = 0.5;
+    cv.fill(
+        Shape::RRect {
+            x0,
+            y0,
+            x1,
+            y1,
+            rad,
+        },
+        rgb,
+    );
     if rgb == PX_CHIP {
-        cv.fill(rect(1.0, None), PX_CAP_EDGE, 1.0);
-        cv.fill(rect(0.0, None), PX_CAP_OFF, 1.0);
-        cv.fill(rect(0.0, Some(y0 + 2.0 * sy)), (0, 0, 0), 0.4);
-    } else {
-        for k in (1..=3).rev() {
-            cv.fill(rect(k as f32, None), rgb, 0.16);
-        }
-        cv.fill(rect(0.0, None), rgb, 1.0);
-        cv.fill(rect(0.0, Some(y0 + 2.5 * sy)), (255, 255, 255), 0.3);
+        let edge = Shape::Edge {
+            x0,
+            y0,
+            x1,
+            y1,
+            rad,
+            w: 1.0,
+        };
+        cv.fill(edge, PX_CHIP_EDGE);
     }
     cv.into_image()
 }
 
-/// A meter's sunken box in `cols`×`rows` cells: a face darker than the
-/// strip, a subtle 1-px border, square but for a 1-px corner, and a shadow
-/// inside its top edge, like a meter bridge set into the panel.
+/// A chip in `cols`×`rows` cells (the active mix tab): a flat square face
+/// inset 3 px across and 4 px down (at the mockup's cell), lit in `rgb`;
+/// [`PX_CHIP`] is unlit, with an outline. The label goes on top (z −1).
+pub fn chip_image(cols: u16, rows: u16, cell: (u16, u16), rgb: Rgb) -> RgbaImage {
+    face(cols, rows, cell, rgb, None, None)
+}
+
+/// A button in `cols`×`rows` cells whose label takes `label.1` cells from
+/// cell `label.0`: the mockup's `pill()`. The face is a cell narrower than
+/// the button and centred on the label, so a label half a cell off the
+/// button's centre (odd parity) still sits exactly in the face's middle.
+pub fn pill_image(
+    cols: u16,
+    rows: u16,
+    cell: (u16, u16),
+    rgb: Rgb,
+    label: (u16, u16),
+) -> RgbaImage {
+    let cw = f32::from(cell.0.max(1));
+    let cx = (f32::from(label.0) + f32::from(label.1) / 2.0) * cw;
+    let fw = f32::from(cols.saturating_sub(1).max(1)) * cw;
+    face(cols, rows, cell, rgb, Some(cx), Some(fw))
+}
+
+/// A meter's box in `cols`×`rows` cells: a flat square face, a shade under
+/// the strip.
 pub fn inset_image(cols: u16, rows: u16, cell: (u16, u16)) -> RgbaImage {
-    let (mut cv, _, ch) = canvas(cols, rows, cell);
-    let sy = ch / 24.0;
+    let (mut cv, _, _) = canvas(cols, rows, cell);
     let (w, h) = (cv.w as f32, cv.h as f32);
-    let rect = |d: f32, y1: f32| Shape::RRect {
-        x0: 0.5 + d,
-        y0: 0.5 + d,
-        x1: w - 0.5 - d,
-        y1,
-        rad: 1.0,
+    let shape = Shape::RRect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: w,
+        y1: h,
+        rad: 0.0,
     };
-    cv.fill(rect(0.0, h - 0.5), PX_INSET_EDGE, 1.0);
-    cv.fill(rect(1.0, h - 1.5), PX_INSET, 1.0);
-    for k in 0..3 {
-        let y = 1.5 + (k as f32 + 1.0) * 1.5 * sy;
-        cv.fill(rect(1.0, y), (0, 0, 0), 0.18);
-    }
+    cv.fill(shape, PX_INSET);
     cv.into_image()
 }
+
+// ----------------------------------------------------------------- fader
 
 /// A fader, `cols`×`rows` cells, at `db` on a scale topping out at
-/// `max_db`: a capsule track, the value filled below a light thumb, and
-/// tick marks on both sides. With `labels` the first and last 3 columns
-/// are left clear for the scale's text.
+/// `max_db`: a thin flat track, the value filled in the accent below a
+/// flat cap with a dark centre line, and flat tick marks on both sides.
+/// With `labels` the first and last 3 columns are left clear for the
+/// scale's text.
 pub fn fader_image(
     cols: u16,
     rows: u16,
@@ -845,8 +933,8 @@ fn fader_image_at(
     max_db: f64,
     labels: bool,
 ) -> RgbaImage {
-    let (mut cv, cw, ch) = canvas(cols, rows, cell);
-    let (sx, sy) = (cw / 12.0, ch / 24.0);
+    let (mut cv, sx, sy) = canvas(cols, rows, cell);
+    let (cw, ch) = (f32::from(cell.0.max(1)), f32::from(cell.1.max(1)));
     let (c0, c1) = if labels && cols > 6 {
         (3.0, f32::from(cols) - 3.0)
     } else {
@@ -855,221 +943,112 @@ fn fader_image_at(
     let tx = (c0 + c1) / 2.0 * cw;
     let half = (c1 - c0) / 2.0 * cw;
     let (top, bot) = (0.5 * ch, cv.h as f32 - 0.5 * ch);
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| Shape::RRect {
+        x0,
+        y0,
+        x1,
+        y1,
+        rad: 0.0,
+    };
     // Tick marks on both sides, on the scale's rows.
-    let inner = (0.75 * cw).min(half * 0.6);
-    let outer = (1.33 * cw).min(half - 1.0);
+    let (tick_at, tick_w) = ((10.0 * sx).min(half * 0.6), (4.0 * sx).min(half * 0.3));
     for (row, _) in Fader::ticks(max_db, rows) {
         let y = (f32::from(row) + 0.5) * ch;
         for s in [-1.0, 1.0] {
+            let x = tx + s * tick_at;
             cv.fill(
-                Shape::Capsule {
-                    ax: tx + s * inner,
-                    ay: y,
-                    bx: tx + s * outer,
-                    by: y,
-                    r: 1.0 * sy,
-                },
+                rect(x - tick_w, y - 0.7 * sy, x + tick_w, y + 0.7 * sy),
                 PX_FAINT,
-                1.0,
             );
         }
     }
-    let tw = 2.5 * sx;
-    let track = |y0: f32| Shape::RRect {
-        x0: tx - tw,
-        y0,
-        x1: tx + tw,
-        y1: bot,
-        rad: tw,
-    };
-    cv.fill(track(top), PX_FADER_TRACK, 1.0);
-    // The thumb sits on the row the text cap would (rounded to a row
+    let tw = 2.0 * sx;
+    cv.fill(rect(tx - tw, top, tx + tw, bot), PX_ARC_OFF);
+    // The cap sits on the row the text cap would (rounded to a row
     // centre), so it lines up with the scale.
-    let row = fader_row(frac, rows);
-    let y = (f32::from(row) + 0.5) * ch;
-    cv.fill(track(y), PX_ACCENT, 0.55);
-    let hw = (17.0 * sx).min(half - 1.0);
-    let hh = 8.0 * sy;
-    let (light, dark) = (f3((222, 226, 240)), f3((140, 146, 170)));
-    cv.fill_with(
+    let y = (f32::from(fader_row(frac, rows)) + 0.5) * ch;
+    cv.fill(rect(tx - tw, y, tx + tw, bot), PX_ACCENT);
+    let (hw, hh) = ((16.0 * sx).min(half - 1.0), 7.0 * sy);
+    cv.fill(
         Shape::RRect {
             x0: tx - hw,
             y0: y - hh,
             x1: tx + hw,
             y1: y + hh,
-            rad: 4.0 * sy,
+            rad: 1.5,
         },
-        1.0,
-        |_, yy| mix(light, dark, ((yy - (y - hh)) / (2.0 * hh)).clamp(0.0, 1.0)),
+        PX_FADER_CAP,
     );
-    let lw = (12.0 * sx).min(hw - 2.0);
-    cv.fill(
-        Shape::Capsule {
-            ax: tx - lw,
-            ay: y,
-            bx: tx + lw,
-            by: y,
-            r: 1.1 * sy,
-        },
-        PX_ACCENT,
-        1.0,
-    );
+    cv.fill(rect(tx - hw, y - sy, tx + hw, y + sy), PX_BG);
     cv.into_image()
 }
 
 // ------------------------------------------------------------------ knob
 
-fn rgb((r, g, b): (u8, u8, u8)) -> Color {
-    Color::from_rgba8(r, g, b, 255)
-}
-
-fn solid(c: (u8, u8, u8)) -> Paint<'static> {
-    let mut p = Paint::default();
-    p.set_color(rgb(c));
-    p.anti_alias = true;
-    p
-}
-
-fn vertical_gradient(top: f32, bottom: f32, stops: Vec<GradientStop>) -> Paint<'static> {
-    let mut p = Paint {
-        anti_alias: true,
-        ..Paint::default()
+/// A flat knob centred in a see-through `w`×`h` image, its radius 0.80 of
+/// half the shorter side: a solid track arc over the 270° sweep, the lit
+/// arc (from the minimum, or from 12 o'clock when `bipolar`), a flat disc
+/// and a pointer. Dimmed (Monitor Mix): nothing lit, a darker disc, and a
+/// dim dot toward a known value instead of the pointer.
+pub fn knob_image(w: u32, h: u32, value: Option<f64>, dimmed: bool, bipolar: bool) -> RgbaImage {
+    let mut cv = Canvas::new(w, h);
+    let (cx, cy) = (cv.w as f32 / 2.0, cv.h as f32 / 2.0);
+    let r = cv.w.min(cv.h) as f32 / 2.0 * 0.80;
+    let t = 0.13 * r;
+    let ra = r - t / 2.0;
+    let (start, end) = (START_DEG as f32, (START_DEG - SWEEP_DEG) as f32);
+    let arc = |a0: f32, a1: f32| Shape::Arc {
+        cx,
+        cy,
+        r: ra,
+        t,
+        a0,
+        a1,
     };
-    if let Some(s) = LinearGradient::new(
-        Point::from_xy(0.0, bottom),
-        Point::from_xy(0.0, top),
-        stops,
-        SpreadMode::Pad,
-        Transform::identity(),
-    ) {
-        p.shader = s;
-    }
-    p
-}
-
-fn stroke(width: f32, cap: LineCap) -> Stroke {
-    Stroke {
-        width,
-        line_cap: cap,
-        ..Stroke::default()
-    }
-}
-
-/// A point on a circle, screen coordinates (y down), `deg` counter-clockwise
-/// from the right.
-fn polar(cx: f32, cy: f32, r: f32, deg: f32) -> (f32, f32) {
-    let a = deg * PI / 180.0;
-    (cx + r * a.cos(), cy - r * a.sin())
-}
-
-/// An arc from `rel0` to `rel1` degrees along the knob's sweep.
-fn arc(cx: f32, cy: f32, r: f32, rel0: f32, rel1: f32) -> Option<Path> {
-    let mut pb = PathBuilder::new();
-    let start = START_DEG as f32;
-    let n = (((rel1 - rel0).abs() / 2.0).ceil() as usize).max(1);
-    for i in 0..=n {
-        let rel = rel0 + (rel1 - rel0) * i as f32 / n as f32;
-        let (x, y) = polar(cx, cy, r, start - rel);
-        if i == 0 {
-            pb.move_to(x, y);
-        } else {
-            pb.line_to(x, y);
-        }
-    }
-    pb.finish()
-}
-
-fn to_rgba(pm: &Pixmap) -> RgbaImage {
-    let mut out = RgbaImage::new(pm.width(), pm.height());
-    for (px, c) in out.pixels_mut().zip(pm.pixels()) {
-        let c = c.demultiply();
-        px.0 = [c.red(), c.green(), c.blue(), c.alpha()];
-    }
-    out
-}
-
-/// A knob (style J; K and L are the same with `ticks` 0 and `dimmed`): a
-/// round, top-lit body with a rim, a 270° arc (in `ticks` ticks, or solid
-/// with 0) lit in the accent up to `value`, and a white pointer, centred on
-/// a see-through `w`×`h` image.
-pub fn knob_image(w: u32, h: u32, value: Option<f64>, ticks: u32, dimmed: bool) -> RgbaImage {
-    knob_image_arc(w, h, value, ticks, dimmed, false)
-}
-
-/// [`knob_image`], with the arc lit from the top to the value when
-/// `bipolar` (a pan knob: nothing lit at the centre).
-pub fn knob_image_arc(
-    w: u32,
-    h: u32,
-    value: Option<f64>,
-    ticks: u32,
-    dimmed: bool,
-    bipolar: bool,
-) -> RgbaImage {
-    let Some(mut pm) = Pixmap::new(w.max(1), h.max(1)) else {
-        return RgbaImage::new(w.max(1), h.max(1));
-    };
-    let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
-    let r = w.min(h) as f32 / 2.0;
-    let sweep = SWEEP_DEG as f32;
-    let lit = lit_span(value, dimmed, bipolar).map(|(a, b)| (a as f32, b as f32));
-    let id = Transform::identity();
-    let band = stroke(0.18 * r, LineCap::Butt);
-    let segments: Vec<(f32, f32)> = if ticks == 0 {
-        vec![(0.0, sweep)]
-    } else {
-        let p = sweep / ticks as f32;
-        (0..ticks)
-            .map(|i| (i as f32 * p, i as f32 * p + 0.6 * p))
-            .collect()
-    };
-    let mut draw_arc = |a: f32, b: f32, c| {
-        if b > a {
-            if let Some(path) = arc(cx, cy, 0.87 * r, a, b) {
-                pm.stroke_path(&path, &solid(c), &band, id, None);
-            }
-        }
-    };
-    for (a, b) in segments {
-        // Each segment: dim, lit where it meets the lit span, dim again.
-        let (la, lb) = match lit {
-            Some((lo, hi)) if hi > a && lo < b => (lo.max(a), hi.min(b)),
-            _ => (b, b),
+    cv.fill(arc(start, end), PX_ARC_OFF);
+    let at = value.map(|v| start - SWEEP_DEG as f32 * v.clamp(0.0, 1.0) as f32);
+    if let (Some(av), false) = (at, dimmed) {
+        let (a0, a1) = match bipolar {
+            true if av < 90.0 => (90.0, av),
+            true => (av, 90.0),
+            false => (start, av),
         };
-        draw_arc(a, la, KNOB_DIM_RGB);
-        draw_arc(la, lb, KNOB_ACCENT_RGB);
-        draw_arc(lb, b, KNOB_DIM_RGB);
-    }
-    if let Some(body) = PathBuilder::from_circle(cx, cy, 0.61 * r) {
-        let paint = vertical_gradient(
-            cy - 0.6 * r,
-            cy + 0.6 * r,
-            vec![
-                GradientStop::new(0.0, rgb(KNOB_BODY_RGB)),
-                GradientStop::new(1.0, rgb(KNOB_BODY_TOP_RGB)),
-            ],
-        );
-        pm.fill_path(&body, &paint, FillRule::Winding, id, None);
-        let rim = if dimmed { KNOB_DIM_RGB } else { KNOB_RIM_RGB };
-        pm.stroke_path(
-            &body,
-            &solid(rim),
-            &stroke(0.06 * r, LineCap::Butt),
-            id,
-            None,
-        );
-    }
-    // The pointer shows a known value, dimmed or not.
-    if let Some(v) = value {
-        let deg = START_DEG as f32 - sweep * v as f32;
-        let (x, y) = polar(cx, cy, 0.5 * r, deg);
-        let mut pb = PathBuilder::new();
-        pb.move_to(cx, cy);
-        pb.line_to(x, y);
-        if let Some(path) = pb.finish() {
-            let s = stroke(0.09 * r, LineCap::Round);
-            pm.stroke_path(&path, &solid(KNOB_POINTER_RGB), &s, id, None);
+        if (a0 - a1).abs() > 0.5 {
+            cv.fill(arc(a0, a1), PX_ACCENT);
         }
     }
-    to_rgba(&pm)
+    let body = if dimmed {
+        PX_KNOB_BODY_DIM
+    } else {
+        PX_KNOB_BODY
+    };
+    cv.fill(
+        Shape::Circle {
+            cx,
+            cy,
+            r: 0.66 * r,
+        },
+        body,
+    );
+    match (at, dimmed) {
+        (Some(a), false) => {
+            let (ax, ay) = polar(cx, cy, 0.18 * r, a);
+            let (bx, by) = polar(cx, cy, 0.56 * r, a);
+            let r = 0.055 * r;
+            cv.fill(Shape::Capsule { ax, ay, bx, by, r }, PX_POINTER);
+        }
+        (Some(a), true) => {
+            let (dx, dy) = polar(cx, cy, 0.40 * r, a);
+            cv.fill(
+                Shape::Circle {
+                    cx: dx,
+                    cy: dy,
+                    r: 0.06 * r,
+                },
+                PX_DIM,
+            );
+        }
+        (None, _) => {}
+    }
+    cv.into_image()
 }

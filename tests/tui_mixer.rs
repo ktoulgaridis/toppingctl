@@ -281,7 +281,7 @@ fn mix_selection() {
         });
         assert!(frames.iter().all(|fr| fr.group == 0x51 + m as u8));
         assert!(!frames.is_empty());
-        assert!(text(&buf).contains(["┤a mix A├", "┤b mix B├", "┤c mix C├"][m]));
+        assert!(text(&buf).contains(["┤ a mix A ├", "┤ b mix B ├", "┤ c mix C ├"][m]));
     }
     assert!(!dev.written().is_empty());
 }
@@ -828,14 +828,15 @@ fn layout_scales_with_the_window() {
                     pan_w.push(k.width);
                 }
             }
-            // One compact group: dials, LINK, value, fader, switches with
-            // no gap between them.
+            // One compact group: dials, LINK (midway, see
+            // flat_layout_rules), value, fader, switches.
             let dial = hits.rect(Hit::Control(mix(strip, Pan(0)))).unwrap();
             let link = hits.rect(Hit::Control(mix(strip, Link))).unwrap();
             let fader = hits.rect(Hit::Control(mix(strip, Fader(0)))).unwrap();
             let phase = hits.rect(Hit::Control(mix(strip, Phase(0)))).unwrap();
-            assert_eq!(link.y, dial.bottom(), "strip {strip}: {ctx}");
-            assert_eq!(fader.y, link.y + 2, "strip {strip}: {ctx}");
+            let gap = link.y - dial.bottom();
+            assert!(gap <= 1, "strip {strip}: {ctx}");
+            assert_eq!(fader.y, link.y + 2 + gap, "strip {strip}: {ctx}");
             assert!(phase.y <= fader.bottom() + 1, "strip {strip}: {ctx}");
             if strip == 1 {
                 fader_h.push(fader.height);
@@ -1145,11 +1146,11 @@ fn meters_sit_in_inset_boxes() {
     }
 }
 
-/// Buttons are square, Xone-style lit caps: on, a square face in the
-/// button's colour with a soft glow around it and a top highlight; off, a
-/// dark recessed cap with a faint outline. No rounded pill ends.
+/// Buttons are flat square faces (#41): on, a solid face in the button's
+/// colour, no glow and no highlight; off, the chip face inside a 1-px
+/// outline. No rounded pill ends.
 #[test]
-fn buttons_are_square_lit_caps() {
+fn buttons_are_flat_square_faces() {
     use toppingctl::tui::pixel::{chip_image, PX_ACCENT, PX_CHIP};
     let cell = (10, 20);
     let on = chip_image(6, 1, cell, PX_ACCENT);
@@ -1163,27 +1164,17 @@ fn buttons_are_square_lit_caps() {
     // Square: the corner pixel of the face is as solid as its edges.
     let corner = px(&on, left, top);
     assert!(corner[3] > 200, "square corner: {corner:?}");
-    // A glow outside the face: faint, not empty, not solid.
-    let glow = px(&on, left.saturating_sub(2), mid);
-    assert!(glow[3] > 0 && glow[3] < 160, "glow: {glow:?}");
-    // A top highlight: the face's top rows are lighter than its middle.
-    let (hi, body) = (px(&on, w / 2, top + 1), px(&on, w / 2, mid));
-    assert!(
-        hi[0] as u32 + hi[1] as u32 + hi[2] as u32
-            > body[0] as u32 + body[1] as u32 + body[2] as u32,
-        "highlight {hi:?} over {body:?}"
-    );
-    // Off: a dark cap, darker than the outline around it, no glow.
+    // Flat: the top row is the middle's colour; nothing outside the face.
+    assert_eq!(px(&on, w / 2, top + 1), px(&on, w / 2, mid), "no highlight");
+    assert_eq!(px(&on, left.saturating_sub(2), mid)[3], 0, "no glow");
+    // Off: the chip face, a lighter outline at its edge, no glow.
     let oleft = (0..w).find(|&x| px(&off, x, mid)[3] > 200).unwrap();
     let edge = px(&off, oleft, mid);
     let face = px(&off, w / 2, mid);
-    assert!(
-        face[0] < 60 && face[1] < 60 && face[2] < 70,
-        "dark cap {face:?}"
-    );
+    assert_eq!(&face[..3], &[PX_CHIP.0, PX_CHIP.1, PX_CHIP.2]);
     assert!(
         edge[0] as u32 + edge[1] as u32 > face[0] as u32 + face[1] as u32,
-        "outline"
+        "outline {edge:?} {face:?}"
     );
     assert_eq!(
         px(&off, oleft.saturating_sub(2), mid)[3],
@@ -1445,4 +1436,173 @@ fn linked_pans_move_independently() {
     });
     assert_eq!(value, Some(Some(0.5)), "IN1's dial shows its own pan");
     dev.written();
+}
+
+// ------------------------------------------------- flat layout (#41)
+
+/// The text of row `y` from `x0` to `x1`.
+fn cells(buf: &Buffer, y: u16, x0: u16, x1: u16) -> String {
+    (x0..x1).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+/// The flat layout rules of docs/design/mockup-flat.py, at its 120×40 and
+/// at other sizes (#14's proportions).
+#[test]
+fn flat_layout_rules() {
+    use toppingctl::tui::app::{BusControl, InputControl, OUT_BUS};
+    use MixControl::*;
+    let mut state = fake_state();
+    state.loopbacks[1].link = false;
+    let app = app_with(state);
+    let meters = fake_meters();
+    for (w, h) in [(100u16, 34u16), (120, 40), (160, 50), (250, 60)] {
+        let (buf, hits) = render(&app, &meters, w, h);
+        let ctx = format!("{w}x{h}:\n{}", text(&buf));
+        let at = |hit: Hit| hits.rect(hit).unwrap_or_else(|| panic!("{hit:?}: {ctx}"));
+
+        // Mixer strips: LINK on its own row, midway between the pan
+        // labels and the dB value; one blank row each side from 120×40.
+        for strip in 0..4 {
+            let dial = at(Hit::Control(mix(strip, Pan(0))));
+            let link = at(Hit::Control(mix(strip, Link)));
+            let fader = at(Hit::Control(mix(strip, Fader(0))));
+            let value_row = fader.y - 1;
+            let above = link.y - dial.bottom();
+            let below = value_row - link.bottom();
+            assert_eq!(above, below, "strip {strip}: LINK midway: {ctx}");
+            if w >= 120 {
+                assert_eq!(above, 1, "strip {strip}: a blank row each side: {ctx}");
+            }
+        }
+
+        // Loopback and output: source, a blank row, LINK, the value, the
+        // fader, then MUTE or HP / LINE on the bottom row.
+        for b in [0, 1, OUT_BUS] {
+            let focus = if b == OUT_BUS {
+                Control::Output(0)
+            } else {
+                Control::Loopback(b)
+            };
+            let strip = at(Hit::Focus(focus));
+            let bus = |c| Hit::Control(Control::Bus { bus: b, ctl: c });
+            let src = at(bus(BusControl::Source));
+            let link = at(bus(BusControl::Link));
+            let fader = at(bus(BusControl::Fader(0)));
+            assert_eq!(src.y, strip.y + 1, "bus {b}: {ctx}");
+            let blank = u16::from(w >= 120);
+            assert_eq!(link.y, src.y + 1 + blank, "bus {b}: {ctx}");
+            assert!(src.y != link.y && !src.intersects(link));
+            assert_eq!(fader.y, link.y + 2, "bus {b}: the value between: {ctx}");
+            let bottom = strip.bottom() - 2;
+            let switches = if b == OUT_BUS {
+                vec![BusControl::Hp, BusControl::Line]
+            } else if b == 1 {
+                vec![BusControl::Mute(0), BusControl::Mute(1)]
+            } else {
+                vec![BusControl::Mute(0)]
+            };
+            for c in switches {
+                assert_eq!(
+                    at(bus(c)).y,
+                    bottom,
+                    "bus {b} {c:?} on the bottom row: {ctx}"
+                );
+            }
+            assert_eq!(
+                fader.bottom(),
+                bottom,
+                "bus {b}: the fader down to it: {ctx}"
+            );
+        }
+
+        // Input strips: 7-column buttons, labels centred the mockup's way.
+        for ch in 0..2 {
+            for kind in InputControl::ORDER[..6].iter().copied() {
+                let r = at(Hit::Control(Control::Input { ch, kind }));
+                assert_eq!(r.width, 7, "{kind:?}: {ctx}");
+            }
+        }
+
+        // Every button's pixel face centres on its text label: the label
+        // the face is told about is exactly the text in the cells.
+        for s in hits.pixels() {
+            if let PixelWidget::Chip {
+                label: Some((tx, len)),
+                ..
+            } = s.widget
+            {
+                let y = s.rect.y + s.rect.height / 2;
+                let row = cells(&buf, y, s.rect.x, s.rect.right());
+                let label = cells(&buf, y, s.rect.x + tx, s.rect.x + tx + len);
+                assert_eq!(row.trim(), label, "{s:?}: {ctx}");
+                let lead = row.chars().count() - row.trim_start().chars().count();
+                assert_eq!(lead as u16, tx, "{s:?}");
+                let rest = row.chars().count() as u16 - tx - len;
+                assert!(rest == tx || rest == tx + 1, "centred: {row:?}");
+            }
+        }
+
+        // Strip titles are plain bold text: no background, no chip.
+        for name in [
+            "IN1",
+            "PB 1/2",
+            "LOOP 1+2",
+            "OUT 1+2",
+            "PHONE",
+            "MONITOR MIX",
+        ] {
+            let (x, y) = (0..h)
+                .find_map(|y| {
+                    let line: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
+                    line.find(&format!(" {name} "))
+                        .map(|i| (line[..i].chars().count() as u16 + 1, y))
+                })
+                .unwrap_or_else(|| panic!("{name}: {ctx}"));
+            let cell = &buf[(x, y)];
+            assert_eq!(cell.bg, ratatui::style::Color::Reset, "{name}: {ctx}");
+            assert!(
+                cell.modifier.contains(ratatui::style::Modifier::BOLD),
+                "{name}"
+            );
+            assert!(
+                !hits
+                    .pixels()
+                    .iter()
+                    .any(|s| matches!(s.widget, PixelWidget::Chip { .. })
+                        && s.rect.y == y
+                        && s.rect.x <= x
+                        && x < s.rect.right()),
+                "no chip under {name}"
+            );
+        }
+
+        // The active mix tab: one flat chip holding " a mix A ".
+        let tab = at(Hit::MixTab(0));
+        let chip = hits
+            .pixels()
+            .iter()
+            .find(|s| {
+                matches!(s.widget, PixelWidget::Chip { label: None, .. }) && s.rect.y == tab.y
+            })
+            .expect("the active tab's chip");
+        assert_eq!(
+            cells(&buf, chip.rect.y, chip.rect.x, chip.rect.right()),
+            " a mix A "
+        );
+        assert!(chip.rect.intersects(tab));
+
+        // PHONE: two big 3-row buttons, their labels on the middle row.
+        for (on, label) in [(true, "+17 dBu"), (false, "0 dBu")] {
+            let r = at(Hit::Phone(on));
+            assert_eq!(r.height, 3, "{label}: {ctx}");
+            assert!(r.width >= 8, "{label}: {ctx}");
+            assert_eq!(cells(&buf, r.y + 1, r.x, r.right()).trim(), label);
+            assert!(hits.pixels().iter().any(
+                |s| s.rect == r && matches!(s.widget, PixelWidget::Chip { label: Some(_), .. })
+            ));
+        }
+        if w == 120 {
+            assert_eq!(at(Hit::Phone(true)).width, 9, "{ctx}");
+        }
+    }
 }
