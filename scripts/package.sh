@@ -12,6 +12,9 @@
 #       Writes <dir>/SHA256SUMS covering every *.tar.gz in <dir>.
 set -euo pipefail
 
+# macOS tar: no AppleDouble ._* entries for files that carry extended attributes.
+export COPYFILE_DISABLE=1
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 die() {
