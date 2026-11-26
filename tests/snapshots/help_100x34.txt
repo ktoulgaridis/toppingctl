@@ -20,15 +20,15 @@
 │╰────────│   q  Ctrl-C        quit                                                      │────────╯│
 ╰─────────│                                                                              │─────────╯
 ╭┤³loopbac│   click            focus a strip; flip a switch; pick a mix; s l w e         │─────────╮
-│╭── LOOP │   wheel            turn a knob, move a fader (Shift ×10); next source        │NE ─────╮│
-││   PB 3/│   drag             turn a knob, move a fader (up / down)                     │        ││
-││     LIN│   double-click     reset a knob or fader                                     │el      ││
-││     −0 │                                                                              │        ││
+│╭── LOOP │   wheel            turn a knob, move a fader (Shift ×10); next source        │ MIX ───╮│
+││   PB 3/│   drag             turn a knob, move a fader (up / down)                     │⣦       ││
+││     LIN│   double-click     reset a knob or fader                                     │⠝       ││
+││     −0 │                                                                              │layback ││
 ││▔▔  −0━■│                    LINK: one fader and switch set, or an L and an R of each  │        ││
-││▕▕  −6 ┃│                    loopback, output: 1 dB a step, ×10 is 5 dB, −90 dB is −∞  │ 0 dBu  ││
-││▆▆ −12 ┃│                    PHONE: space or a click sets the level switch             │        ││
-││▆▆  −∞ ┃│                                                                              │        ││
-││     MUT│                                 [Esc] close                                  │        ││
+││▕▕  −6 ┃│                    loopback, output: 1 dB a step, ×10 is 5 dB, −90 dB is −∞  │────────╯│
+││▆▆ −12 ┃│                    PHONE: space or a click sets the level switch             │E ──────╮│
+││▆▆  −∞ ┃│                                                                              │l       ││
+││     MUT│                                 [Esc] close                                  │ 0 dBu  ││
 │╰────────│                                                                              │────────╯│
 ╰─────────╰──────────────────────────────────────────────────────────────────────────────╯─────────╯
  IN1 · MON on   space toggle   ←→↑↓ move   tab 1-4 panel   e settings   ? help   q quit
