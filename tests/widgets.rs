@@ -407,9 +407,9 @@ fn pills() {
 // The rules of docs/design/mockup-flat.py, at its 12×24 cell.
 
 use toppingctl::tui::pixel::{
-    button_image, chip_image, clip_image, fader_image, knob_image, meter_image, PX_ACCENT,
-    PX_AMBER, PX_ARC_OFF, PX_BG, PX_CHIP, PX_CHIP_EDGE, PX_CLIP_OFF, PX_DIM, PX_FADER_CAP,
-    PX_FAINT, PX_GREEN, PX_KNOB_BODY, PX_KNOB_BODY_DIM, PX_POINTER, PX_RED,
+    button_image, chip_image, clip_image, fader_image, knob_image, meter_image, peak_image,
+    PX_ACCENT, PX_AMBER, PX_ARC_OFF, PX_BG, PX_CHIP, PX_CHIP_EDGE, PX_CLIP_OFF, PX_DIM,
+    PX_FADER_CAP, PX_FAINT, PX_GREEN, PX_KNOB_BODY, PX_KNOB_BODY_DIM, PX_POINTER, PX_RED,
 };
 use toppingctl::tui::widgets::fader::fader_row;
 
@@ -819,6 +819,63 @@ fn text_meter_led_ladder() {
     assert_eq!(rows(&lit)[0], "▀");
     assert_eq!(lit[(0, 0)].fg, Theme::METER_RED);
     assert_eq!(rows(&lit)[1..], ["▆"; 4]);
+}
+
+/// The peak marker (#71): above the bar, a thin `▂` on the row of the
+/// held peak, in that row's band; none at or under the bar.
+#[test]
+fn text_meter_peak_marker() {
+    // −30 dB lights the bottom 5 of 10 rows; a peak at −6 dB is row 1.
+    let buf = render(Meter::new(-30.0, Theme::color()).peak(-6.0), 1, 10);
+    let r = rows(&buf);
+    assert_eq!(r[1], "▂", "{r:?}");
+    assert_eq!(buf[(0, 1)].fg, Theme::METER_AMBER, "row 1 is at 15 %");
+    assert_eq!(r[5..], ["▆"; 5]);
+    let others: Vec<_> = (0..5).filter(|&i| i != 1).map(|i| r[i].as_str()).collect();
+    assert_eq!(others, ["▕"; 4], "{r:?}");
+    // At the bar, or under it: no marker.
+    for peak in [-30.0, -40.0] {
+        let r = rows(&render(Meter::new(-30.0, Theme::color()).peak(peak), 1, 10));
+        assert!(!r.iter().any(|l| l == "▂"), "{peak}: {r:?}");
+    }
+    // Over silence; under the clip light.
+    let r = rows(&render(
+        Meter::new(-96.0, Theme::color()).peak(-30.0),
+        1,
+        10,
+    ));
+    assert_eq!(r[5], "▂", "{r:?}");
+    let r = rows(&render(
+        Meter::new(-96.0, Theme::color())
+            .peak(0.0)
+            .clip(Some(false)),
+        1,
+        5,
+    ));
+    assert_eq!(r[..2], ["▔", "▂"], "{r:?}");
+    // Monochrome: the same glyph.
+    let r = rows(&render(Meter::new(-30.0, Theme::plain()).peak(-6.0), 1, 10));
+    assert_eq!(r[1], "▂");
+}
+
+/// The pixel peak marker (#71): an overlay the bar's size, transparent
+/// but for the one LED segment at the peak, lit in its band.
+#[test]
+fn pixel_peak_marker_one_segment() {
+    let seg = |img: &toppingctl::tui::pixel::RgbaImage, k: u32| img.get_pixel(5, 225 - 7 * k).0;
+    // 10 rows: 31 segments; −30 dB is segment 15, 0 dB segment 30.
+    let img = peak_image(1, 10, CELL, -30.0);
+    assert_eq!((img.width(), img.height()), (12, 240));
+    assert!(is(seg(&img, 15), PX_GREEN, 0), "{:?}", seg(&img, 15));
+    for k in (0..31).filter(|&k| k != 15) {
+        assert_eq!(seg(&img, k)[3], 0, "segment {k} is transparent");
+    }
+    let top = peak_image(1, 10, CELL, 0.0);
+    assert!(is(seg(&top, 30), PX_RED, 0));
+    assert_eq!(seg(&top, 29)[3], 0);
+    // Below the meter: nothing.
+    let none = peak_image(1, 10, CELL, -96.0);
+    assert!((0..31).all(|k| seg(&none, k)[3] == 0));
 }
 
 /// The text fader's cap is square, not a round knob.

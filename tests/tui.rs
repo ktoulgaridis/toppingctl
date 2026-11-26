@@ -1324,6 +1324,7 @@ fn kind(w: &toppingctl::tui::pixel::PixelWidget) -> &'static str {
         W::Knob { .. } => "knob",
         W::Fader { .. } => "fader",
         W::Meter { .. } => "meter",
+        W::PeakMarker { .. } => "peak",
         W::ClipLight { .. } => "clip",
         W::Chip { .. } => "chip",
         W::Inset => "inset",
@@ -2205,4 +2206,108 @@ fn pixel_budget_never_places_unsent_images() {
             }
         }
     }
+}
+
+// ------------------------------------------------- meter ballistics (#71)
+
+/// End to end with a fake clock: a loud reading then silence. The bars
+/// fall at the release rate between ticks, the peak markers hold above
+/// them (text `▂`, a pixel overlay on top of each bar), the input readout
+/// stays the reading, and the loop redraws fast only while a meter moves.
+#[test]
+fn meter_ballistics_end_to_end() {
+    use toppingctl::tui::ballistics::ANIMATE_TICK;
+    use toppingctl::tui::pixel::PixelWidget;
+    use toppingctl::tui::run::{frame_wait, TICK};
+
+    let mut app = synced_app(Theme::color());
+    let loud = Meters {
+        inputs: [-3.0, -3.0],
+        playback: [[-3.0, -3.0]; 3],
+        output: [-3.0, -3.0],
+        loopbacks: [[-3.0, -3.0]; 2],
+    };
+    let quiet = Meters {
+        inputs: [-25.0, -25.0],
+        playback: [[-25.0, -25.0]; 3],
+        output: [-25.0, -25.0],
+        loopbacks: [[-25.0, -25.0]; 2],
+    };
+    let t0 = Instant::now();
+    let marks = |app: &App, m: &Meters| text(&render(app, m, 120, 40).0).matches('▂').count();
+
+    // Still at the reading: no marker, the normal tick.
+    app.tick(&loud, t0);
+    assert_eq!(marks(&app, &loud), 0);
+    assert_eq!(frame_wait(&app, t0), TICK);
+
+    // 200 ms later the readings are down at −25: the bars are 4 dB down, the
+    // markers held at −3, the fast redraw on.
+    let t1 = t0 + Duration::from_millis(200);
+    app.tick(&quiet, t1);
+    let l = app.ballistics().levels(&quiet);
+    assert!((l.inputs[0] + 7.0).abs() < 1e-9, "{:?}", l.inputs);
+    assert_eq!(app.ballistics().peaks(&quiet).inputs[0], -3.0);
+    assert_eq!(frame_wait(&app, t1), ANIMATE_TICK);
+    let (buf, hits) = render(&app, &quiet, 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("−25 pk"), "the readout is the reading:\n{t}");
+    assert!(t.matches('▂').count() >= 10, "markers over the bars:\n{t}");
+    let n = |k: fn(&PixelWidget) -> bool| hits.pixels().iter().filter(|s| k(&s.widget)).count();
+    let meters = n(|w| matches!(w, PixelWidget::Meter { .. }));
+    let peaks = n(|w| matches!(w, PixelWidget::PeakMarker { .. }));
+    // Every bar has its marker but the post-fader ones of muted or −∞
+    // channels (at the floor, held or not).
+    assert!(
+        peaks >= meters / 2 && peaks <= meters,
+        "{peaks} of {meters}"
+    );
+    for s in hits.pixels() {
+        if let PixelWidget::PeakMarker { db } = s.widget {
+            assert!(
+                hits.pixels()
+                    .iter()
+                    .any(|m| m.rect == s.rect && matches!(m.widget, PixelWidget::Meter { .. })),
+                "a marker covers its bar's cells"
+            );
+            assert!(db <= -3.0, "{db}");
+        }
+    }
+
+    // In pixels each marker is an overlay over its bar, on top.
+    let mut layer = toppingctl::tui::pixel::PixelLayer::with_cell_size((10, 20));
+    let (_, _, out) = draw_pixels(&app, &quiet, 120, 40, &mut layer);
+    let placed = placements(&out);
+    let over = placed.iter().filter(|p| p.z == 1).count();
+    assert_eq!(over, peaks, "{placed:?}");
+    for p in placed.iter().filter(|p| p.z == 1) {
+        assert!(placed
+            .iter()
+            .any(|m| m.z == 0 && (m.x, m.y, m.cols, m.rows) == (p.x, p.y, p.cols, p.rows)));
+    }
+    // A frame where nothing changed writes nothing.
+    let (_, _, again) = draw_pixels(&app, &quiet, 120, 40, &mut layer);
+    assert_eq!(again, "", "nothing re-sent");
+
+    // Held, the bars at the readings: still, so the normal tick.
+    let t2 = t0 + Duration::from_millis(1400);
+    app.tick(&quiet, t2);
+    assert_eq!(frame_wait(&app, t2), TICK, "a held marker is still");
+    // The hold over, the markers fall: the fast redraw again...
+    let t3 = t0 + Duration::from_millis(1600);
+    app.tick(&quiet, t3);
+    assert_eq!(frame_wait(&app, t3), ANIMATE_TICK);
+    assert!(marks(&app, &quiet) >= 10);
+    // ...until they are back on the bars: all still, no markers.
+    let t4 = t0 + Duration::from_millis(5000);
+    app.tick(&quiet, t4);
+    assert_eq!(frame_wait(&app, t4), TICK);
+    assert_eq!(marks(&app, &quiet), 0);
+    // The markers leave the pixel layer with their placements.
+    let (_, hits, out) = draw_pixels(&app, &quiet, 120, 40, &mut layer);
+    assert!(hits
+        .pixels()
+        .iter()
+        .all(|s| !matches!(s.widget, PixelWidget::PeakMarker { .. })));
+    assert!(count(&out, "d") >= peaks, "{out:?}");
 }

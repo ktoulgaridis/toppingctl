@@ -3,7 +3,7 @@
 //! above it parts the rows), flat bands by height (red at the top 8 %,
 //! amber to 30 %, green below), unlit rows an empty track; and an optional
 //! square clip light on top, held for [`CLIP_HOLD`] after the last clip
-//! (like the app's overload lights). Also the dB [`Scale`] next to it and
+//! (like the app's overload lights), and an optional peak marker (#71). Also the dB [`Scale`] next to it and
 //! the input's peak readout.
 
 use std::time::{Duration, Instant};
@@ -29,6 +29,8 @@ pub const PEAK_HOT_DB: f64 = -3.0;
 /// A lit segment, and an unlit one.
 const LED: &str = "▆";
 const OFF: &str = "▕";
+/// The peak marker (#71): a thin bar at the held peak.
+const PEAK: &str = "▂";
 
 /// `db` as a fraction of the meter: 0 = bottom, 1 = top.
 pub fn meter_frac(db: f64) -> f64 {
@@ -40,6 +42,7 @@ pub fn meter_frac(db: f64) -> f64 {
 #[derive(Clone, Debug)]
 pub struct Meter {
     db: f64,
+    peak: Option<f64>,
     clip: Option<bool>,
     theme: Theme,
 }
@@ -48,9 +51,17 @@ impl Meter {
     pub fn new(db: f64, theme: Theme) -> Self {
         Meter {
             db,
+            peak: None,
             clip: None,
             theme,
         }
+    }
+
+    /// The peak marker at `db` (see `ballistics`), drawn when it is above
+    /// the bar.
+    pub fn peak(mut self, db: f64) -> Self {
+        self.peak = Some(db);
+        self
     }
 
     /// A clip light on top: `Some(lit)`.
@@ -78,12 +89,17 @@ impl Widget for Meter {
             bar.height -= 1;
         }
         let h = bar.height;
-        let lit = (meter_frac(self.db) * f64::from(h)).round() as u16;
+        let rows = |db: f64| (meter_frac(db) * f64::from(h)).round() as u16;
+        let lit = rows(self.db);
+        // The marker's row (from the bottom), above the bar.
+        let mark = self.peak.map(rows).filter(|&p| p > lit).map(|p| p - 1);
         for i in 0..h {
             let y = bar.bottom() - 1 - i;
+            let from_top = (f64::from(h - 1 - i) + 0.5) / f64::from(h.max(1));
             if i < lit {
-                let from_top = (f64::from(h - 1 - i) + 0.5) / f64::from(h.max(1));
                 buf.set_string(bar.x, y, LED, t.meter(from_top));
+            } else if mark == Some(i) {
+                buf.set_string(bar.x, y, PEAK, t.meter(from_top));
             } else {
                 buf.set_string(bar.x, y, OFF, t.track());
             }
