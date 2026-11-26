@@ -1881,45 +1881,49 @@ fn idle_frames_keep_synced() {
 #[test]
 fn phone_level_switch_is_programmable() {
     let mut app = synced_app(Theme::color());
-    assert!(app.state().phone_gain, "+17 dBu to start");
+    assert!(
+        !app.state().phone_gain,
+        "0 dBu to start (the official default)"
+    );
     app.handle_key(ch('4'));
     app.handle_key(key(KeyCode::Right));
     app.handle_key(key(KeyCode::Right));
     assert_eq!(app.focus(), Control::Output(2));
     let a = app.handle_key(ch(' '));
-    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 0)]);
-    assert!(a.contains(&Action::Save));
-    assert!(!app.state().phone_gain);
-    let a = app.handle_key(key(KeyCode::Enter));
     assert_eq!(sends(&a), vec![frame(0x11, 0x02, 1)]);
+    assert!(a.contains(&Action::Save));
+    assert!(app.state().phone_gain);
+    let a = app.handle_key(key(KeyCode::Enter));
+    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 0)]);
 
-    // Clicks: "0 dBu" picks 0 dBu, again does nothing, "+17 dBu" goes back.
+    // Clicks: "+17 dBu" picks +17 dBu, again does nothing, "0 dBu" goes
+    // back.
     let (_, hits) = render(&app, &fake_meters(), 120, 40);
     let low = hits.rect(Hit::Phone(false)).expect("the 0 dBu pill");
     let high = hits.rect(Hit::Phone(true)).expect("the +17 dBu pill");
-    let a = click_at(&mut app, &hits, low, Instant::now());
-    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 0)]);
+    let a = click_at(&mut app, &hits, high, Instant::now());
+    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 1)]);
     let a = click_at(
         &mut app,
         &hits,
-        low,
+        high,
         Instant::now() + Duration::from_secs(1),
     );
     assert!(sends(&a).is_empty());
     let a = click_at(
         &mut app,
         &hits,
-        high,
+        low,
         Instant::now() + Duration::from_secs(2),
     );
-    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 1)]);
+    assert_eq!(sends(&a), vec![frame(0x11, 0x02, 0)]);
 
     // The device's button: its report moves the switch.
-    app.on_report(&frame(0x11, 0x02, 0));
-    assert!(!app.state().phone_gain);
+    app.on_report(&frame(0x11, 0x02, 1));
+    assert!(app.state().phone_gain);
     let (buf, hits) = render(&app, &fake_meters(), 120, 40);
-    let low = hits.rect(Hit::Phone(false)).unwrap();
-    assert_eq!(buf[(low.x, low.y)].bg, Theme::ACCENT, "0 dBu lit");
+    let high = hits.rect(Hit::Phone(true)).unwrap();
+    assert_eq!(buf[(high.x, high.y)].bg, Theme::ACCENT, "+17 dBu lit");
 }
 
 /// The header shows the interface's real sample rate (`48 kHz ▾`); the

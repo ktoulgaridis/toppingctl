@@ -291,11 +291,11 @@ fn parse_paths_and_values() {
     let s = set(&s, "mix.b.pb34.pan", "L50");
     for (path, shown) in [
         ("mix.b.pb34.pan", "L50"),
-        ("mix.a.in1.pan", "L100"),
+        ("mix.a.in1.pan", "C"),
         ("out.level", "0dB"),
         ("loopback.1.source", "pb34"),
         ("in1.mon", "off"),
-        ("phone_gain", "on"),
+        ("phone_gain", "off"),
         ("in1.48v", "unknown"),
         ("system.brightness", "1"),
     ] {

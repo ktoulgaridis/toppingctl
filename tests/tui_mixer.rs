@@ -311,9 +311,11 @@ fn controls_send_expected_frames() {
     let zero = CROSSPOINT_ZERO_DB;
     assert_eq!(xp(0.0), zero);
 
-    // Mix B IN1 fader to −6 dB: six steps of 1 dB. IN1 is hard L by
-    // default, so only `52 11` moves.
-    let mut app = app_with(State::default());
+    // Mix B IN1 fader to −6 dB: six steps of 1 dB. With IN1 hard L, only
+    // `52 11` moves.
+    let mut s = State::default();
+    s.mixes[1].in1.pan = 0.0;
+    let mut app = app_with(s);
     let dev = Device::new();
     app.handle_key(ch('b'));
     focus(&mut app, mix(0, Fader(0)));
@@ -363,14 +365,15 @@ fn controls_send_expected_frames() {
     assert_eq!(frames.len(), 2, "{frames:?}");
     dev.written();
 
-    // Mix C IN2 mute: IN2 is hard R, so only `53 22` drops to 0.
+    // Mix C IN2 mute: IN2 is centred by default, so `53 12` and `53 22`
+    // drop to 0.
     let mut app = app_with(State::default());
     let dev = Device::new();
     app.handle_key(ch('c'));
     focus(&mut app, mix(0, Mute(1)));
     let frames = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
     assert!(app.state().mixes[2].in2.mute);
-    assert_eq!(frames, [frame(0x53, 0x22, 0)]);
+    assert_eq!(frames, [frame(0x53, 0x12, 0), frame(0x53, 0x22, 0)]);
     assert_eq!(dev.written(), frames);
 
     // Solo PB1/2 in Mix A: every other strip of mix A goes to 0.
@@ -383,6 +386,8 @@ fn controls_send_expected_frames() {
         frames,
         [
             frame(0x51, 0x11, 0),
+            frame(0x51, 0x21, 0),
+            frame(0x51, 0x12, 0),
             frame(0x51, 0x22, 0),
             frame(0x51, 0x15, 0),
             frame(0x51, 0x26, 0),
@@ -390,10 +395,13 @@ fn controls_send_expected_frames() {
             frame(0x51, 0x28, 0),
         ]
     );
-    // Solo off again restores them.
+    // Solo off again restores them (IN1 and IN2 centred: half each side).
     let back = step(&mut app, &dev, |a| a.handle_key(ch(' ')));
-    assert_eq!(back.len(), 6);
-    assert!(back.iter().all(|f| f.value == zero));
+    assert_eq!(back.len(), 8);
+    for f in &back {
+        let want = if f.param & 0x0f <= 2 { zero / 2 } else { zero };
+        assert_eq!(f.value, want, "{f:?}");
+    }
     dev.written();
 
     // IN 1+2 LINK (#15): no frames of its own; the pans stay their own.
@@ -443,6 +451,14 @@ fn controls_send_expected_frames() {
     step(&mut app, &dev, |a| a.handle_key(ch('0')));
     assert_eq!(app.state().mixes[0].pb12.pan_l, 0.0);
     assert_eq!(app.state().mixes[0].pb12.pan_r, 1.0);
+    // On IN1 and IN2: centre, the official default.
+    for c in 0..2 {
+        focus(&mut app, mix(0, Pan(c)));
+        step(&mut app, &dev, |a| a.handle_key(ch('-')));
+        assert!(app.state().mixes[0].pans(0)[c] < 0.5);
+        step(&mut app, &dev, |a| a.handle_key(ch('0')));
+        assert_eq!(app.state().mixes[0].pans(0)[c], 0.5, "IN{} C", c + 1);
+    }
     let written = dev.written();
     assert!(written.iter().all(|f| f.group == 0x51), "{written:?}");
     // The device ends where the state says.
@@ -698,7 +714,8 @@ fn rename_strip() {
     assert_eq!(app.state().strip_names[1].as_deref(), Some("DAW"));
     let (buf, _) = render(&app, &meters, 120, 40);
     let t = text(&buf);
-    assert!(t.contains(" DAW ") && !t.contains("PB 1/2"), "{t}");
+    // The strip's title is gone (the output's source still says PB 1/2).
+    assert!(t.contains(" DAW ") && !t.contains(" PB 1/2 ─"), "{t}");
     // The same name in every mix.
     app.handle_key(ch('c'));
     let (buf, _) = render(&app, &meters, 120, 40);
@@ -1300,7 +1317,10 @@ fn faders_of(hits: &HitMap, strip: usize) -> Vec<MixControl> {
 fn link_swaps_every_mixer_strip() {
     use MixControl::*;
     let meters = fake_meters();
-    let mut app = app_with(State::default());
+    // IN1 hard L and IN2 hard R in Mix A, so each fader moves one side.
+    let mut s = State::default();
+    (s.mixes[0].in1.pan, s.mixes[0].in2.pan) = (0.0, 1.0);
+    let mut app = app_with(s);
     let dev = Device::new();
 
     // The defaults: IN 1+2 unlinked (two faders), every PB linked (one).
@@ -1400,6 +1420,7 @@ fn linked_pans_move_independently() {
     use MixControl::*;
     let mut s = State::default();
     s.mixes[0].link = true;
+    (s.mixes[0].in1.pan, s.mixes[0].in2.pan) = (0.0, 1.0);
     let mut app = app_with(s);
     let dev = Device::new();
     let zero = xp(0.0);

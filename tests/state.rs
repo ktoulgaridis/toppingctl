@@ -215,8 +215,8 @@ fn diff_is_minimal() {
         ]
     );
 
-    // Mix strip solo: every other strip in that mix goes to 0 (IN2 → L is
-    // already 0: IN2 is hard right by default).
+    // Mix strip solo: every other strip in that mix goes to 0 (IN2 is
+    // centred by default, so both its sides).
     let mut s = base.clone();
     s.mixes[2].in1.solo = true;
     let regs: Vec<(u8, u8, i32)> = diff_regs(&base, &s)
@@ -226,6 +226,7 @@ fn diff_is_minimal() {
     assert_eq!(
         regs,
         vec![
+            (0x53, 0x12, 0),
             (0x53, 0x22, 0),
             (0x53, 0x13, 0),
             (0x53, 0x24, 0),
@@ -256,10 +257,13 @@ fn diff_is_minimal() {
         vec![frame(0x33, 0x01, 0), frame(0x33, 0x02, 0)]
     );
 
-    // A muted fader (-inf) writes 0 (IN1 → R is already 0: hard left).
+    // A muted fader (-inf) writes 0 to both sides (IN1 is centred).
     let mut s = base.clone();
     s.mixes[0].in1.fader_db = f64::NEG_INFINITY;
-    assert_eq!(diff_regs(&base, &s), vec![frame(0x51, 0x11, 0)]);
+    assert_eq!(
+        diff_regs(&base, &s),
+        vec![frame(0x51, 0x11, 0), frame(0x51, 0x21, 0)]
+    );
 
     // 48V never appears in a diff.
     let mut s = base.clone();
@@ -511,17 +515,17 @@ fn loads_issue11_saved_state() {
     assert_eq!((p.pan_l, p.pan_r, p.link), (0.1, 0.9, false));
 }
 
-/// The mixer's IN 1+2 default, as in the official app on the Mac: IN1
-/// hard left (L100), IN2 hard right (R100), in every mix. A saved state
-/// keeps its own pans.
+/// The mixer's IN 1+2 default, as in the official app's Default workspace
+/// (`MixParmeter_1.Mix_channel_L/R` = 50, `LinkEnable` false): IN1 and IN2
+/// centred in every mix (#59). A saved state keeps its own pans.
 #[test]
-fn in12_pans_default_hard_left_and_right() {
+fn in12_pans_default_centred() {
     let s = State::default();
     for mix in &s.mixes {
-        assert_eq!(mix.in1.pan, 0.0, "IN1 L100");
-        assert_eq!(mix.in2.pan, 1.0, "IN2 R100");
+        assert_eq!(mix.in1.pan, 0.5, "IN1 C");
+        assert_eq!(mix.in2.pan, 0.5, "IN2 C");
     }
-    // Mix A IN1 at unity, hard left: all of it to L (51 11), none to R.
+    // Mix A IN1 at unity, centred: half to L (51 11), half to R (51 21).
     let frames = s.frames();
     let get = |g: u8, p: u8| {
         frames
@@ -530,10 +534,9 @@ fn in12_pans_default_hard_left_and_right() {
             .unwrap()
             .value
     };
-    assert!(get(0x51, 0x11) > 0);
-    assert_eq!(get(0x51, 0x21), 0);
-    assert_eq!(get(0x51, 0x12), 0);
-    assert!(get(0x51, 0x22) > 0);
+    for p in [0x11, 0x21, 0x12, 0x22] {
+        assert_eq!(get(0x51, p), 0x00ff_fff0, "51 {p:02x}");
+    }
 
     let mut saved = State::default();
     saved.mixes[1].in1.pan = 0.3;

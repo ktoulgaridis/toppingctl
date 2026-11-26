@@ -46,13 +46,16 @@ fn pb_channels_are_separate() {
     s.mixes[2].pb56.phase_r = true;
     assert_eq!(base.diff(&s), [frame(0x53, 0x28, -zero)]);
 
-    // PB2 solo: everything else in the mix goes, PB1 included.
+    // PB2 solo: everything else in the mix goes, PB1 included (IN1 and
+    // IN2 are centred, so both their sides).
     let mut s = base.clone();
     s.mixes[0].pb12.solo_r = true;
     assert_eq!(
         base.diff(&s),
         [
             frame(0x51, 0x11, 0),
+            frame(0x51, 0x21, 0),
+            frame(0x51, 0x12, 0),
             frame(0x51, 0x22, 0),
             frame(0x51, 0x13, 0),
             frame(0x51, 0x15, 0),
