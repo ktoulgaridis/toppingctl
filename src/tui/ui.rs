@@ -309,6 +309,19 @@ fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
         Some(Modal::Settings { sel }) => settings(buf, area, app, sel, false, &mut hits),
         Some(Modal::WorkspaceFolder) => settings(buf, area, app, FOLDER_ROW, true, &mut hits),
         Some(Modal::Import { sel }) => import_list(buf, area, app, sel, &mut hits),
+        Some(Modal::LoadImported) => confirm_yes(
+            buf,
+            area,
+            t,
+            " Load workspace? ",
+            &[
+                &format!("Imported {:?}.", app.prompt()),
+                &format!("Load {:?} now?", app.prompt()),
+                "48V stays as the device has it.",
+            ],
+            ("Yes", "No"),
+            &mut hits,
+        ),
         None => {}
     }
     hits
@@ -1990,7 +2003,35 @@ fn confirm(
     t: Theme,
     title: &str,
     lines: &[&str],
+    answers: (&str, &str),
+    hits: &mut HitMap,
+) {
+    question(buf, area, t, title, lines, answers, false, hits);
+}
+
+/// A yes/no question; Yes is the default (Enter).
+fn confirm_yes(
+    buf: &mut Buffer,
+    area: Rect,
+    t: Theme,
+    title: &str,
+    lines: &[&str],
+    answers: (&str, &str),
+    hits: &mut HitMap,
+) {
+    question(buf, area, t, title, lines, answers, true, hits);
+}
+
+/// A yes/no question, the default (`yes_default`, else No) focused.
+#[allow(clippy::too_many_arguments)]
+fn question(
+    buf: &mut Buffer,
+    area: Rect,
+    t: Theme,
+    title: &str,
+    lines: &[&str],
     (yes, no): (&str, &str),
+    yes_default: bool,
     hits: &mut HitMap,
 ) {
     let text_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
@@ -2007,22 +2048,24 @@ fn confirm(
             t.text(),
         );
     }
-    let yes = format!(" [y] {yes} ");
-    let no = format!(" [N] {no} ");
+    let (yes, no) = if yes_default {
+        (format!(" [Y] {yes} "), format!(" [n] {no} "))
+    } else {
+        (format!(" [y] {yes} "), format!(" [N] {no} "))
+    };
+    let focused = t.focus().add_modifier(Modifier::REVERSED);
+    let (yes_style, no_style) = if yes_default {
+        (focused, t.text())
+    } else {
+        (t.text(), focused)
+    };
     let gap = 4;
     let total = (yes.chars().count() + gap + no.chars().count()) as u16;
     let y = inner.bottom().saturating_sub(2);
     let x = inner.x + inner.width.saturating_sub(total) / 2;
-    let r = put(buf, inner, x, y, &yes, t.text());
+    let r = put(buf, inner, x, y, &yes, yes_style);
     hits.push(Hit::Yes, r);
-    let r = put(
-        buf,
-        inner,
-        r.right() + gap as u16,
-        y,
-        &no,
-        t.focus().add_modifier(Modifier::REVERSED),
-    );
+    let r = put(buf, inner, r.right() + gap as u16, y, &no, no_style);
     hits.push(Hit::No, r);
 }
 
