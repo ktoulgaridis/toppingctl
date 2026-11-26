@@ -1,6 +1,7 @@
 //! The terminal and the event loop: the only part of the TUI with I/O.
 //!
-//! The loop merges terminal input, the device's events and a ~30 fps tick.
+//! The loop merges terminal input, the device's events and a ~30 fps tick
+//! (~60 fps while a meter moves).
 //! The terminal is restored on every way out: normal exit, error, and panic
 //! (a panic hook), with mouse capture turned off.
 
@@ -28,14 +29,27 @@ use crate::state::Meters;
 use crate::sync::{connect, Store, SyncError};
 use crate::tpwork;
 use crate::tui::app::{Action, App};
+use crate::tui::ballistics::ANIMATE_TICK;
 use crate::tui::kitty;
 use crate::tui::pixel::PixelLayer;
 use crate::tui::theme::Theme;
 use crate::tui::ui::{self, HitMap};
 use crate::workspace::{Settings, Workspaces};
 
-/// How long the loop waits for input before it redraws (~30 fps).
-const TICK: Duration = Duration::from_millis(33);
+/// How long the loop waits for input before it redraws (~30 fps), with
+/// the meters still.
+pub const TICK: Duration = Duration::from_millis(33);
+
+/// How long the loop waits for input before the next frame at `now`:
+/// [`ANIMATE_TICK`] (~60 fps) while a meter is moving (a bar or a released
+/// peak marker falling, #71), else [`TICK`].
+pub fn frame_wait(app: &App, now: Instant) -> Duration {
+    if app.meters_moving(now) {
+        ANIMATE_TICK
+    } else {
+        TICK
+    }
+}
 
 /// Writes the sequence that takes the terminal into the TUI: the alternate
 /// screen, mouse capture on, cursor hidden.
@@ -168,7 +182,8 @@ pub fn run() -> Result<()> {
             app.set_notice(Some(e));
         }
         mark_alive(&conn, &mut app);
-        app.tick(&meters, Instant::now());
+        let now = Instant::now();
+        app.tick(&meters, now);
         let hits = draw_frame(
             &mut terminal,
             &app,
@@ -177,7 +192,7 @@ pub fn run() -> Result<()> {
             &mut io::stdout(),
         )?;
         let mut actions = Vec::new();
-        if event::poll(TICK)? {
+        if event::poll(frame_wait(&app, now))? {
             // Everything already queued, without waiting again.
             let mut resized = false;
             let mut queued = std::iter::from_fn(|| match event::poll(Duration::ZERO) {

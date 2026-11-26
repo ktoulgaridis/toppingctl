@@ -24,6 +24,7 @@ use crate::frame::Frame;
 use crate::rate::RATES;
 use crate::state::{Meters, Mix, Source, State};
 use crate::tpwork::Official;
+use crate::tui::ballistics::{self, MeterBallistics};
 use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
 use crate::tui::widgets::fader::db_at_frac;
@@ -497,7 +498,8 @@ pub enum MeterId {
 }
 
 impl MeterId {
-    fn index(self) -> usize {
+    /// Its place in [`ballistics::flat`]'s order.
+    pub(crate) fn index(self) -> usize {
         match self {
             MeterId::Input(i) => i.min(1),
             MeterId::Playback(p, c) => 2 + p.min(2) * 2 + c.min(1),
@@ -507,31 +509,15 @@ impl MeterId {
     }
 }
 
-/// `m`'s readings, in [`MeterId::index`] order.
-fn readings(m: &Meters) -> [f64; 14] {
-    [
-        m.inputs[0],
-        m.inputs[1],
-        m.playback[0][0],
-        m.playback[0][1],
-        m.playback[1][0],
-        m.playback[1][1],
-        m.playback[2][0],
-        m.playback[2][1],
-        m.output[0],
-        m.output[1],
-        m.loopbacks[0][0],
-        m.loopbacks[0][1],
-        m.loopbacks[1][0],
-        m.loopbacks[1][1],
-    ]
-}
-
 impl Clips {
     /// Takes the latest readings at `now`: `pre` as read, `post` after
     /// the faders ([`Meters::post`]).
     pub fn update(&mut self, pre: &Meters, post: &Meters, now: Instant) {
-        for (i, (a, b)) in readings(pre).into_iter().zip(readings(post)).enumerate() {
+        for (i, (a, b)) in ballistics::flat(pre)
+            .into_iter()
+            .zip(ballistics::flat(post))
+            .enumerate()
+        {
             self.holds[i].update(a, now);
             self.lit[i] = self.holds[i].lit(now);
             self.holds_out[i].update(b, now);
@@ -564,6 +550,8 @@ pub struct App {
     /// The mix the mixer shows: A (0), B (1), C (2).
     mix: usize,
     clips: Clips,
+    /// What the meters show between readings (#71).
+    ballistics: MeterBallistics,
     /// When the device last sent anything (meters included).
     last_rx: Option<Instant>,
     /// When [`App::tick`] first saw the session synced.
@@ -643,6 +631,7 @@ impl App {
             last_click: None,
             mix: 0,
             clips: Clips::default(),
+            ballistics: MeterBallistics::default(),
             last_rx: None,
             synced_at: None,
             rx_stale: false,
@@ -792,9 +781,22 @@ impl App {
         &self.clips
     }
 
-    /// The meters as of `now`: updates the clip lights, and whether the
-    /// device has gone quiet.
+    /// The meters' ballistics, as of the last [`App::tick`].
+    pub fn ballistics(&self) -> &MeterBallistics {
+        &self.ballistics
+    }
+
+    /// Whether a meter is moving as of `now` (a bar or a released peak
+    /// marker falling): the event loop redraws at
+    /// [`ANIMATE_TICK`](crate::tui::ballistics::ANIMATE_TICK) while it is.
+    pub fn meters_moving(&self, now: Instant) -> bool {
+        self.ballistics.moving(now)
+    }
+
+    /// The meters as of `now`: advances their ballistics, updates the clip
+    /// lights, and whether the device has gone quiet.
     pub fn tick(&mut self, meters: &Meters, now: Instant) {
+        self.ballistics.advance(meters, now);
         let post = meters.post(&self.state, self.mix);
         self.clips.update(meters, &post, now);
         if self.phase == Phase::Synced {

@@ -125,6 +125,9 @@ pub enum PixelWidget {
     },
     /// A level meter's bar at `db`.
     Meter { db: f64 },
+    /// A meter's peak marker at `db` (#71): over the bar's cells, on top
+    /// of the bar, transparent but for the LED segment at `db`.
+    PeakMarker { db: f64 },
     /// A clip light.
     ClipLight { lit: bool },
     /// A flat square face inset in its cells, lit in `rgb` (unlit:
@@ -145,12 +148,19 @@ pub enum PixelWidget {
 }
 
 impl PixelWidget {
+    /// Whether it goes over another widget's cells (a peak marker over
+    /// its bar), placed alongside it.
+    fn is_overlay(&self) -> bool {
+        matches!(self, PixelWidget::PeakMarker { .. })
+    }
+
     /// The z-index: under the text (-1) for widgets with text on them,
-    /// else 0.
+    /// over the bar (1) for a peak marker, else 0.
     pub fn z(&self) -> i32 {
         match self {
             PixelWidget::Inset => -2,
             PixelWidget::Chip { .. } | PixelWidget::Fader { .. } | PixelWidget::Focus => -1,
+            PixelWidget::PeakMarker { .. } => 1,
             _ => 0,
         }
     }
@@ -170,6 +180,7 @@ enum Key {
     Knob(u16, u16, Option<u16>, bool, bool, bool),
     Fader(u16, u16, u16, i16, bool, bool),
     Meter(u16, u16, u16),
+    Peak(u16, u16, u16),
     Clip(u16, u16, bool),
     Chip(u16, u16, (u8, u8, u8), Option<FaceLabel>, bool),
     Inset(u16, u16),
@@ -249,6 +260,9 @@ impl PixelSpot {
                 focused,
             ),
             PixelWidget::Meter { db } => Key::Meter(w, h, quantise(meter_frac(db), METER_STEPS)),
+            PixelWidget::PeakMarker { db } => {
+                Key::Peak(w, h, quantise(meter_frac(db), METER_STEPS))
+            }
             PixelWidget::ClipLight { lit } => Key::Clip(w, h, lit),
             PixelWidget::Chip {
                 rgb,
@@ -267,7 +281,7 @@ impl PixelSpot {
     fn clear(&self, buf: &mut Buffer) {
         let r = self.rect.intersection(buf.area);
         let (x0, x1) = match self.widget {
-            PixelWidget::Focus => return,
+            PixelWidget::Focus | PixelWidget::PeakMarker { .. } => return,
             PixelWidget::Chip { label, .. } => {
                 for y in r.top()..r.bottom() {
                     for x in r.left()..r.right() {
@@ -325,6 +339,7 @@ fn draw(key: Key, cell: (u16, u16)) -> RgbaImage {
             focused,
         ),
         Key::Meter(c, r, q) => meter_image_at(c, r, cell, f64::from(q) / METER_STEPS),
+        Key::Peak(c, r, q) => peak_image_at(c, r, cell, f64::from(q) / METER_STEPS),
         Key::Clip(c, r, lit) => clip_image(c, r, cell, lit),
         Key::Chip(c, r, rgb, label, focused) => button_image(c, r, cell, rgb, label, focused),
         Key::Inset(c, r) => inset_image(c, r, cell),
@@ -384,7 +399,9 @@ pub struct PixelLayer {
     cell: (u16, u16),
     images: HashMap<Key, u32>,
     next_image: u32,
-    shown: HashMap<Rect, Shown>,
+    /// What is placed where: by cell area, and whether it is an overlay
+    /// (a peak marker, over its bar's cells).
+    shown: HashMap<(Rect, bool), Shown>,
     next_placement: u32,
     area: Option<Rect>,
     out: String,
@@ -468,7 +485,7 @@ impl PixelLayer {
 
     /// Whether an image is placed on `rect` (after [`PixelLayer::update`]).
     pub fn is_placed(&self, rect: Rect) -> bool {
-        self.shown.contains_key(&rect)
+        self.shown.contains_key(&(rect, false))
     }
 
     /// The kitty commands queued since the last call, to write after the
@@ -509,7 +526,8 @@ impl PixelLayer {
         let mut deletes = Vec::new();
         for spot in spots {
             let r = spot.rect;
-            if r.is_empty() || r.intersection(area) != r || self.shown.contains_key(&r) {
+            let slot = (r, spot.widget.is_overlay());
+            if r.is_empty() || r.intersection(area) != r || self.shown.contains_key(&slot) {
                 continue;
             }
             let key = spot.key();
@@ -517,7 +535,7 @@ impl PixelLayer {
                 Some(&id) => id,
                 None if sent_any && budget == 0 => {
                     // Over this frame's budget: a later frame sends it.
-                    if let Some(prev) = old.remove(&r) {
+                    if let Some(prev) = old.remove(&slot) {
                         deletes.push(prev);
                     }
                     continue;
@@ -533,7 +551,7 @@ impl PixelLayer {
                     id
                 }
             };
-            let shown = match old.remove(&r) {
+            let shown = match old.remove(&slot) {
                 Some(prev) if prev.image == image => prev,
                 prev => {
                     let placement = prev.map_or_else(|| self.new_placement(), |p| p.placement);
@@ -542,7 +560,7 @@ impl PixelLayer {
                     Shown { image, placement }
                 }
             };
-            self.shown.insert(r, shown);
+            self.shown.insert(slot, shown);
         }
         deletes.extend(old.into_values());
         for d in deletes {
@@ -898,27 +916,38 @@ fn meter_x(w: f32, sx: f32) -> (f32, f32) {
     (x0, x0 + mw)
 }
 
-/// The LED ladder from `top` to `bot`, the signal reaching `level` (0 =
-/// empty, 1 = full): square segments from the bottom up, each lit when
-/// its middle is at or under the level.
-fn ladder(cv: &mut Canvas, (x0, x1): (f32, f32), (top, bot): (f32, f32), level: f32, sy: f32) {
+/// The LED ladder's segments from `top` to `bot`, bottom up, for the
+/// signal at `level` (0 = empty, 1 = full): each one's top and bottom
+/// edges, its middle as a fraction from the top (its band), and whether it
+/// is lit (its middle at or under the level).
+fn segments((top, bot): (f32, f32), level: f32, sy: f32) -> Vec<(f32, f32, f32, bool)> {
     let seg = (SEG_H * sy).round().max(1.0);
     let gap = (SEG_GAP * sy).round().max(1.0);
     let span = (bot - top).max(1.0);
     let ly = top + span * (1.0 - level.clamp(0.0, 1.0));
+    let mut out = Vec::new();
     let mut y = bot.round();
     while y - seg >= top {
         let mid = y - seg / 2.0;
-        let lit = level > 0.0 && mid >= ly;
+        out.push((y - seg, y, (mid - top) / span, level > 0.0 && mid >= ly));
+        y -= seg + gap;
+    }
+    out
+}
+
+/// The LED ladder from `top` to `bot`, the signal reaching `level` (0 =
+/// empty, 1 = full): square segments from the bottom up, each lit when
+/// its middle is at or under the level.
+fn ladder(cv: &mut Canvas, (x0, x1): (f32, f32), ends: (f32, f32), level: f32, sy: f32) {
+    for (y0, y1, band, lit) in segments(ends, level, sy) {
         let shape = Shape::RRect {
             x0,
-            y0: y - seg,
+            y0,
             x1,
-            y1: y,
+            y1,
             rad: 0.0,
         };
-        cv.fill(shape, led_colour((mid - top) / span, lit));
-        y -= seg + gap;
+        cv.fill(shape, led_colour(band, lit));
     }
 }
 
@@ -933,6 +962,35 @@ fn meter_image_at(cols: u16, rows: u16, cell: (u16, u16), level: f64) -> RgbaIma
     let (w, h) = (cv.w as f32, cv.h as f32);
     let half = f32::from(cell.1.max(1)) / 2.0;
     ladder(&mut cv, meter_x(w, sx), (half, h - half), level as f32, sy);
+    cv.into_image()
+}
+
+/// A meter's peak marker (#71), `cols`×`rows` cells (the bar's), at `db`:
+/// transparent but for the top segment a bar at `db` would light, lit in
+/// its band, placed over the bar. Below the meter, nothing.
+pub fn peak_image(cols: u16, rows: u16, cell: (u16, u16), db: f64) -> RgbaImage {
+    peak_image_at(cols, rows, cell, meter_frac(db))
+}
+
+fn peak_image_at(cols: u16, rows: u16, cell: (u16, u16), level: f64) -> RgbaImage {
+    let (mut cv, sx, sy) = canvas(cols, rows, cell);
+    let (w, h) = (cv.w as f32, cv.h as f32);
+    let half = f32::from(cell.1.max(1)) / 2.0;
+    let (x0, x1) = meter_x(w, sx);
+    let top = segments((half, h - half), level as f32, sy)
+        .into_iter()
+        .take_while(|s| s.3)
+        .last();
+    if let Some((y0, y1, band, _)) = top {
+        let shape = Shape::RRect {
+            x0,
+            y0,
+            x1,
+            y1,
+            rad: 0.0,
+        };
+        cv.fill(shape, led_colour(band, true));
+    }
     cv.into_image()
 }
 

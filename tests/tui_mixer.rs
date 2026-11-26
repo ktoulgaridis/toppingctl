@@ -797,6 +797,7 @@ fn kind(w: &PixelWidget) -> &'static str {
         PixelWidget::Knob { .. } => "knob",
         PixelWidget::Fader { .. } => "fader",
         PixelWidget::Meter { .. } => "meter",
+        PixelWidget::PeakMarker { .. } => "peak",
         PixelWidget::ClipLight { .. } => "clip",
         PixelWidget::Chip { .. } => "chip",
         PixelWidget::Inset => "inset",

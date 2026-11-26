@@ -32,7 +32,7 @@ use crate::tui::pixel::{
 use crate::tui::theme::Theme;
 use crate::tui::widgets::dial::{knob_rect, Dial};
 use crate::tui::widgets::fader::{fmt_db, level_text, Fader};
-use crate::tui::widgets::meter::{peak_text, Meter, Scale, INPUT_SCALE_DB};
+use crate::tui::widgets::meter::{meter_frac, peak_text, Meter, Scale, INPUT_SCALE_DB};
 use crate::tui::widgets::pill::{button, pill, PillKind};
 
 /// The smallest terminal the full screen is drawn in.
@@ -430,8 +430,9 @@ fn console(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut 
     let (input, mixer) = split(top);
     let (loopback, output) = split(bottom);
 
-    // The readings, and the levels after the faders.
-    let both = [meters.clone(), meters.post(app.state(), app.mix())];
+    // The levels shown (the ballistics, #71), and after the faders.
+    let shown = app.ballistics().levels(meters);
+    let both = [shown.clone(), shown.post(app.state(), app.mix())];
     draw_header(buf, header, app, t, hits);
     draw_input_panel(buf, input, app, meters, hits);
     draw_mixer_panel(buf, mixer, app, &both, hits);
@@ -904,18 +905,22 @@ impl Knob {
     }
 }
 
-/// A level meter as text, its bar and clip light recorded for the pixel
-/// layer (the clip light on the top row, as the text meter draws it).
+/// A level meter as text, its bar, peak marker (at `peak`, #71) and clip
+/// light recorded for the pixel layer (the clip light on the top row, as
+/// the text meter draws it). The marker goes to the pixel layer only when
+/// it is above the bar.
+#[allow(clippy::too_many_arguments)]
 fn meter(
     buf: &mut Buffer,
     area: Rect,
     db: f64,
+    peak: f64,
     width: u16,
     clip: Option<bool>,
     t: Theme,
     hits: &mut HitMap,
 ) {
-    Meter::new(db, t).clip(clip).render(area, buf);
+    Meter::new(db, t).peak(peak).clip(clip).render(area, buf);
     let mut bar = Rect {
         width: width.min(area.width),
         ..area
@@ -929,6 +934,9 @@ fn meter(
         bar.height -= 1;
     }
     hits.pixel(bar, PixelWidget::Meter { db });
+    if meter_frac(peak) > meter_frac(db) {
+        hits.pixel(bar, PixelWidget::PeakMarker { db: peak });
+    }
 }
 
 /// A meter's sunken box over `rect`: a darker background in the text form,
@@ -1059,15 +1067,21 @@ fn draw_input_strip(
     // The meter column, in its own sunken box: the peak readout on top,
     // then the clip light over the bar, the scale beside it.
     let meter_h = r.height;
-    let db = meters.inputs[ch];
+    // The readout is the reading itself; the bar and its marker are the
+    // ballistics' (#71).
+    let reading = meters.inputs[ch];
+    let id = MeterId::Input(ch);
+    let db = app.ballistics().level(id, reading);
+    let peak = app.ballistics().peak(id, reading);
     let x0 = r.x + 1;
-    let lit = app.clips().lit(MeterId::Input(ch));
-    put(buf, r, x0, r.y, &peak_text(db), t.peak(db));
+    let lit = app.clips().lit(id);
+    put(buf, r, x0, r.y, &peak_text(reading), t.peak(reading));
     if meter_h >= 3 {
         meter(
             buf,
             Rect::new(x0, r.y + 1, 2, meter_h - 1),
             db,
+            peak,
             2,
             Some(lit),
             t,
@@ -1318,6 +1332,9 @@ fn pan_dials(
 struct ChannelMeter {
     pre: f64,
     post: f64,
+    /// The peak markers, pre and post (#71).
+    pre_peak: f64,
+    post_peak: f64,
     clip_in: bool,
     clip_out: bool,
 }
@@ -1330,9 +1347,14 @@ impl ChannelMeter {
             MeterId::Output(c) => m.output[c],
             MeterId::Loopback(l, c) => m.loopbacks[l][c],
         };
+        // `meters` are the levels shown, at or over the readings.
+        let pre_peak = app.ballistics().peaks(&meters[0]);
+        let post_peak = pre_peak.post(app.state(), app.mix());
         ChannelMeter {
             pre: read(&meters[0]),
             post: read(&meters[1]),
+            pre_peak: read(&pre_peak),
+            post_peak: read(&post_peak),
             clip_in: app.clips().lit(id),
             clip_out: app.clips().lit_out(id),
         }
@@ -1347,8 +1369,17 @@ fn meter_pair(buf: &mut Buffer, area: Rect, m: ChannelMeter, t: Theme, hits: &mu
         width: 1,
         ..area
     };
-    meter(buf, col(0), m.pre, 1, Some(m.clip_in), t, hits);
-    meter(buf, col(1), m.post, 1, Some(m.clip_out), t, hits);
+    meter(buf, col(0), m.pre, m.pre_peak, 1, Some(m.clip_in), t, hits);
+    meter(
+        buf,
+        col(1),
+        m.post,
+        m.post_peak,
+        1,
+        Some(m.clip_out),
+        t,
+        hits,
+    );
     inset(buf, Rect { width: 2, ..area }, t, hits);
 }
 
