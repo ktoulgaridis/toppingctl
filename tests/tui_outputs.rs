@@ -712,7 +712,8 @@ fn mouse_on_out_loopback() {
     assert!(app.modal().is_none());
     app.handle_mouse_at(mouse(UP, item.x + 1, item.y, NONE), &menu, t0);
 
-    // The wheel on the output's source: the next one in the menu.
+    // The wheel on the output's source: the next one in the menu (PB 1/2
+    // → PB 3/4).
     let osrc = hits.rect(Hit::Control(bus(OUT_BUS, Source))).unwrap();
     let frames = step(&mut app, &dev, |a| {
         a.handle_mouse_at(
@@ -721,7 +722,7 @@ fn mouse_on_out_loopback() {
             t0,
         )
     });
-    assert_eq!(frames, [frame(0x31, 0x05, 0x20)]);
+    assert_eq!(frames, [frame(0x31, 0x05, 0x200)]);
     assert!(app.modal().is_none(), "the wheel opens nothing");
 
     // Drag the output fader to the bottom: −∞; double-click: 0 dB.

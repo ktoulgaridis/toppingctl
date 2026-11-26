@@ -359,7 +359,8 @@ fn plus_minus_send_expected_frames() {
         all.extend(frames);
     }
 
-    // Mix A IN1 fader −1 dB: `51 11` (IN1 is hard L).
+    // Mix A IN1 fader −1 dB: `51 11` and `51 21`, half each (IN1 is
+    // centred).
     press(&mut app, ch('2'), Control::Mixer(0));
     for _ in 0..3 {
         app.handle_key(key(DOWN));
@@ -368,11 +369,18 @@ fn plus_minus_send_expected_frames() {
     let frames = step(&mut app, &dev, |a| a.handle_key(ch('-')));
     assert_eq!(
         frames,
-        [Frame {
-            group: 0x51,
-            param: 0x11,
-            value: xp(-1.0)
-        }]
+        [
+            Frame {
+                group: 0x51,
+                param: 0x11,
+                value: xp(-1.0) / 2
+            },
+            Frame {
+                group: 0x51,
+                param: 0x21,
+                value: xp(-1.0) / 2
+            }
+        ]
     );
     all.extend(frames);
 
@@ -580,10 +588,7 @@ fn footer_names_the_focus() {
             "IN1 · gain +12 dB",
         ),
         (vec![ch('3'), key(DOWN)], "LOOP 1+2 · source PB 3/4"),
-        (
-            vec![ch('4'), key(RIGHT), key(RIGHT)],
-            "PHONE · level +17 dBu",
-        ),
+        (vec![ch('4'), key(RIGHT), key(RIGHT)], "PHONE · level 0 dBu"),
     ] {
         for k in keys {
             app.handle_key(k);

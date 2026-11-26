@@ -177,8 +177,10 @@ pub struct PbStrip {
 }
 
 /// One of the three mixes. IN 1+2's link is stored as `in12_link`: a
-/// `link` is from before #15 (see the module docs).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `link` is from before #15 (see the module docs). The default is the
+/// official app's (its `Default.config`): IN 1+2 unlinked with IN1 and IN2
+/// centred, each PB strip as [`PbStrip::default`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, from = "MixWire", into = "MixWire")]
 pub struct Mix {
     pub in1: Strip,
@@ -302,8 +304,15 @@ impl Source {
     }
 }
 
-/// The official app's launch state (`captures/mac-1/tx.txt`), except the
-/// inputs, which start at +0 dB and unmuted.
+/// The official app's Default workspace (`Default.config`, app V1.09; a
+/// copy is `tests/fixtures/official/Default.config`): inputs at +0 dB with
+/// every switch off; in every mix IN 1+2 unlinked with both pans centred,
+/// each PB strip linked with its odd channel hard L and its even hard R,
+/// every fader at 0 dB; Output 1+2 from Playback 1/2, linked, 0 dB,
+/// headphones and line out on; Loopback 1+2 from Playback 3/4 and 3+4 from
+/// Playback 5/6, linked, 0 dB; Phone Out at 0 dBu (`Gain_Enable` false).
+/// The settings (brightness, standby, mobile apps) are not in a workspace;
+/// they start as the device ships.
 impl Default for State {
     fn default() -> Self {
         State {
@@ -320,32 +329,12 @@ impl Default for State {
                 },
             ],
             output: Output::default(),
-            phone_gain: true,
+            phone_gain: false,
             system: System::default(),
             strip_names: Default::default(),
             loopback_names: Default::default(),
             output_name: None,
             readout: Readout::default(),
-        }
-    }
-}
-
-impl Default for Mix {
-    /// As in the official app: IN1 hard left (L100), IN2 hard right (R100).
-    fn default() -> Self {
-        Mix {
-            in1: Strip {
-                pan: 0.0,
-                ..Strip::default()
-            },
-            in2: Strip {
-                pan: 1.0,
-                ..Strip::default()
-            },
-            pb12: PbStrip::default(),
-            pb34: PbStrip::default(),
-            pb56: PbStrip::default(),
-            link: false,
         }
     }
 }
@@ -579,7 +568,7 @@ impl Loopback {
 impl Default for Output {
     fn default() -> Self {
         Output {
-            source: Source::MixA,
+            source: Source::Pb12,
             level_l_db: 0.0,
             level_r_db: 0.0,
             link: true,
@@ -949,7 +938,7 @@ impl From<PbStripWire> for PbStrip {
 /// [`Mix`] as stored. IN 1+2's link is `in12_link`; a `link` is from
 /// before #15, when the link put IN1 hard L and IN2 hard R, so a `link`
 /// that is on loads as those pans (the frames stay the same).
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct MixWire {
     in1: Strip,
@@ -960,19 +949,6 @@ struct MixWire {
     #[serde(skip_serializing)]
     link: Option<bool>,
     in12_link: Option<bool>,
-}
-
-// Not derivable: a missing IN strip takes the mix's default (IN1 hard L,
-// IN2 hard R), not the strip's.
-#[allow(clippy::derivable_impls)]
-impl Default for MixWire {
-    fn default() -> Self {
-        MixWire {
-            link: None,
-            in12_link: None,
-            ..Mix::default().into()
-        }
-    }
 }
 
 impl From<Mix> for MixWire {

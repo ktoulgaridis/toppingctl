@@ -22,7 +22,7 @@ use ratatui::text::Span;
 
 use crate::frame::Frame;
 use crate::rate::RATES;
-use crate::state::{Meters, Source, State};
+use crate::state::{Meters, Mix, Source, State};
 use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
 use crate::tui::widgets::fader::db_at_frac;
@@ -1366,8 +1366,8 @@ impl App {
     }
 
     /// Puts a knob or fader back to its default: gain −0 dB, a fader 0 dB,
-    /// a pan dial where the app starts it (odd channel and IN1 hard L, even
-    /// channel and IN2 hard R).
+    /// a pan dial where the app's Default workspace has it (IN1 and IN2
+    /// centred, a PB strip's odd channel hard L and even hard R).
     fn reset(&mut self, c: Control) -> Vec<Action> {
         match c {
             Control::Input {
@@ -1381,7 +1381,7 @@ impl App {
             Control::Mix {
                 strip,
                 ctl: MixControl::Pan(ch),
-            } => self.set_pan(strip, ch, ch.min(1) as f64),
+            } => self.set_pan(strip, ch, Mix::default().pans(strip)[ch.min(1)]),
             Control::Bus {
                 bus,
                 ctl: BusControl::Fader(ch),
