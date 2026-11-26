@@ -6,7 +6,7 @@ Control Center does: inputs (gain, 48V, mute, solo, phase, monitor, instrument),
 three mixes, loopback, the output, and the device's settings. It has a TUI and a CLI for
 scripts.
 
-![Screenshot of the toppingctl TUI: input, mixer, loopback and output panels](docs/assets/screenshot.png)
+![toppingctl running with music playing: live meters, switching mixes A/B/C, a fader dip on Playback 1/2, the settings dialog and the sample rate list](docs/assets/demo.gif)
 
 The TUI shows the official app's four panels side by side: **Input** (gain knobs and
 switches per channel), **Mixer** (one strip per source, for mix A, B or C), **Loopback**
