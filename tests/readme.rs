@@ -134,7 +134,7 @@ fn readme_mentions_what_the_spec_asks_for() {
         "kitty",
         "Ghostty",
         "PipeWire",
-        "Screenshot",
+        "docs/assets/demo.gif",
         "toppingctl set",
         "toppingctl get",
         "toppingctl dump",
