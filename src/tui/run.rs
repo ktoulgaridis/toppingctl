@@ -193,8 +193,8 @@ pub fn run() -> Result<()> {
         for action in carry_out(&conn, &mut app, &store, &workspaces, actions)? {
             match action {
                 Action::SetRate(rate) => {
-                    // pw-metadata off the loop; a failure comes back as a
-                    // notice.
+                    // The OS call (pw-metadata, CoreAudio) off the loop; a failure
+                    // comes back as a notice.
                     let tx = rate_errors_tx.clone();
                     std::thread::spawn(move || {
                         if let Err(e) = rate::set(rate) {

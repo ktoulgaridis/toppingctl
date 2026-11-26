@@ -141,7 +141,7 @@ fn readme_mentions_what_the_spec_asks_for() {
         "toppingctl store",
         "toppingctl init",
         "analog",
-        "display-only",
+        "CoreAudio",
     ] {
         assert!(text.contains(want), "README should mention {want:?}");
     }

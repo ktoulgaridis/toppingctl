@@ -108,7 +108,7 @@ this table in step with it.
 | `space` `enter` | toggle the switch; open a source's menu |
 | `enter` | on a strip's name: rename it |
 | `a` `b` `c` | show mix A / B / C |
-| `r` | sample rate list (sets it through PipeWire) |
+| `r` | sample rate list (sets it through the OS) |
 | `s` | save the workspace (on Default: save as…) |
 | `l` | workspaces: pick, save, delete, new, save as |
 | `w` | store to the device's memory (download) |
@@ -184,6 +184,10 @@ The sample rate isn't a HID setting; the OS owns it. On Linux toppingctl reads i
 ALSA (or PipeWire's graph rate while the card is idle), and `r` sets it through PipeWire
 (`clock.force-rate`, with `pw-metadata`).
 
+On macOS toppingctl reads and sets the E2x2's nominal sample rate through CoreAudio, as
+the official app does, so the header and Audio MIDI Setup agree. If CoreAudio refuses a
+rate (another app holds the E2x2 in hog mode, say), the footer says so.
+
 ## The official TOPPING app
 
 toppingctl and TOPPING Professional Control Center talk to the device over the same
@@ -195,8 +199,6 @@ official app for predictable results.
 
 - **Phone volume is analog only.** The front knob sets it; there is no register for it.
   toppingctl sets only the PHONE level switch.
-- **macOS: the sample rate is display-only at best.** toppingctl doesn't read or set it
-  there yet (the header shows `— kHz`); use Audio MIDI Setup.
 - The device has no full-state read, so toppingctl can only show what it last set (see
   [Command line](#command-line)).
 

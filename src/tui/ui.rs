@@ -2099,7 +2099,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ("space  enter", "toggle the switch; open a source's menu"),
         ("enter", "on a strip's name: rename it"),
         ("a  b  c", "show mix A / B / C"),
-        ("r", "sample rate list (sets it through PipeWire)"),
+        ("r", "sample rate list (sets it through the OS)"),
         ("s", "save the workspace (on Default: save as…)"),
         ("l", "workspaces: pick, save, delete, new, save as"),
         ("w", "store to the device's memory (download)"),

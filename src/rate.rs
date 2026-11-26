@@ -9,10 +9,19 @@
 //!   rate stands in (`pw-metadata -n settings 0`: a forced rate, else
 //!   `clock.rate`). Setting a rate forces PipeWire's graph to it
 //!   (`clock.force-rate`).
+//! - **macOS:** CoreAudio, as the official app does. The E2x2 is the audio
+//!   device whose model UID (`kAudioDevicePropertyModelUID`) ends in its USB
+//!   ids (`E2x2:152A:8752`); its rate is `kAudioDevicePropertyNominalSampleRate`
+//!   (`nsrt`), read and set directly (FFI to CoreAudio, no crate). A failed
+//!   set comes back as the CoreAudio status (`'nope'`, `'!hog'`, …).
 //! - **Elsewhere:** unknown (`—`), and not settable from here yet.
+
+#[cfg(target_os = "macos")]
+mod coreaudio;
 
 use std::fs;
 use std::path::Path;
+#[cfg(not(target_os = "macos"))]
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -112,8 +121,56 @@ pub fn force_rate_args(rate: u32) -> Option<[String; 5]> {
     })
 }
 
+/// Whether a CoreAudio model UID (`<name>:<vendor>:<product>`, ids in hex,
+/// as macOS's USB audio driver writes it) is the E2x2's.
+pub fn is_e2x2_model_uid(uid: &str) -> bool {
+    let mut parts = uid.rsplit(':');
+    let id = |p: Option<&str>| p.and_then(|p| u16::from_str_radix(p.trim(), 16).ok());
+    let product = id(parts.next());
+    let vendor = id(parts.next());
+    vendor == Some(VENDOR_ID) && product == Some(PRODUCT_ID) && parts.next().is_some()
+}
+
+/// A CoreAudio nominal rate (Float64) in Hz; `None` for 0 or nonsense.
+pub fn rate_from_nominal(nominal: f64) -> Option<u32> {
+    let hz = nominal.round();
+    (hz.is_finite() && hz >= 1.0 && hz <= f64::from(u32::MAX)).then_some(hz as u32)
+}
+
+/// The Float64 CoreAudio takes for `rate`; only one of [`RATES`].
+pub fn nominal_for(rate: u32) -> Option<f64> {
+    RATES.contains(&rate).then_some(f64::from(rate))
+}
+
+/// A failed CoreAudio set, for the user: the status as its four-character
+/// code (`'nope'`), with a word on the ones a user can act on.
+pub fn coreaudio_error(status: i32) -> String {
+    let bytes = status.to_be_bytes();
+    let code = if bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+        format!("'{}'", String::from_utf8_lossy(&bytes))
+    } else {
+        status.to_string()
+    };
+    let why = match &bytes {
+        b"!hog" => ": another app has the E2x2 to itself (hog mode)",
+        b"nope" | b"unop" => ": the E2x2 refused it",
+        b"!dev" | b"!obj" => ": the E2x2 went away",
+        b"stop" => ": CoreAudio isn't running",
+        _ => "",
+    };
+    format!("CoreAudio could not set the sample rate ({code}{why})")
+}
+
 /// The E2x2's current rate, if this OS tells.
 pub fn current() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    return coreaudio::current();
+    #[cfg(not(target_os = "macos"))]
+    current_linux()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_linux() -> Option<u32> {
     if !cfg!(target_os = "linux") {
         return None;
     }
@@ -127,8 +184,17 @@ pub fn current() -> Option<u32> {
     })
 }
 
-/// Sets the rate (Linux, through PipeWire). The error is for the user.
+/// Sets the rate (Linux through PipeWire, macOS through CoreAudio). The
+/// error is for the user.
 pub fn set(rate: u32) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return coreaudio::set(rate);
+    #[cfg(not(target_os = "macos"))]
+    set_linux(rate)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_linux(rate: u32) -> Result<(), String> {
     if !cfg!(target_os = "linux") {
         return Err("setting the sample rate is not supported on this OS yet".into());
     }
