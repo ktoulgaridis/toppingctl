@@ -1189,6 +1189,7 @@ impl App {
                     Some(Hit::Workspaces) => self.open_modal(Modal::Workspaces { sel: 0 }),
                     Some(Hit::SaveKey) => return self.save_key(),
                     Some(Hit::Download) => self.open_modal(Modal::Download { sel: 0 }),
+                    Some(Hit::Settings) => self.open_modal(Modal::Settings { sel: 0 }),
                     _ => {}
                 }
             }

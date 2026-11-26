@@ -1,6 +1,6 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ▄█▄ ▄▄▄ ╭ Help ────────────────────────────────────────────────────────────────────────╮ — kHz ▾ │
-│  █▄ █▄█ │                                                                              │● synced │
+│ ▄█▄ ▄▄▄ ╭ Help ────────────────────────────────────────────────────────────────────────╮● synced │
+│  █▄ █▄█ │                                                                              │settings │
 ╰─────────│   Tab  Shift-Tab   next / previous panel                                     │─────────╯
 ╭┤¹input├─│   1  2  3  4       input, mixer, loopback, output                            │─────────╮
 │╭───── IN│   ← →              move: the control beside, or the next strip               │ 5/6 ───╮│
@@ -19,7 +19,7 @@
 ││ ▆ −60  │   ?                this help                                                 │  Ø S M ││
 │╰────────│   q  Ctrl-C        quit                                                      │────────╯│
 ╰─────────│                                                                              │─────────╯
-╭┤³loopbac│   click            focus a strip; flip a switch; pick a mix; s l w           │─────────╮
+╭┤³loopbac│   click            focus a strip; flip a switch; pick a mix; s l w e         │─────────╮
 │╭── LOOP │   wheel            turn a knob, move a fader (Shift ×10); next source        │NE ─────╮│
 ││   PB 3/│   drag             turn a knob, move a fader (up / down)                     │        ││
 ││     LIN│   double-click     reset a knob or fader                                     │el      ││
@@ -31,4 +31,4 @@
 ││     MUT│                                 [Esc] close                                  │        ││
 │╰────────│                                                                              │────────╯│
 ╰─────────╰──────────────────────────────────────────────────────────────────────────────╯─────────╯
- IN1 · MON on   space toggle   ←→↑↓ move   tab 1-4 panel   ? help   q quit
+ IN1 · MON on   space toggle   ←→↑↓ move   tab 1-4 panel   e settings   ? help   q quit
