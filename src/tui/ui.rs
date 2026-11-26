@@ -70,6 +70,8 @@ pub enum Hit {
     SaveKey,
     /// The header's `w` hint: opens the Download dialog.
     Download,
+    /// The header's `e` hint: opens the Settings dialog.
+    Settings,
     /// Entry `i` of the workspace combo ([`App::combo_items`]).
     ComboItem(usize),
     /// Entry `i`'s Save button.
@@ -476,22 +478,34 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut Hit
     let sep = || Span::styled("  │  ", t.border());
     let key = |k: &'static str| Span::styled(k, t.focus());
     let lab = |s: &'static str| Span::styled(s, t.dim());
-    // The workspace combo (a click opens it) and the sample rate, read
-    // from the OS (crate::rate; a click opens the list).
+    // Row 1, what is open: the workspace combo (a click opens it), the
+    // sample rate, read from the OS (crate::rate; a click opens the
+    // list), and the sync dot. Row 2, the buttons.
+    let (dot, status) = match app.phase() {
+        Phase::Synced if app.rx_stale() => (t.warn(), " no meters "),
+        Phase::Synced => (t.fg(Theme::OK), " synced "),
+        Phase::Connecting => (t.dim(), " connecting "),
+    };
     let rate = Span::styled(format!("{} ▾", format_khz(app.sample_rate())), t.heading());
-    let name = Span::styled(header_name(app.workspace()), t.heading());
     let mut l1 = if wide {
         vec![lab("workspace  ")]
     } else {
         vec![]
     };
     let name_at = l1.len();
-    l1.extend([name, lab(" ▾"), sep()]);
+    l1.extend([Span::raw(""), lab(" ▾"), sep()]);
     if wide {
         l1.push(lab("sample rate  "));
     }
     let rate_at = l1.len();
-    l1.extend([rate, Span::raw(" ")]);
+    l1.extend([rate, sep(), Span::styled("●", dot), lab(status)]);
+    // The name gets what the row leaves beside the device name, up to
+    // HEADER_NAME_MAX.
+    let rest: usize = l1.iter().map(Span::width).sum();
+    let room = (inner.right() as usize)
+        .saturating_sub(dev_x as usize + "E2x2".len() + 2 + rest)
+        .clamp(1, HEADER_NAME_MAX);
+    l1[name_at] = Span::styled(header_name(app.workspace(), room), t.heading());
     let x1 = span_xs(inner, &l1);
     let combo_w = (l1[name_at].width() + l1[name_at + 1].width()) as u16;
     hits.push(Hit::Workspaces, Rect::new(x1[name_at], inner.y, combo_w, 1));
@@ -499,17 +513,12 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut Hit
         Hit::Rate,
         Rect::new(x1[rate_at], inner.y, l1[rate_at].width() as u16, 1),
     );
-    let (dot, status) = match app.phase() {
-        Phase::Synced if app.rx_stale() => (t.warn(), " no meters "),
-        Phase::Synced => (t.fg(Theme::OK), " synced "),
-        Phase::Connecting => (t.dim(), " connecting "),
-    };
     let (save, store) = if wide {
         (" save workspace", " store to device")
     } else {
         (" save", " store")
     };
-    let mut l2 = vec![
+    let l2 = vec![
         key("s"),
         lab(save),
         sep(),
@@ -518,10 +527,18 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut Hit
         sep(),
         key("w"),
         lab(store),
+        sep(),
+        key("e"),
+        lab(" settings"),
+        Span::raw(" "),
     ];
-    l2.extend([sep(), Span::styled("●", dot), lab(status)]);
     let x2 = span_xs(inner, &l2);
-    for (at, hit) in [(0, Hit::SaveKey), (3, Hit::Workspaces), (6, Hit::Download)] {
+    for (at, hit) in [
+        (0, Hit::SaveKey),
+        (3, Hit::Workspaces),
+        (6, Hit::Download),
+        (9, Hit::Settings),
+    ] {
         let w = (l2[at].width() + l2[at + 1].width()) as u16;
         hits.push(hit, Rect::new(x2[at], inner.y + 1, w, 1));
     }
@@ -530,11 +547,11 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, t: Theme, hits: &mut Hit
 }
 
 /// The workspace's name for the header: "Default" when none is open,
-/// cut to [`HEADER_NAME_MAX`] with "…".
-fn header_name(name: Option<&str>) -> String {
+/// cut to `max` characters with "…".
+fn header_name(name: Option<&str>, max: usize) -> String {
     let name = name.unwrap_or("Default");
-    if name.chars().count() > HEADER_NAME_MAX {
-        let cut: String = name.chars().take(HEADER_NAME_MAX - 1).collect();
+    if name.chars().count() > max {
+        let cut: String = name.chars().take(max.saturating_sub(1)).collect();
         format!("{cut}…")
     } else {
         name.to_string()
@@ -589,6 +606,7 @@ fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, t: Theme) {
     let always = [
         ("←→↑↓", "move"),
         ("tab 1-4", "panel"),
+        ("e", "settings"),
         ("?", "help"),
         ("q", "quit"),
     ];
@@ -2107,7 +2125,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ("?", "this help"),
         ("q  Ctrl-C", "quit"),
         ("", ""),
-        ("click", "focus a strip; flip a switch; pick a mix; s l w"),
+        ("click", "focus a strip; flip a switch; pick a mix; s l w e"),
         (
             "wheel",
             "turn a knob, move a fader (Shift ×10); next source",

@@ -185,6 +185,81 @@ fn click_close() {
     assert_eq!(app.modal(), None);
 }
 
+// ------------------------------------------------- the header and footer
+
+/// The header's first four rows.
+fn header(buf: &Buffer) -> String {
+    text(buf).lines().take(4).collect::<Vec<_>>().join("\n")
+}
+
+/// The header has an `e settings` button beside `s` `l` `w` (#56), at the
+/// narrowest console and on both sides of the compact / full switch; it
+/// sits on the buttons' row in the keys' accent, and the device name and
+/// firmware beside the wordmark stay whole.
+#[test]
+fn header_has_a_settings_button() {
+    let mut app = synced();
+    app.set_sample_rate(Some(176_400));
+    for (w, h) in [(100, 34), (120, 40), (127, 40), (128, 40), (160, 50)] {
+        let (buf, hits) = render(&app, w, h);
+        let head = header(&buf);
+        for s in ["E2x2", "fw —", "e settings", "● synced", "176.4 kHz ▾"] {
+            assert!(head.contains(s), "{s} missing at {w}x{h}:\n{head}");
+        }
+        let r = hits.rect(Hit::Settings).expect("the settings button");
+        let save = hits.rect(Hit::SaveKey).expect("the save button");
+        assert_eq!(r.y, save.y, "on the buttons' row at {w}x{h}");
+        let label: String = (r.x..r.right()).map(|x| buf[(x, r.y)].symbol()).collect();
+        assert_eq!(label, "e settings", "{w}x{h}");
+        assert_eq!(buf[(r.x, r.y)].fg, Theme::ACCENT, "{w}x{h}");
+    }
+}
+
+/// The longest header still fits the narrowest console: a workspace name
+/// past the header's limit and the widest sample rate leave the device
+/// name, the firmware and every button whole.
+#[test]
+fn header_fits_at_100_columns() {
+    let long = "a-very-long-name-xyzw".to_string();
+    let mut app = synced();
+    // From JSON, so the test reads the same whatever else Settings holds.
+    let settings = serde_json::from_value(serde_json::json!({ "current": long })).unwrap();
+    app.set_workspaces(vec![long], settings);
+    app.set_sample_rate(Some(176_400));
+    let (buf, hits) = render(&app, 100, 34);
+    let head = header(&buf);
+    for s in ["E2x2", "fw —", "176.4 kHz ▾", "● synced", "a-very-long-n"] {
+        assert!(head.contains(s), "{s} missing:\n{head}");
+    }
+    for s in ["s save", "l workspaces", "w store", "e settings"] {
+        assert!(head.contains(s), "{s} missing:\n{head}");
+    }
+    assert!(hits.rect(Hit::Settings).is_some());
+}
+
+/// A click on the header's `e settings` opens the dialog, as `e` does.
+#[test]
+fn header_click_opens_settings() {
+    for (w, h) in [(100, 34), (160, 50)] {
+        let mut app = synced();
+        let (_, hits) = render(&app, w, h);
+        assert!(click(&mut app, &hits, Hit::Settings).is_empty());
+        assert_eq!(app.modal(), Some(Modal::Settings { sel: 0 }), "{w}x{h}");
+    }
+}
+
+/// The footer lists `e settings` among the keys that always work.
+#[test]
+fn footer_lists_e_settings() {
+    let app = synced();
+    for (w, h) in [(100, 34), (120, 40)] {
+        let (buf, _) = render(&app, w, h);
+        let foot = text(&buf).lines().last().unwrap().to_string();
+        assert!(foot.contains("e settings"), "{w}x{h}: {foot}");
+        assert!(foot.contains("q quit"), "{w}x{h}: {foot}");
+    }
+}
+
 /// Inside the dialog ↑↓ and Tab / Shift-Tab move between the three
 /// settings and never send; the panels' focus stays put.
 #[test]

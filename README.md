@@ -115,7 +115,7 @@ this table in step with it.
 | `e` | settings: brightness, standby, mobile apps, versions |
 | `?` | this help |
 | `q` `Ctrl-C` | quit |
-| click | focus a strip; flip a switch; pick a mix; s l w |
+| click | focus a strip; flip a switch; pick a mix; s l w e |
 | wheel | turn a knob, move a fader (Shift ×10); next source |
 | drag | turn a knob, move a fader (up / down) |
 | double-click | reset a knob or fader |
@@ -126,10 +126,10 @@ this table in step with it.
 ## Mouse
 
 Everything on screen takes a click: a strip takes focus, a switch flips, a mix tab picks
-the mix, and the header's `s`, `l` and `w` buttons do what their keys do. The wheel turns
-the knob or fader under the pointer (with Shift, ten steps at a time) and steps a source
-to the next one; dragging up or down turns a knob or moves a fader; a double-click resets
-it. Dialogs take clicks too.
+the mix, and the header's `s`, `l`, `w` and `e` buttons do what their keys do. The wheel
+turns the knob or fader under the pointer (with Shift, ten steps at a time) and steps a
+source to the next one; dragging up or down turns a knob or moves a fader; a double-click
+resets it. Dialogs take clicks too.
 
 ## Workspaces
 
