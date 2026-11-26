@@ -222,13 +222,9 @@ fn header_has_a_settings_button() {
 fn header_fits_at_100_columns() {
     let long = "a-very-long-name-xyzw".to_string();
     let mut app = synced();
-    app.set_workspaces(
-        vec![long.clone()],
-        toppingctl::workspace::Settings {
-            current: Some(long),
-            auto_save: false,
-        },
-    );
+    // From JSON, so the test reads the same whatever else Settings holds.
+    let settings = serde_json::from_value(serde_json::json!({ "current": long })).unwrap();
+    app.set_workspaces(vec![long], settings);
     app.set_sample_rate(Some(176_400));
     let (buf, hits) = render(&app, 100, 34);
     let head = header(&buf);
