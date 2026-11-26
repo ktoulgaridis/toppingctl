@@ -907,6 +907,22 @@ fn pan_knob(half: u16, height: u16) -> (u16, u16) {
     knob_size(half * 39 / 50, height / 5)
 }
 
+/// The inside of a strip box over `area` (see [`strip_box`]).
+fn strip_inner(area: Rect) -> Rect {
+    Block::bordered().inner(area)
+}
+
+/// The narrowest of `cols`' strip insides: every knob of one kind in a
+/// panel takes the size this one gets (#86), since [`columns`] splits an
+/// odd width unevenly and one column can move a knob a whole size step.
+fn narrowest_strip(cols: &[Rect]) -> Rect {
+    cols.iter()
+        .copied()
+        .min_by_key(|c| c.width)
+        .map(strip_inner)
+        .unwrap_or_default()
+}
+
 /// A knob to draw: the Braille knob as text, and its cells recorded for
 /// the pixel layer.
 struct Knob {
@@ -1069,9 +1085,17 @@ fn source_name(s: Source) -> &'static str {
 
 fn draw_input_panel(buf: &mut Buffer, area: Rect, app: &App, meters: &Meters, hits: &mut HitMap) {
     let (inner, _) = panel(buf, area, app, Panel::Input, "¹", "input");
-    for (ch, col) in columns(inner, 2).into_iter().enumerate() {
-        draw_input_strip(buf, col, app, meters, ch, hits);
+    let cols = columns(inner, 2);
+    let gain = gain_knob(narrowest_strip(&cols));
+    for (ch, col) in cols.into_iter().enumerate() {
+        draw_input_strip(buf, col, app, meters, ch, gain, hits);
     }
+}
+
+/// The gain knob for an input strip whose inside is `r`: about 0.49 of
+/// its width (78 % of #34's 0.63), round, leaving rows for the switches.
+fn gain_knob(r: Rect) -> (u16, u16) {
+    knob_size(r.width * 49 / 100, r.height.saturating_sub(1 + 7))
 }
 
 fn draw_input_strip(
@@ -1080,6 +1104,7 @@ fn draw_input_strip(
     app: &App,
     meters: &Meters,
     ch: usize,
+    gain_knob: (u16, u16),
     hits: &mut HitMap,
 ) {
     let t = app.theme();
@@ -1147,10 +1172,9 @@ fn draw_input_strip(
         (InputControl::Mute, "MUTE", input.mute, PillKind::Danger),
         (InputControl::Phase, "Ø", input.phase, PillKind::Normal),
     ];
-    // The gain knob: about 0.49 of the strip's width (78 % of #34's
-    // 0.63), round, leaving rows for the switches.
+    // The gain knob: the panel's one size (see [`gain_knob`]).
     let avail = r.height.saturating_sub(1);
-    let (kc, kr) = knob_size(r.width * 49 / 100, avail.saturating_sub(7));
+    let (kc, kr) = gain_knob;
     let knob_rows = if avail >= 6 + 3 { kr + 1 } else { 0 };
     // Spare rows go evenly into the six gaps after each switch (the
     // remainder to the last ones, so the knob never crowds the switches).
@@ -1245,8 +1269,10 @@ fn draw_mixer_panel(
             Rect::new(key_x, area.y, x.saturating_sub(key_x + 1), 1),
         );
     }
-    for (strip, col) in columns(inner, 4).into_iter().enumerate() {
-        draw_mix_strip(buf, col, app, meters, strip, hits);
+    let cols = columns(inner, 4);
+    let pan = pan_size(narrowest_strip(&cols));
+    for (strip, col) in cols.into_iter().enumerate() {
+        draw_mix_strip(buf, col, app, meters, strip, pan, hits);
     }
 }
 
@@ -1295,10 +1321,10 @@ fn level_span(db: f64, mute: bool, t: Theme, unit: bool) -> Span<'static> {
     Span::styled(if unit { format!("{s} dB") } else { s }, t.heading())
 }
 
-/// Rows for a mix strip's two pan dials and their values: the pan knob
-/// (it scales with the strip) and the label.
-fn dial_rows(r: Rect) -> u16 {
-    pan_knob(r.width / 2, r.height).1 + 1
+/// The pan knob for a mix strip whose inside is `r`: the one its
+/// narrower half gets (it scales with the strip).
+fn pan_size(r: Rect) -> (u16, u16) {
+    pan_knob(r.width / 2, r.height)
 }
 
 /// The fewest fader rows a mix strip keeps before LINK gives up its blank
@@ -1335,6 +1361,7 @@ fn pan_dials(
     strip: usize,
     pans: [f64; 2],
     rows: u16,
+    knob: (u16, u16),
     hits: &mut HitMap,
 ) {
     let halves = columns(
@@ -1354,7 +1381,7 @@ fn pan_dials(
             label: Some(pan_text(p)),
             focused: app.focus() == c,
             dimmed: false,
-            max: pan_knob(h.width, area.height),
+            max: knob,
             bipolar: true,
         };
         k.draw(buf, h, app.theme(), hits);
@@ -1513,6 +1540,7 @@ fn draw_mix_strip(
     app: &App,
     meters: &[Meters; 2],
     strip: usize,
+    pan: (u16, u16),
     hits: &mut HitMap,
 ) {
     let t = app.theme();
@@ -1525,10 +1553,11 @@ fn draw_mix_strip(
     if r.height < 8 {
         return;
     }
-    let d = dial_rows(r);
+    // The pan dials and their values: the panel's knob and the label.
+    let d = pan.1 + 1;
     let rows = switch_rows(r);
     let (gap, fader_h) = mix_group(r, d, rows);
-    pan_dials(buf, r, app, strip, mix.pans(strip), d, hits);
+    pan_dials(buf, r, app, strip, mix.pans(strip), d, pan, hits);
     let (link_y, value_y) = (r.y + d + gap, r.y + d + 2 * gap + 1);
     let lc = mix_ctl(strip, MixControl::Link);
     // IN 1+2's LINK greys out while off, as in the design.
