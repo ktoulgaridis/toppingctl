@@ -23,8 +23,8 @@ use crate::rate::{format_khz, RATES};
 use crate::state::{Meters, Source};
 use crate::tui::app::{
     App, BusControl, ComboItem, Control, InputControl, MeterId, MixControl, Modal, Name, NameThen,
-    Panel, Phase, BRIGHTNESS, BUS_MAX_DB, DOWNLOAD_OPTIONS, MAX_GAIN_DB, MIX_FADER_MAX_DB, OUT_BUS,
-    SETTINGS, SOURCE_MENU,
+    Panel, Phase, BRIGHTNESS, BUS_MAX_DB, DOWNLOAD_OPTIONS, FOLDER_ROW, MAX_GAIN_DB,
+    MIX_FADER_MAX_DB, OUT_BUS, SETTINGS, SOURCE_MENU,
 };
 use crate::tui::pixel::{
     chip_rgb, clear_under, label_rgb, FaceLabel, PixelLayer, PixelSpot, PixelWidget,
@@ -83,6 +83,8 @@ pub enum Hit {
     /// Setting `row` of the Settings dialog ([`SETTINGS`]) at `value`:
     /// a brightness (0 ..= 2), or a switch off (0) / on (1).
     SettingOption { row: usize, value: u8 },
+    /// The Settings dialog's `[Change]` for the workspaces folder.
+    FolderChange,
     /// A modal's confirm button.
     Yes,
     /// A modal's cancel (or close) button.
@@ -302,7 +304,8 @@ fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
             &mut hits,
         ),
         Some(Modal::Download { sel }) => download(buf, area, t, sel, &mut hits),
-        Some(Modal::Settings { sel }) => settings(buf, area, app, sel, &mut hits),
+        Some(Modal::Settings { sel }) => settings(buf, area, app, sel, false, &mut hits),
+        Some(Modal::WorkspaceFolder) => settings(buf, area, app, FOLDER_ROW, true, &mut hits),
         None => {}
     }
     hits
@@ -2121,7 +2124,7 @@ fn help(buf: &mut Buffer, area: Rect, t: Theme, hits: &mut HitMap) {
         ("s", "save the workspace (on Default: save as…)"),
         ("l", "workspaces: pick, save, delete, new, save as"),
         ("w", "store to the device's memory (download)"),
-        ("e", "settings: brightness, standby, mobile apps, versions"),
+        ("e", "settings: device, workspaces folder, versions"),
         ("?", "this help"),
         ("q  Ctrl-C", "quit"),
         ("", ""),
@@ -2312,13 +2315,25 @@ fn download(buf: &mut Buffer, area: Rect, t: Theme, sel: usize, hits: &mut HitMa
     ok_cancel(buf, inner, t, hits);
 }
 
+/// `text` cut to its last `max` characters, "…" first when cut.
+fn tail(text: &str, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text.to_string();
+    }
+    let keep: String = text.chars().skip(n - max.saturating_sub(1)).collect();
+    format!("…{keep}")
+}
+
 /// The Settings dialog (the app's SYSTEMSETTING): the three device
 /// settings, each a row of choices with the current one marked and the
 /// focused row (`sel`) in the accent; the restart notice once mobile
-/// applications was changed; then the versions, "—" when not reported.
-fn settings(buf: &mut Buffer, area: Rect, app: &App, sel: usize, hits: &mut HitMap) {
+/// applications was changed; the workspaces folder with its `[Change]`,
+/// or the path being typed (`typing`); then the versions, "—" when not
+/// reported.
+fn settings(buf: &mut Buffer, area: Rect, app: &App, sel: usize, typing: bool, hits: &mut HitMap) {
     let t = app.theme();
-    let inner = modal_box(buf, area, t, " Settings ", (68, 19), hits);
+    let inner = modal_box(buf, area, t, " Settings ", (68, 23), hits);
     let label_x = inner.x + 3;
     let value_x = inner.x + 25;
     put(buf, inner, label_x, inner.y + 1, "Device", t.dim());
@@ -2367,7 +2382,34 @@ fn settings(buf: &mut Buffer, area: Rect, app: &App, sel: usize, hits: &mut HitM
             t.warn(),
         );
     }
-    put(buf, inner, label_x, inner.y + 8, "Versions", t.dim());
+    put(buf, inner, label_x, inner.y + 8, "Storage", t.dim());
+    let y = inner.y + 9;
+    let focused = sel == FOLDER_ROW;
+    if focused {
+        put(buf, inner, inner.x + 1, y, "▸", t.focus());
+    }
+    let label_style = if focused { t.focus() } else { t.text() };
+    put(buf, inner, label_x, y, "Workspaces folder", label_style);
+    let change_style = if focused && !typing {
+        button_style(t, true)
+    } else {
+        t.dim()
+    };
+    let r = put(buf, inner, value_x, y, " [Change] ", change_style);
+    hits.push(Hit::FolderChange, r);
+    // The folder on the row below, its end when it is long.
+    let room = inner.right().saturating_sub(label_x + 2) as usize;
+    if typing {
+        let field = format!("{}▏", tail(app.prompt(), room - 1));
+        put(buf, inner, label_x, y + 1, &field, button_style(t, true));
+    } else {
+        let folder = match app.workspaces_folder() {
+            "" => "—",
+            f => f,
+        };
+        put(buf, inner, label_x, y + 1, &tail(folder, room), t.heading());
+    }
+    put(buf, inner, label_x, inner.y + 12, "Versions", t.dim());
     let readout = &app.state().readout;
     let version = |v: Option<crate::state::Version>| v.map_or("—".to_string(), |v| v.to_string());
     let versions = [
@@ -2377,11 +2419,17 @@ fn settings(buf: &mut Buffer, area: Rect, app: &App, sel: usize, hits: &mut HitM
         ("toppingctl", env!("CARGO_PKG_VERSION").to_string()),
     ];
     for (i, (label, value)) in versions.iter().enumerate() {
-        let y = inner.y + 9 + i as u16;
+        let y = inner.y + 13 + i as u16;
         put(buf, inner, label_x, y, label, t.text());
         put(buf, inner, value_x, y, value, t.heading());
     }
-    let keys = "↑↓ setting   ←→ +/- change   enter next";
+    let keys = if typing {
+        "type the folder (empty: default)   enter keep   esc cancel"
+    } else if sel == FOLDER_ROW {
+        "↑↓ setting   enter change"
+    } else {
+        "↑↓ setting   ←→ +/- change   enter next"
+    };
     put_centered(
         buf,
         inner,

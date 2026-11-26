@@ -31,7 +31,7 @@ use crate::tui::kitty;
 use crate::tui::pixel::PixelLayer;
 use crate::tui::theme::Theme;
 use crate::tui::ui::{self, HitMap};
-use crate::workspace::Workspaces;
+use crate::workspace::{Settings, Workspaces};
 
 /// How long the loop waits for input before it redraws (~30 fps).
 const TICK: Duration = Duration::from_millis(33);
@@ -131,6 +131,7 @@ pub fn run() -> Result<()> {
     let workspaces = Workspaces::from_env()?;
     let mut app = App::new(Theme::from_env());
     app.set_workspaces(workspaces.list(), workspaces.settings());
+    app.set_workspaces_folder(workspaces.folder_shown());
     app.set_notice(official_app::warning(&System).map(String::from));
     let _guard = Guard::enter()?;
     // Before any event is read: does the terminal take kitty images?
@@ -282,6 +283,7 @@ pub fn carry_out(
                 sync_workspaces(app, workspaces);
             }
             Action::SaveWorkspaceSettings => sync_workspaces(app, workspaces),
+            Action::SetWorkspaceFolder(typed) => set_folder(app, workspaces, &typed),
             Action::StoreToDevice if save_failed => {}
             Action::StoreToDevice => conn.send(STORE_FRAME)?,
             Action::SetRate(_) | Action::Quit => left.push(action),
@@ -290,8 +292,38 @@ pub fn carry_out(
     Ok(left)
 }
 
+/// Makes `typed` the workspaces folder (see `Workspaces::prepare_folder`)
+/// and reads the list from it; nothing is moved. The open workspace, if
+/// it isn't there, falls back to Default. A folder that can't be used
+/// changes nothing and becomes the notice.
+fn set_folder(app: &mut App, workspaces: &Workspaces, typed: &str) {
+    let folder = match workspaces.prepare_folder(typed) {
+        Ok(folder) => folder,
+        Err(e) => {
+            app.set_notice(Some(format!("could not use that workspaces folder: {e}")));
+            return;
+        }
+    };
+    let settings = Settings {
+        folder,
+        ..app.settings()
+    };
+    if let Err(e) = workspaces.save_settings(&settings) {
+        app.set_notice(Some(format!("could not save the workspace settings: {e}")));
+        return;
+    }
+    app.set_notice(None);
+    app.set_workspaces(workspaces.list(), settings);
+    sync_workspaces(app, workspaces);
+    app.set_workspaces_folder(workspaces.folder_shown());
+    if app.notice().is_none() {
+        let shown = workspaces.folder_shown();
+        app.set_notice(Some(format!("workspaces folder: {shown}")));
+    }
+}
+
 /// Takes the workspace list from disk and saves the app's settings (the
-/// open workspace, auto-save); a failure becomes the notice.
+/// open workspace, auto-save, the folder); a failure becomes the notice.
 fn sync_workspaces(app: &mut App, workspaces: &Workspaces) {
     app.set_workspaces(workspaces.list(), app.settings());
     if let Err(e) = workspaces.save_settings(&app.settings()) {

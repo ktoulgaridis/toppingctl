@@ -115,6 +115,7 @@ impl Rig {
         ws.save_settings(&Settings {
             current: current.map(String::from),
             auto_save: false,
+            ..Default::default()
         })
         .unwrap();
         let (transport, fake) = FakeTransport::new();

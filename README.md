@@ -112,7 +112,7 @@ this table in step with it.
 | `s` | save the workspace (on Default: save as…) |
 | `l` | workspaces: pick, save, delete, new, save as |
 | `w` | store to the device's memory (download) |
-| `e` | settings: brightness, standby, mobile apps, versions |
+| `e` | settings: device, workspaces folder, versions |
 | `?` | this help |
 | `q` `Ctrl-C` | quit |
 | click | focus a strip; flip a switch; pick a mix; s l w e |
@@ -140,7 +140,12 @@ for a name). An auto-save toggle in the list saves the open workspace on every c
 
 Workspaces are JSON files in `<config>/toppingctl/workspaces/` (`<config>` is
 `$XDG_CONFIG_HOME` when set, else `~/.config` on Linux and
-`~/Library/Application Support` on macOS). The state toppingctl last set is kept in
+`~/Library/Application Support` on macOS). The Settings dialog (`e`) can point them at
+another folder: Enter on "Workspaces folder" types a full path (`~` is your home; empty
+goes back to the default), and the folder is created if missing. Nothing is moved: the
+list reads the new folder, and the open workspace goes back to Default if it isn't
+there. The open workspace, auto-save and the folder are kept in
+`<config>/toppingctl/workspaces.json`; the state toppingctl last set is kept in
 `<config>/toppingctl/state.json`.
 
 ## Store to the device
