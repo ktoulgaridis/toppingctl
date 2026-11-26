@@ -146,6 +146,7 @@ fn round_trip() {
     let settings = Settings {
         current: Some("Live set 2".into()),
         auto_save: true,
+        ..Default::default()
     };
     ws.save_settings(&settings).unwrap();
     assert_eq!(ws.settings(), settings);
@@ -355,5 +356,137 @@ fn names() {
     fs::write(wsdir.join(".hidden.json"), "{}").unwrap();
     fs::write(wsdir.join("ok.json"), "{}").unwrap();
     assert_eq!(ws.list(), vec!["ok".to_string()]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------- the workspaces folder
+
+/// #57: by default the workspaces are in `<config>/toppingctl/workspaces`,
+/// and `workspaces.json` says nothing about a folder.
+#[test]
+fn folder_defaults_to_the_config_dir() {
+    let dir = temp_dir("folder-default");
+    let ws = Workspaces::at(dir.clone());
+    assert_eq!(ws.default_folder(), dir.join("workspaces"));
+    assert_eq!(ws.folder(), dir.join("workspaces"));
+    assert_eq!(ws.settings().folder, None);
+    ws.save_settings(&Settings::default()).unwrap();
+    let json = fs::read_to_string(dir.join("workspaces.json")).unwrap();
+    assert!(!json.contains("folder"), "{json}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A folder kept in `workspaces.json` (with the open workspace and
+/// auto-save) is where the workspaces are listed, saved, loaded and
+/// removed; the config dir's own folder is left alone.
+#[test]
+fn folder_setting_moves_the_workspaces() {
+    let dir = temp_dir("folder-set");
+    let elsewhere = dir.join("elsewhere");
+    let ws = Workspaces::at(dir.clone());
+    ws.save("old", &State::default()).unwrap();
+    let settings = Settings {
+        current: Some("gig".into()),
+        auto_save: true,
+        folder: Some(elsewhere.clone()),
+    };
+    ws.save_settings(&settings).unwrap();
+    assert_eq!(ws.settings(), settings);
+    let v: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("workspaces.json")).unwrap()).unwrap();
+    assert_eq!(v["folder"], elsewhere.to_str().unwrap());
+    assert_eq!(ws.folder(), elsewhere);
+    assert!(ws.list().is_empty(), "the new folder is read, not the old");
+    ws.save("gig", &busy_state()).unwrap();
+    assert!(elsewhere.join("gig.json").is_file());
+    assert_eq!(ws.list(), vec!["gig".to_string()]);
+    assert_eq!(ws.load("gig").unwrap(), kept(&busy_state()));
+    ws.delete("gig").unwrap();
+    assert!(ws.list().is_empty());
+    // Nothing moved: the old folder still holds its workspace.
+    assert!(dir.join("workspaces").join("old.json").is_file());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A relative folder in a hand-edited `workspaces.json` is dropped: the
+/// default is used.
+#[test]
+fn relative_folder_in_the_file_is_ignored() {
+    let dir = temp_dir("folder-relative");
+    fs::write(
+        dir.join("workspaces.json"),
+        r#"{"current": null, "auto_save": false, "folder": "some/where"}"#,
+    )
+    .unwrap();
+    let ws = Workspaces::at(dir.clone());
+    assert_eq!(ws.settings().folder, None);
+    assert_eq!(ws.folder(), dir.join("workspaces"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// What is typed in the Settings dialog: `~` is the home directory, the
+/// folder is created if missing, empty (or the default) is the default,
+/// and a relative path is refused.
+#[test]
+fn prepare_folder() {
+    let dir = temp_dir("folder-prepare");
+    let home = dir.join("home");
+    let ws = Workspaces::at(dir.clone()).with_home(Some(home.clone()));
+
+    let got = ws.prepare_folder("~/Music/E2x2").unwrap();
+    assert_eq!(got, Some(home.join("Music").join("E2x2")));
+    assert!(home.join("Music").join("E2x2").is_dir(), "created");
+    assert_eq!(ws.prepare_folder("~").unwrap(), Some(home.clone()));
+
+    let abs = dir.join("abs folder");
+    let typed = format!("  {}  ", abs.display());
+    assert_eq!(ws.prepare_folder(&typed).unwrap(), Some(abs.clone()));
+    assert!(abs.is_dir());
+
+    assert_eq!(ws.prepare_folder("").unwrap(), None);
+    assert_eq!(ws.prepare_folder("   ").unwrap(), None);
+    let default = ws.default_folder().display().to_string();
+    assert_eq!(ws.prepare_folder(&default).unwrap(), None);
+
+    for bad in ["relative/dir", "~someone/dir"] {
+        assert!(
+            matches!(ws.prepare_folder(bad), Err(WorkspaceError::Folder(_))),
+            "{bad}"
+        );
+    }
+    let no_home = Workspaces::at(dir.clone());
+    assert!(matches!(
+        no_home.prepare_folder("~/x"),
+        Err(WorkspaceError::Folder(_))
+    ));
+
+    // A file where the folder should be can't be a folder.
+    fs::write(dir.join("a-file"), b"x").unwrap();
+    let file = dir.join("a-file").display().to_string();
+    assert!(matches!(
+        ws.prepare_folder(&file),
+        Err(WorkspaceError::Io { .. })
+    ));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The folder for the dialog: the home directory as `~`.
+#[test]
+fn folder_shown_with_tilde() {
+    let dir = temp_dir("folder-shown");
+    let ws = Workspaces::at(dir.join("cfg")).with_home(Some(dir.clone()));
+    assert_eq!(
+        ws.folder_shown(),
+        format!(
+            "~{}cfg{}workspaces",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        )
+    );
+    let other = Workspaces::at(PathBuf::from("/opt/cfg")).with_home(Some(dir.clone()));
+    assert_eq!(
+        other.folder_shown(),
+        PathBuf::from("/opt/cfg/workspaces").display().to_string()
+    );
     let _ = fs::remove_dir_all(&dir);
 }

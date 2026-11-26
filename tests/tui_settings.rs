@@ -39,6 +39,7 @@ fn ch(c: char) -> KeyEvent {
 fn synced() -> App {
     let mut app = App::new(Theme::color());
     app.synced(State::default());
+    app.set_workspaces_folder("~/.config/toppingctl/workspaces".into());
     app
 }
 
@@ -261,7 +262,8 @@ fn footer_lists_e_settings() {
 }
 
 /// Inside the dialog ↑↓ and Tab / Shift-Tab move between the three
-/// settings and never send; the panels' focus stays put.
+/// device settings and the workspaces folder (#57) and never send; the
+/// panels' focus stays put.
 #[test]
 fn arrows_and_tab_move_between_settings() {
     let mut app = open();
@@ -273,11 +275,12 @@ fn arrows_and_tab_move_between_settings() {
     walk(KeyCode::Up, 0);
     walk(KeyCode::Down, 1);
     walk(KeyCode::Down, 2);
-    walk(KeyCode::Down, 2);
-    walk(KeyCode::Up, 1);
-    walk(KeyCode::Tab, 2);
+    walk(KeyCode::Down, 3);
+    walk(KeyCode::Down, 3);
+    walk(KeyCode::Up, 2);
+    walk(KeyCode::Tab, 3);
     walk(KeyCode::Tab, 0);
-    walk(KeyCode::BackTab, 2);
+    walk(KeyCode::BackTab, 3);
     assert_eq!(app.focus(), focus);
     assert_eq!(app.focus().panel(), Panel::Input);
     assert_eq!(app.state(), &State::default());
@@ -440,10 +443,12 @@ fn settings_snapshot() {
     state.readout.firmware_version = Some(Version { major: 1, minor: 7 });
     let mut app = App::new(Theme::color());
     app.synced(state);
+    app.set_workspaces_folder("~/.config/toppingctl/workspaces".into());
     app.handle_key(ch('e'));
     let (buf, _) = render(&app, 120, 40);
     let t = text(&buf);
     assert!(t.contains(env!("CARGO_PKG_VERSION")), "{t}");
+    assert!(t.contains("~/.config/toppingctl/workspaces"), "{t}");
     assert_snapshot("settings_120x40", &dialog_text(&buf));
     // It fits the smallest screen too.
     let (buf, _) = render(&app, 100, 34);
@@ -489,4 +494,48 @@ fn focused_setting_uses_accent() {
         cell.fg == Theme::ACCENT || cell.bg == Theme::ACCENT,
         "{cell:?}"
     );
+}
+
+// ----------------------------------------------- the workspaces folder row
+
+/// The folder row (#57) while the path is typed: the text and a cursor in
+/// the accent, and the keys for typing.
+#[test]
+fn folder_edit_snapshot() {
+    let mut app = open();
+    app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(app.modal(), Some(Modal::Settings { sel: 3 }));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.modal(), Some(Modal::WorkspaceFolder));
+    for c in "/gig".chars() {
+        app.handle_key(ch(c));
+    }
+    let (buf, _) = render(&app, 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("~/.config/toppingctl/workspaces/gig▏"), "{t}");
+    assert!(t.contains("esc cancel"), "{t}");
+    assert_snapshot("settings_folder_edit_120x40", &dialog_text(&buf));
+}
+
+/// A folder longer than the row shows its end, after "…"; so does a long
+/// path being typed.
+#[test]
+fn long_folder_shows_its_end() {
+    let mut app = synced();
+    let long = format!("/Volumes/{}/E2x2 workspaces", "x".repeat(80));
+    app.set_workspaces_folder(long.clone());
+    app.handle_key(ch('e'));
+    let (buf, _) = render(&app, 100, 34);
+    let t = text(&buf);
+    assert!(t.contains("│   …xxx"), "{t}");
+    assert!(t.contains("xxx/E2x2 workspaces"), "{t}");
+    let row = t.lines().find(|l| l.contains("E2x2 workspaces")).unwrap();
+    let end = row.find("E2x2 workspaces").unwrap();
+    assert!(row[end..].contains('│'), "inside the box: {row}");
+    app.handle_key(key(KeyCode::BackTab));
+    app.handle_key(key(KeyCode::Enter));
+    let (buf, _) = render(&app, 100, 34);
+    let t = text(&buf);
+    assert!(t.contains("│   …xxx"), "{t}");
+    assert!(t.contains("xxx/E2x2 workspaces▏"), "{t}");
 }

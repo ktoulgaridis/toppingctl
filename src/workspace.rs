@@ -2,8 +2,9 @@
 //! app's workspace combo.
 //!
 //! Each workspace is a JSON file, `<config>/toppingctl/workspaces/<name>.json`,
-//! holding `{"version": 1, "state": {…}}`. The open workspace and the
-//! auto-save toggle live in `<config>/toppingctl/workspaces.json`. Names are
+//! holding `{"version": 1, "state": {…}}`. The open workspace, the
+//! auto-save toggle and the workspaces folder, when it isn't the default
+//! (#57), live in `<config>/toppingctl/workspaces.json`. Names are
 //! checked by [`valid_name`] before any path is built, so nothing is ever
 //! read or written outside the workspaces directory.
 //!
@@ -60,7 +61,7 @@ pub fn valid_name(name: &str) -> bool {
         && !name.eq_ignore_ascii_case("default")
 }
 
-/// The open workspace and the auto-save toggle.
+/// The open workspace, the auto-save toggle and the workspaces folder.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -68,6 +69,10 @@ pub struct Settings {
     pub current: Option<String>,
     /// Save every change to the open workspace too (off by default).
     pub auto_save: bool,
+    /// The folder the workspaces are in, an absolute path; `None` is
+    /// `<config>/toppingctl/workspaces` ([`Workspaces::default_folder`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
 }
 
 /// Why a workspace could not be read, written or removed.
@@ -77,6 +82,8 @@ pub enum WorkspaceError {
     Name(String),
     /// No config directory.
     NoConfigDir,
+    /// What was typed can't be the workspaces folder.
+    Folder(String),
     /// Reading, writing or removing `path` failed.
     Io { path: PathBuf, source: io::Error },
     /// `path` is not a workspace file.
@@ -90,6 +97,7 @@ impl fmt::Display for WorkspaceError {
         match self {
             Self::Name(name) => write!(f, "{name:?} is not a valid workspace name"),
             Self::NoConfigDir => write!(f, "no config directory (set XDG_CONFIG_HOME or HOME)"),
+            Self::Folder(why) => write!(f, "{why}"),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Corrupt { path, reason } => {
                 write!(f, "{} is not a valid workspace ({reason})", path.display())
@@ -112,17 +120,25 @@ impl std::error::Error for WorkspaceError {
     }
 }
 
-/// The workspaces in one config directory.
+/// The workspaces of one config directory.
 #[derive(Clone, Debug)]
 pub struct Workspaces {
     /// toppingctl's config directory (`…/toppingctl`).
     dir: PathBuf,
+    /// The home directory, for `~` in a typed folder.
+    home: Option<PathBuf>,
 }
 
 impl Workspaces {
-    /// The workspaces under the config directory `dir` (`…/toppingctl`).
+    /// The workspaces of the config directory `dir` (`…/toppingctl`), with
+    /// no home directory.
     pub fn at(dir: PathBuf) -> Self {
-        Workspaces { dir }
+        Workspaces { dir, home: None }
+    }
+
+    /// The same, with `home` as `~`.
+    pub fn with_home(self, home: Option<PathBuf>) -> Self {
+        Workspaces { home, ..self }
     }
 
     /// The workspaces under the platform's config directory, read from the
@@ -133,12 +149,65 @@ impl Workspaces {
         let home = var("HOME").map(PathBuf::from);
         let appdata = var("APPDATA").map(PathBuf::from);
         config_dir_from(xdg.as_deref(), home.as_deref(), appdata.as_deref())
-            .map(Workspaces::at)
+            .map(|dir| Workspaces::at(dir).with_home(home))
             .ok_or(WorkspaceError::NoConfigDir)
     }
 
-    fn folder(&self) -> PathBuf {
+    /// `<config>/toppingctl/workspaces`, where the workspaces are unless
+    /// the settings name another folder.
+    pub fn default_folder(&self) -> PathBuf {
         self.dir.join("workspaces")
+    }
+
+    /// The folder the workspaces are in: the settings' folder, else the
+    /// default.
+    pub fn folder(&self) -> PathBuf {
+        self.settings()
+            .folder
+            .unwrap_or_else(|| self.default_folder())
+    }
+
+    /// [`Workspaces::folder`] for the Settings dialog, the home directory
+    /// as `~`.
+    pub fn folder_shown(&self) -> String {
+        let folder = self.folder();
+        match self.home.as_deref().map(|h| folder.strip_prefix(h)) {
+            Some(Ok(rest)) if rest.as_os_str().is_empty() => "~".into(),
+            Some(Ok(rest)) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+            _ => folder.display().to_string(),
+        }
+    }
+
+    /// The folder typed in the Settings dialog, ready to use: trimmed, `~`
+    /// expanded, created if missing. Empty, or the default folder, is
+    /// `None` (the default). A path that isn't absolute is refused.
+    pub fn prepare_folder(&self, typed: &str) -> Result<Option<PathBuf>, WorkspaceError> {
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return Ok(None);
+        }
+        let path = match typed.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with(['/', std::path::MAIN_SEPARATOR]) => {
+                let home = self.home.as_deref().ok_or_else(|| {
+                    WorkspaceError::Folder("no home directory for ~ (set HOME)".into())
+                })?;
+                home.join(rest.trim_start_matches(['/', std::path::MAIN_SEPARATOR]))
+            }
+            _ => PathBuf::from(typed),
+        };
+        if !path.is_absolute() {
+            return Err(WorkspaceError::Folder(format!(
+                "{typed:?} is not a full path (start it with / or ~)"
+            )));
+        }
+        if path == self.default_folder() {
+            return Ok(None);
+        }
+        fs::create_dir_all(&path).map_err(|source| WorkspaceError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(Some(path))
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -206,19 +275,21 @@ impl Workspaces {
         fs::remove_file(&path).map_err(|source| WorkspaceError::Io { path, source })
     }
 
-    /// The open workspace and auto-save, or the defaults when the file is
-    /// missing or unreadable. A pointer to a name [`valid_name`] refuses is
-    /// dropped.
+    /// The open workspace, auto-save and the folder, or the defaults when
+    /// the file is missing or unreadable. A pointer to a name
+    /// [`valid_name`] refuses is dropped, and so is a folder that isn't an
+    /// absolute path.
     pub fn settings(&self) -> Settings {
         let mut s: Settings = fs::read(self.settings_path())
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         s.current = s.current.filter(|n| valid_name(n));
+        s.folder = s.folder.filter(|f| f.is_absolute());
         s
     }
 
-    /// Saves the open workspace and auto-save, atomically.
+    /// Saves the open workspace, auto-save and the folder, atomically.
     pub fn save_settings(&self, settings: &Settings) -> Result<(), WorkspaceError> {
         let path = self.settings_path();
         let json = serde_json::to_vec_pretty(settings).expect("Settings serialize to JSON");

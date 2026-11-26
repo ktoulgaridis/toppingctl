@@ -12,6 +12,7 @@
 //! each switch, writing both channels) and its unlinked page (an L and an
 //! R of each); focus follows the page shown.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton};
@@ -81,6 +82,13 @@ pub const BRIGHTNESS: [&str; 3] = ["Dim", "Normal", "Bright"];
 /// Mobile applications' row in [`SETTINGS`]: a change takes effect only
 /// after the device restarts.
 pub const MOBILE_APPS: usize = 2;
+/// The Settings dialog's rows: the [`SETTINGS`], then the workspaces
+/// folder (#57, the app's "Workspace storage directory").
+pub const SETTING_ROWS: usize = SETTINGS.len() + 1;
+/// The workspaces folder's row in the Settings dialog.
+pub const FOLDER_ROW: usize = SETTINGS.len();
+/// The longest workspaces folder that can be typed, in characters.
+pub const FOLDER_MAX: usize = 1024;
 
 /// What a workspace name, once given, is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +136,9 @@ pub enum Action {
     DeleteWorkspace(String),
     /// Save the open workspace and auto-save ([`App::settings`]).
     SaveWorkspaceSettings,
+    /// Make the typed folder the workspaces folder (`~` expanded, created
+    /// if missing; empty is the default), and read the list from it.
+    SetWorkspaceFolder(String),
     /// Send ParameterSave `1a 03`, unless a save before it in the same
     /// batch failed.
     StoreToDevice,
@@ -415,8 +426,11 @@ pub enum Modal {
     /// The Download dialog ([`DOWNLOAD_OPTIONS`]), choice `sel` picked.
     Download { sel: usize },
     /// The Settings dialog (the app's SYSTEMSETTING): setting `sel` of
-    /// [`SETTINGS`] focused.
+    /// [`SETTING_ROWS`] focused.
     Settings { sel: usize },
+    /// The Settings dialog with the workspaces folder being typed
+    /// ([`App::prompt`]).
+    WorkspaceFolder,
 }
 
 /// Where the session is.
@@ -554,7 +568,12 @@ pub struct App {
     /// The open workspace; `None` is Default.
     workspace: Option<String>,
     auto_save: bool,
-    /// The workspace name a modal is about (typed, or to confirm).
+    /// The workspaces folder setting; `None` is the default.
+    folder: Option<PathBuf>,
+    /// The workspaces folder, as the Settings dialog shows it.
+    folder_shown: String,
+    /// The workspace name a modal is about (typed, or to confirm), or the
+    /// folder being typed.
     prompt: String,
     /// Whether the mix strips show Ø / SOLO / MUTE stacked (a tall
     /// window) or in a row: the arrows follow what is drawn.
@@ -612,6 +631,8 @@ impl App {
             workspaces: Vec::new(),
             workspace: None,
             auto_save: false,
+            folder: None,
+            folder_shown: String::new(),
             prompt: String::new(),
             switches_stacked: false,
             restart_required: false,
@@ -631,6 +652,18 @@ impl App {
         self.workspace = settings.current.filter(|c| names.contains(c));
         self.workspaces = names;
         self.auto_save = settings.auto_save;
+        self.folder = settings.folder;
+    }
+
+    /// The workspaces folder, as the Settings dialog shows it (the home
+    /// directory as `~`).
+    pub fn set_workspaces_folder(&mut self, shown: String) {
+        self.folder_shown = shown;
+    }
+
+    /// The workspaces folder, as shown; empty when not known.
+    pub fn workspaces_folder(&self) -> &str {
+        &self.folder_shown
     }
 
     /// The saved workspaces' names, sorted.
@@ -647,11 +680,12 @@ impl App {
         self.auto_save
     }
 
-    /// The open workspace and auto-save, to persist.
+    /// The open workspace, auto-save and the folder, to persist.
     pub fn settings(&self) -> Settings {
         Settings {
             current: self.workspace.clone(),
             auto_save: self.auto_save,
+            folder: self.folder.clone(),
         }
     }
 
@@ -818,6 +852,9 @@ impl App {
         if let Some(Modal::WorkspaceName { then }) = self.modal {
             return self.name_key(key.code, then);
         }
+        if self.modal == Some(Modal::WorkspaceFolder) {
+            return self.folder_key(key.code);
+        }
         let yes = matches!(key.code, KeyCode::Char('y' | 'Y'));
         let no = matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc);
         match self.modal {
@@ -871,13 +908,14 @@ impl App {
                 return Vec::new();
             }
             Some(Modal::Settings { sel }) => {
-                let last = SETTINGS.len() - 1;
+                let last = SETTING_ROWS - 1;
                 let to = |sel| Some(Modal::Settings { sel });
                 match key.code {
                     KeyCode::Up => self.modal = to(sel.saturating_sub(1)),
                     KeyCode::Down => self.modal = to((sel + 1).min(last)),
-                    KeyCode::Tab => self.modal = to((sel + 1) % SETTINGS.len()),
-                    KeyCode::BackTab => self.modal = to((sel + last) % SETTINGS.len()),
+                    KeyCode::Tab => self.modal = to((sel + 1) % SETTING_ROWS),
+                    KeyCode::BackTab => self.modal = to((sel + last) % SETTING_ROWS),
+                    KeyCode::Enter | KeyCode::Char(' ') if sel == FOLDER_ROW => self.edit_folder(),
                     KeyCode::Left | KeyCode::Char('-' | '_') => return self.step_setting(sel, -1),
                     KeyCode::Right | KeyCode::Char('+' | '=') => return self.step_setting(sel, 1),
                     KeyCode::Enter | KeyCode::Char(' ') => return self.cycle_setting(sel),
@@ -1114,6 +1152,14 @@ impl App {
                 (Modal::Settings { .. }, Some(Hit::SettingOption { row, value })) => {
                     self.modal = Some(Modal::Settings { sel: row });
                     self.set_setting(row, value)
+                }
+                (Modal::Settings { .. }, Some(Hit::FolderChange)) => {
+                    self.edit_folder();
+                    Vec::new()
+                }
+                (Modal::WorkspaceFolder, Some(Hit::No)) => {
+                    self.modal = Some(Modal::Settings { sel: FOLDER_ROW });
+                    Vec::new()
                 }
                 (
                     Modal::Workspaces { .. }
@@ -1779,6 +1825,37 @@ impl App {
         Vec::new()
     }
 
+    /// Starts typing the workspaces folder, from the one in use.
+    fn edit_folder(&mut self) {
+        self.prompt = self.folder_shown.clone();
+        self.open_modal(Modal::WorkspaceFolder);
+    }
+
+    /// A key while the folder is typed: any character, Backspace; Enter
+    /// keeps it (the event loop checks it), Esc doesn't. Both go back to
+    /// the folder's row.
+    fn folder_key(&mut self, code: KeyCode) -> Vec<Action> {
+        match code {
+            KeyCode::Char(c)
+                if !c.is_control()
+                    && Span::raw(c.to_string()).width() == 1
+                    && self.prompt.chars().count() < FOLDER_MAX =>
+            {
+                self.prompt.push(c)
+            }
+            KeyCode::Backspace => {
+                self.prompt.pop();
+            }
+            KeyCode::Esc => self.modal = Some(Modal::Settings { sel: FOLDER_ROW }),
+            KeyCode::Enter => {
+                self.modal = Some(Modal::Settings { sel: FOLDER_ROW });
+                return vec![Action::SetWorkspaceFolder(self.prompt.clone())];
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
     /// The typed name, trimmed: refused with a notice when it isn't a
     /// valid name, "Overwrite?" when it is taken, else carried out.
     fn submit_name(&mut self, then: NameThen) -> Vec<Action> {
@@ -1868,8 +1945,12 @@ impl App {
         self.commit(new)
     }
 
-    /// ←→ / +- on setting `row`: brightness one step, a switch on or off.
+    /// ←→ / +- on setting `row`: brightness one step, a switch on or off;
+    /// nothing on the folder.
     fn step_setting(&mut self, row: usize, step: i8) -> Vec<Action> {
+        if row >= SETTINGS.len() {
+            return Vec::new();
+        }
         let max = if row == 0 { 2 } else { 1 };
         let value = self.setting(row).saturating_add_signed(step).min(max);
         self.set_setting(row, value)
@@ -1878,6 +1959,9 @@ impl App {
     /// Enter / space on setting `row`: brightness cycles Dim → Normal →
     /// Bright → Dim, a switch flips.
     fn cycle_setting(&mut self, row: usize) -> Vec<Action> {
+        if row >= SETTINGS.len() {
+            return Vec::new();
+        }
         let n = if row == 0 { 3 } else { 2 };
         self.set_setting(row, (self.setting(row) + 1) % n)
     }

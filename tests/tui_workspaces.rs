@@ -23,7 +23,7 @@ use toppingctl::conn::Connection;
 use toppingctl::frame::{Dir, Frame};
 use toppingctl::state::{Meters, State};
 use toppingctl::sync::Store;
-use toppingctl::tui::app::{Action, App, ComboItem, Modal, NameThen};
+use toppingctl::tui::app::{Action, App, ComboItem, Modal, NameThen, FOLDER_ROW};
 use toppingctl::tui::run::carry_out;
 use toppingctl::tui::theme::Theme;
 use toppingctl::tui::ui::{self, Hit, HitMap};
@@ -116,6 +116,7 @@ impl Rig {
         let settings = Settings {
             current: current.map(String::from),
             auto_save: false,
+            ..Default::default()
         };
         ws.save_settings(&settings).unwrap();
         let (transport, fake) = FakeTransport::new();
@@ -123,6 +124,7 @@ impl Rig {
         let mut app = App::new(Theme::color());
         app.synced(device_state());
         app.set_workspaces(ws.list(), ws.settings());
+        app.set_workspaces_folder(ws.folder_shown());
         Rig {
             store: Store::at(dir.join("state.json")),
             ws,
@@ -480,4 +482,133 @@ fn mouse() {
     rig.app.set_notice(None);
     let actions = rig.click(Hit::SaveKey);
     assert_eq!(actions, vec![Action::SaveWorkspace("mouse set".into())]);
+}
+
+// ------------------------------------------- the workspaces folder (#57)
+
+/// Opens Settings with `e` and walks down to the Workspaces folder row.
+fn to_folder_row(rig: &mut Rig) {
+    rig.key(ch('e'));
+    for _ in 0..FOLDER_ROW {
+        rig.key(key(KeyCode::Down));
+    }
+    assert_eq!(rig.app.modal(), Some(Modal::Settings { sel: FOLDER_ROW }));
+}
+
+/// Enter on the folder row edits the path, filled in with the folder;
+/// typing (`q` and `e` too) and Backspace edit it, Esc leaves it as it
+/// was and goes back to the row.
+#[test]
+fn folder_edit_keys() {
+    let mut rig = Rig::new("folder-keys", &["gig"], Some("gig"));
+    let shown = rig.ws.folder_shown();
+    to_folder_row(&mut rig);
+    let (buf, _) = render(&rig.app, 120, 40);
+    let t = text(&buf);
+    assert!(t.contains("Workspaces folder"), "{t}");
+    assert!(t.contains("[Change]"), "{t}");
+    assert!(rig.key(key(KeyCode::Right)).is_empty(), "nothing to step");
+    assert!(rig.key(key(KeyCode::Enter)).is_empty());
+    assert_eq!(rig.app.modal(), Some(Modal::WorkspaceFolder));
+    assert_eq!(rig.app.prompt(), shown);
+    rig.type_text("/qe");
+    assert_eq!(rig.app.prompt(), format!("{shown}/qe"));
+    rig.key(key(KeyCode::Backspace));
+    assert_eq!(rig.app.prompt(), format!("{shown}/q"));
+    assert_eq!(rig.app.modal(), Some(Modal::WorkspaceFolder), "q types");
+    assert!(rig.key(key(KeyCode::Esc)).is_empty());
+    assert_eq!(rig.app.modal(), Some(Modal::Settings { sel: FOLDER_ROW }));
+    assert_eq!(rig.ws.settings().folder, None);
+    assert_eq!(rig.app.workspace(), Some("gig"));
+}
+
+/// Enter keeps the typed folder: created if missing, kept in
+/// `workspaces.json` with the open workspace and auto-save, and the list
+/// reads it. Nothing moves; the open workspace, not in the new folder,
+/// falls back to Default.
+#[test]
+fn folder_change_reads_the_new_folder() {
+    let mut rig = Rig::new("folder-change", &["gig", "studio"], Some("gig"));
+    rig.app.set_workspaces(rig.ws.list(), {
+        let mut s = rig.ws.settings();
+        s.auto_save = true;
+        s
+    });
+    rig.run(vec![Action::SaveWorkspaceSettings]);
+    // Another folder holding a copy of "studio".
+    let new = rig.dir.join("new place");
+    fs::create_dir_all(&new).unwrap();
+    let old = rig.dir.join("workspaces");
+    fs::copy(old.join("studio.json"), new.join("studio.json")).unwrap();
+    let deeper = new.join("sub");
+
+    to_folder_row(&mut rig);
+    rig.key(key(KeyCode::Enter));
+    while !rig.app.prompt().is_empty() {
+        rig.key(key(KeyCode::Backspace));
+    }
+    rig.type_text(&deeper.display().to_string());
+    let actions = rig.key(key(KeyCode::Enter));
+    assert_eq!(
+        actions,
+        vec![Action::SetWorkspaceFolder(deeper.display().to_string())]
+    );
+    assert_eq!(rig.app.modal(), Some(Modal::Settings { sel: FOLDER_ROW }));
+    assert!(deeper.is_dir(), "created");
+    let saved = Workspaces::at(rig.dir.clone()).settings();
+    assert_eq!(saved.folder, Some(deeper.clone()));
+    assert!(saved.auto_save, "auto-save kept");
+    assert_eq!(saved.current, None, "gig isn't there: Default");
+    assert!(rig.app.workspaces().is_empty());
+    assert_eq!(rig.app.workspace(), None);
+    assert_eq!(rig.app.workspaces_folder(), deeper.display().to_string());
+    // The old folder is as it was.
+    assert!(old.join("gig.json").is_file() && old.join("studio.json").is_file());
+    let (buf, _) = render(&rig.app, 120, 40);
+    assert!(text(&buf).contains("sub"), "the row shows the new folder");
+
+    // Empty is the default folder again: the setting goes.
+    rig.run(vec![Action::SetWorkspaceFolder(String::new())]);
+    assert_eq!(rig.ws.settings().folder, None);
+    assert_eq!(rig.app.workspaces(), ["gig".to_string(), "studio".into()]);
+    assert_eq!(rig.app.workspaces_folder(), rig.ws.folder_shown());
+
+    // A folder holding the open workspace keeps it open.
+    rig.app.set_workspaces(rig.ws.list(), {
+        let mut s = rig.ws.settings();
+        s.current = Some("studio".into());
+        s
+    });
+    rig.run(vec![Action::SetWorkspaceFolder(new.display().to_string())]);
+    assert_eq!(rig.app.workspaces(), ["studio".to_string()]);
+    assert_eq!(rig.app.workspace(), Some("studio"));
+    assert_eq!(rig.ws.settings().current.as_deref(), Some("studio"));
+    assert_eq!(rig.ws.settings().folder, Some(new.clone()));
+    assert!(rig.written().is_empty(), "nothing reaches the device");
+}
+
+/// A folder that can't be one (a relative path) changes nothing and says
+/// why.
+#[test]
+fn folder_change_refused() {
+    let mut rig = Rig::new("folder-bad", &["gig"], Some("gig"));
+    rig.run(vec![Action::SetWorkspaceFolder("not/absolute".into())]);
+    let notice = rig.app.notice().expect("a notice").to_string();
+    assert!(notice.contains("not/absolute"), "{notice}");
+    assert_eq!(rig.ws.settings().folder, None);
+    assert_eq!(rig.app.workspace(), Some("gig"));
+    assert_eq!(rig.app.workspaces(), ["gig".to_string()]);
+}
+
+/// A click on `[Change]` edits the folder; the dialog's close button,
+/// while editing, goes back to the row.
+#[test]
+fn folder_change_click() {
+    let mut rig = Rig::new("folder-click", &[], None);
+    rig.key(ch('e'));
+    rig.click(Hit::FolderChange);
+    assert_eq!(rig.app.modal(), Some(Modal::WorkspaceFolder));
+    assert_eq!(rig.app.prompt(), rig.ws.folder_shown());
+    rig.click(Hit::No);
+    assert_eq!(rig.app.modal(), Some(Modal::Settings { sel: FOLDER_ROW }));
 }

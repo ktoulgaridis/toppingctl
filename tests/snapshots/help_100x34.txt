@@ -15,7 +15,7 @@
 ││ ▆ −36  │   s                save the workspace (on Default: save as…)                 │   ┃ ▕▕ ││
 ││ ▆      │   l                workspaces: pick, save, delete, new, save as              │12╶┃╴▕▕ ││
 ││ ▆ −48  │   w                store to the device's memory (download)                   │24╶┃╴▕▕ ││
-││ ▆      │   e                settings: brightness, standby, mobile apps, versions      │−∞━■━▕▕ ││
+││ ▆      │   e                settings: device, workspaces folder, versions             │−∞━■━▕▕ ││
 ││ ▆ −60  │   ?                this help                                                 │  Ø S M ││
 │╰────────│   q  Ctrl-C        quit                                                      │────────╯│
 ╰─────────│                                                                              │─────────╯
