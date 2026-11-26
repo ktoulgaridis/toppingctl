@@ -1612,18 +1612,22 @@ fn flat_layout_rules() {
         );
         assert!(chip.rect.intersects(tab));
 
-        // PHONE: two big 3-row buttons, their labels on the middle row.
+        // PHONE: two big 3-row buttons, their labels on the middle row,
+        // where the column under MONITOR MIX has the height (#69); one-row
+        // pills below that.
+        let big = h >= 50;
         for (on, label) in [(true, "+17 dBu"), (false, "0 dBu")] {
             let r = at(Hit::Phone(on));
-            assert_eq!(r.height, 3, "{label}: {ctx}");
-            assert!(r.width >= 8, "{label}: {ctx}");
-            assert_eq!(cells(&buf, r.y + 1, r.x, r.right()).trim(), label);
+            assert_eq!(r.height, if big { 3 } else { 1 }, "{label}: {ctx}");
+            assert!(r.width >= 7, "{label}: {ctx}");
+            let mid = r.y + r.height / 2;
+            assert_eq!(cells(&buf, mid, r.x, r.right()).trim(), label);
             assert!(hits
                 .pixels()
                 .iter()
                 .any(|s| s.rect == r && matches!(s.widget, PixelWidget::Chip { .. })));
         }
-        if w == 120 {
+        if big {
             assert_eq!(at(Hit::Phone(true)).width, 9, "{ctx}");
         }
     }

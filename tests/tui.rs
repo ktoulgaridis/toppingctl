@@ -282,7 +282,11 @@ fn layout_matches_app() {
         };
         order(&["IN1", "IN2"]);
         order(&["IN 1+2", "PB 1/2", "PB 3/4", "PB 5/6"]);
-        order(&["LOOP 1+2", "LOOP 3+4", "OUT 1+2", "MONITOR MIX", "PHONE"]);
+        order(&["LOOP 1+2", "LOOP 3+4", "OUT 1+2", "MONITOR MIX"]);
+        // PHONE under MONITOR MIX, in one column (#69).
+        let (mx, my) = find("MONITOR MIX");
+        let (px, py) = find("PHONE");
+        assert!(py > my && px > ox && px.abs_diff(mx) <= 3, "{w}x{h}:\n{t}");
         // The mix tabs, A boxed (active).
         assert!(t.contains("┤ a mix A ├"), "{t}");
     }
@@ -1069,7 +1073,7 @@ fn panel_focus_reaches_every_strip() {
     }
     app.handle_key(ch('4'));
     app.handle_key(key(KeyCode::Right));
-    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Down));
     assert_eq!(app.focus(), Control::Output(2));
 
     // The focused strip's border and its panel's border are the accent.
@@ -1887,7 +1891,7 @@ fn phone_level_switch_is_programmable() {
     );
     app.handle_key(ch('4'));
     app.handle_key(key(KeyCode::Right));
-    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Down));
     assert_eq!(app.focus(), Control::Output(2));
     let a = app.handle_key(ch(' '));
     assert_eq!(sends(&a), vec![frame(0x11, 0x02, 1)]);

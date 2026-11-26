@@ -620,7 +620,11 @@ enum Beside {
     Edge,
 }
 
-/// The PHONE strip's index among the output strips.
+/// MONITOR MIX's index among the output panel's boxes: the top of the
+/// column at the panel's right.
+pub const MONITOR_MIX: usize = 1;
+
+/// The PHONE box's index among the output panel's boxes: under MONITOR MIX.
 pub const PHONE: usize = 2;
 
 /// With no report from the device for this long, the header says so (the
@@ -2186,7 +2190,7 @@ impl App {
             StripId::Mixer(i) => {
                 mv(i, 4).map_or(Beside::Edge, |c| Beside::Strip(StripId::Mixer(c)))
             }
-            StripId::Bus(OUT_BUS) if step > 0 => Beside::Control(Control::Output(1)),
+            StripId::Bus(OUT_BUS) if step > 0 => Beside::Control(Control::Output(MONITOR_MIX)),
             StripId::Bus(OUT_BUS) => Beside::Edge,
             StripId::Bus(b) => mv(b, 2).map_or(Beside::Edge, |c| Beside::Strip(StripId::Bus(c))),
         }
@@ -2200,12 +2204,24 @@ impl App {
     }
 
     /// ←/→: the control beside in the same row, else the next strip's
-    /// row (its first control going right, its last going left); from the
-    /// output on to MONITOR MIX and PHONE. Clamped at the panel's edge.
+    /// row (its first control going right, its last going left). The
+    /// output panel's right edge is one column, MONITOR MIX over PHONE
+    /// (#69): → from OUT 1+2's bottom row (HP, LINE) goes to PHONE, from
+    /// any other row to MONITOR MIX; ← from MONITOR MIX goes back to the
+    /// strip's name, from PHONE to LINE. Clamped at the panel's edge.
     fn move_horizontal(&mut self, step: isize) {
         let c = self.focus;
         if let Control::Output(i @ 1..) = c {
-            self.focus = Control::Output((i as isize + step).clamp(0, 2) as usize);
+            if step < 0 {
+                self.focus = if i == PHONE {
+                    Control::Bus {
+                        bus: OUT_BUS,
+                        ctl: BusControl::Line,
+                    }
+                } else {
+                    Control::Output(0)
+                };
+            }
             return;
         }
         let Some(strip) = Self::strip_of(c) else {
@@ -2230,15 +2246,24 @@ impl App {
                     r[r.len() - 1]
                 }
             }
+            Beside::Control(Control::Output(MONITOR_MIX)) if row == grid.len() - 1 => {
+                Control::Output(PHONE)
+            }
             Beside::Control(to) => to,
             Beside::Edge => c,
         };
     }
 
     /// ↑/↓: the row above or below in the strip (from a strip's name down
-    /// into its controls), at the same place across the row; clamped.
+    /// into its controls), at the same place across the row; clamped. In
+    /// the output panel's right column, between MONITOR MIX and PHONE.
     fn move_vertical(&mut self, step: isize) {
         let c = self.focus;
+        if let Control::Output(MONITOR_MIX | PHONE) = c {
+            let i = if step < 0 { MONITOR_MIX } else { PHONE };
+            self.focus = Control::Output(i);
+            return;
+        }
         let Some(strip) = Self::strip_of(c) else {
             return;
         };

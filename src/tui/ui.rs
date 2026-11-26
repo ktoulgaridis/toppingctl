@@ -1829,6 +1829,66 @@ fn draw_bus_strip(
     }
 }
 
+/// The output strips the panel draws: OUT 1+2 on the E2x2. The E4x4 and
+/// E8x8 add OUT 3+4 … 7+8 between it and the right column (#70).
+const OUTPUT_STRIPS: u16 = 1;
+
+/// The right column's least width: the Monitor Mix labels and the PHONE
+/// pills, with the box's borders.
+const OUTPUT_COLUMN_MIN_W: u16 = 20;
+
+/// PHONE's height with its big three-row buttons: the borders, the label,
+/// a blank row and the buttons. Shorter, it has one-row pills.
+const PHONE_BIG_H: u16 = 7;
+
+/// PHONE's height with one-row pills: the borders, the label, the pills.
+const PHONE_SMALL_H: u16 = 4;
+
+/// The output panel's inner area split as the official app lays it out:
+/// `strips` output strips from the left, sharing the width, then one
+/// column at the right, a strip wide, for MONITOR MIX and PHONE. More
+/// strips (#70) take their width from the strips', never the column's.
+fn output_columns(inner: Rect, strips: u16) -> (Vec<Rect>, Rect) {
+    let col_w = (inner.width / 3).max(OUTPUT_COLUMN_MIN_W).min(inner.width);
+    let column = Rect {
+        x: inner.right() - col_w,
+        width: col_w,
+        ..inner
+    };
+    let rest = Rect {
+        width: inner.width - col_w,
+        ..inner
+    };
+    let strips = if strips == 0 || rest.width == 0 {
+        Vec::new()
+    } else {
+        columns(rest, strips)
+    };
+    (strips, column)
+}
+
+/// The right column split top to bottom: MONITOR MIX, then PHONE under
+/// it. PHONE keeps its big buttons only where MONITOR MIX still gets a
+/// dial of four rows (a box of nine); the knob gets the rest.
+fn monitor_phone_split(column: Rect) -> (Rect, Rect) {
+    let phone_h = if column.height >= PHONE_BIG_H + 9 {
+        PHONE_BIG_H
+    } else {
+        PHONE_SMALL_H
+    }
+    .min(column.height);
+    let mon = Rect {
+        height: column.height - phone_h,
+        ..column
+    };
+    let phone = Rect {
+        y: mon.bottom(),
+        height: phone_h,
+        ..column
+    };
+    (mon, phone)
+}
+
 fn draw_output_panel(
     buf: &mut Buffer,
     area: Rect,
@@ -1839,25 +1899,17 @@ fn draw_output_panel(
     let t = app.theme();
     let state = app.state();
     let (inner, _) = panel(buf, area, app, Panel::Output, "⁴", "output");
-    let w1 = inner.width * 2 / 5;
-    let w2 = (inner.width - w1) / 2;
-    let out_area = Rect { width: w1, ..inner };
-    let mon_area = Rect {
-        x: inner.x + w1,
-        width: w2,
-        ..inner
-    };
-    let phone_area = Rect {
-        x: mon_area.right(),
-        width: inner.right() - mon_area.right(),
-        ..inner
-    };
+    let (strips, column) = output_columns(inner, OUTPUT_STRIPS);
+    let (mon_area, phone_area) = monitor_phone_split(column);
 
     for (k, a) in [mon_area, phone_area].into_iter().enumerate() {
         hits.push(Hit::Focus(Control::Output(k + 1)), a);
     }
     let focused = |k| app.focus() == Control::Output(k);
-    draw_bus_strip(buf, out_area, app, meters, OUT_BUS, hits);
+    // The E2x2 has one output strip, OUT 1+2.
+    if let Some(&out_area) = strips.first() {
+        draw_bus_strip(buf, out_area, app, meters, OUT_BUS, hits);
+    }
 
     // Monitor Mix: the balance the device reports when its knob turns
     // (`11 01`), shown read-only like the official app: dimmed, and no
@@ -1870,12 +1922,14 @@ fn draw_output_panel(
         StripFocus::of(false, focused(1)),
         hits,
     );
-    if r.height >= 6 {
-        // The dial, about 0.47 of the box's width (78 % of #34's), and
-        // its two text rows, centred.
-        let (kc, kr) = knob_size(r.width * 47 / 100, r.height - 3);
+    if r.height >= 4 {
+        // The dial, about 0.47 of the box's width (78 % of #34's), the
+        // input / playback labels under it and the value, a blank row
+        // before it where the box has the height; centred.
+        let gap = u16::from(r.height >= 6);
+        let (kc, kr) = knob_size(r.width * 47 / 100, r.height - 2 - gap);
         let dial_h = kr;
-        let r = centered_rows(r, dial_h + 3);
+        let r = centered_rows(r, dial_h + 2 + gap);
         let balance = state.readout.monitor_mix;
         let k = Knob {
             value: balance.map(|v| f64::from(v.clamp(0, 100)) / 100.0),
@@ -1900,7 +1954,7 @@ fn draw_output_panel(
         put_centered(
             buf,
             r,
-            r.y + dial_h + 2,
+            r.y + dial_h + 1 + gap,
             &[Span::styled(monitor_mix_text(balance), t.heading())],
             hits,
         );
@@ -1916,7 +1970,7 @@ fn draw_output_panel(
         StripFocus::of(false, focused(2)),
         hits,
     );
-    if r.height >= 5 {
+    if r.height >= PHONE_BIG_H - 2 {
         // Two big buttons, three rows tall (the mockup's 9 columns each),
         // under the label.
         let r = centered_rows(r, 5);
@@ -1945,7 +1999,7 @@ fn draw_output_panel(
             hits.pill(rect, span);
             hits.push(Hit::Phone(on), rect);
         }
-    } else if r.height >= 4 {
+    } else if r.height >= 2 {
         let r = centered_rows(r, 2);
         put_centered(buf, r, r.y, &[Span::styled("level", t.dim())], hits);
         let rects = put_centered(

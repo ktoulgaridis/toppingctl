@@ -26,9 +26,11 @@ MOCK_DUMP=120x40 cargo run --release -q           # print a frozen render (used 
     the fader, an L meter · fader · R meter, and Ø / SOLO / MUTE stacked underneath.
   - **Loopback (bottom left):** LOOP 1+2 and 3+4, each with a source dropdown, LINK, the value,
     an L meter · fader · R meter and MUTE.
-  - **Output (bottom right):** OUT 1+2 (source dropdown, LINK, fader and meters, HP / LINE), a
-    MONITOR MIX knob (read-only and dimmed, mirroring the balance the device reports as `11 01`)
-    and PHONE (the +17 dBu / 0 dBu level switch, `11 02`).
+  - **Output (bottom right):** OUT 1+2 (source dropdown, LINK, fader and meters, HP / LINE) at
+    the left, taking the width; one column at the right, a strip wide, with a MONITOR MIX knob
+    (read-only and dimmed, mirroring the balance the device reports as `11 01`) on top and PHONE
+    (the +17 dBu / 0 dBu level switch, `11 02`) under it (#69). E4x4 / E8x8 output strips would
+    slot in between (#70).
 - **Style (btop-level, "pretty, not pretentious"):**
   - rounded dim borders, titles set into the border with the shortcut key highlighted
   - one accent colour (soft blue)

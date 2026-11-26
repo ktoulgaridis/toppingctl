@@ -278,7 +278,8 @@ fn arrows_navigate_like_alsamixer() {
     press(&mut app, key(LEFT), bus(1, BusControl::Mute(0)));
     press(&mut app, key(LEFT), bus(0, BusControl::Mute(0)));
 
-    // Output: HP and LINE side by side, then MONITOR MIX and PHONE.
+    // Output: HP and LINE side by side, then the column at the right:
+    // MONITOR MIX over PHONE (#69).
     press(&mut app, ch('4'), Control::Output(0));
     press(&mut app, key(DOWN), bus(OUT_BUS, BusControl::Source));
     press(&mut app, key(DOWN), bus(OUT_BUS, BusControl::Link));
@@ -287,9 +288,15 @@ fn arrows_navigate_like_alsamixer() {
     press(&mut app, key(DOWN), bus(OUT_BUS, BusControl::Line));
     press(&mut app, key(LEFT), bus(OUT_BUS, BusControl::Hp));
     press(&mut app, key(RIGHT), bus(OUT_BUS, BusControl::Line));
-    press(&mut app, key(RIGHT), Control::Output(1));
     press(&mut app, key(RIGHT), Control::Output(2));
-    press(&mut app, key(LEFT), Control::Output(1));
+    press(&mut app, key(RIGHT), Control::Output(2));
+    press(&mut app, key(UP), Control::Output(1));
+    press(&mut app, key(UP), Control::Output(1));
+    press(&mut app, key(DOWN), Control::Output(2));
+    press(&mut app, key(LEFT), bus(OUT_BUS, BusControl::Line));
+    press(&mut app, key(UP), bus(OUT_BUS, BusControl::Fader(1)));
+    press(&mut app, key(RIGHT), Control::Output(1));
+    press(&mut app, key(RIGHT), Control::Output(1));
     press(&mut app, key(LEFT), Control::Output(0));
 }
 
@@ -458,7 +465,7 @@ fn focus_marker_for_each_widget_kind() {
         (vec![ch('2')], Control::Mixer(0), "name"),
         (vec![ch('4')], Control::Output(0), "name"),
         (
-            vec![ch('4'), key(RIGHT), key(RIGHT)],
+            vec![ch('4'), key(RIGHT), key(DOWN)],
             Control::Output(2),
             "name",
         ),
@@ -588,7 +595,7 @@ fn footer_names_the_focus() {
             "IN1 · gain +12 dB",
         ),
         (vec![ch('3'), key(DOWN)], "LOOP 1+2 · source PB 3/4"),
-        (vec![ch('4'), key(RIGHT), key(RIGHT)], "PHONE · level 0 dBu"),
+        (vec![ch('4'), key(RIGHT), key(DOWN)], "PHONE · level 0 dBu"),
     ] {
         for k in keys {
             app.handle_key(k);

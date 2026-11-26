@@ -935,3 +935,79 @@ fn swapped_pages_lay_out_at_every_size() {
         }
     }
 }
+
+/// #69: the output panel as the official app lays it out. OUT 1+2 at the
+/// left takes the width up to one column at the right, a strip wide, that
+/// holds MONITOR MIX on top and PHONE under it. At every size from 100×34
+/// to 250×60 the column's boxes share their x and width, touch, and fill
+/// the panel's height; both PHONE level pills and every OUT 1+2 control
+/// stay click targets inside their boxes; clicks focus the box under them.
+#[test]
+fn monitor_mix_over_phone_in_one_column() {
+    let meters = fake_meters();
+    let mut app = app_with(fake_state());
+    for w in (100u16..=250).step_by(5) {
+        for h in (34u16..=60).step_by(2) {
+            let (buf, hits) = render(&app, &meters, w, h);
+            let ctx = format!("{w}x{h}:\n{}", text(&buf));
+            let at = |hit: Hit| hits.rect(hit).unwrap_or_else(|| panic!("{hit:?}: {ctx}"));
+            let out = at(Hit::Focus(Control::Output(0)));
+            let mon = at(Hit::Focus(Control::Output(1)));
+            let phone = at(Hit::Focus(Control::Output(2)));
+            assert_eq!(mon.x, phone.x, "one column: {ctx}");
+            assert_eq!(mon.width, phone.width, "one column: {ctx}");
+            assert_eq!(
+                mon.bottom(),
+                phone.y,
+                "PHONE right under MONITOR MIX: {ctx}"
+            );
+            assert_eq!(mon.y, out.y, "{ctx}");
+            assert_eq!(phone.bottom(), out.bottom(), "{ctx}");
+            assert_eq!(out.right(), mon.x, "OUT 1+2 takes the freed width: {ctx}");
+            assert!(out.width > mon.width, "{ctx}");
+            assert!(mon.width >= 20, "a strip wide: {ctx}");
+            for on in [true, false] {
+                let p = at(Hit::Phone(on));
+                assert!(phone.contains(p.as_position()), "{on}: {ctx}");
+                assert_eq!(hits.get(p.x, p.y), Some(Hit::Phone(on)), "{ctx}");
+            }
+            for c in [
+                BusControl::Source,
+                BusControl::Link,
+                BusControl::Fader(0),
+                BusControl::Hp,
+                BusControl::Line,
+            ] {
+                let r = at(Hit::Control(Control::Bus {
+                    bus: OUT_BUS,
+                    ctl: c,
+                }));
+                assert!(out.contains(r.as_position()), "{c:?}: {ctx}");
+            }
+            // The Monitor Mix knob and its labels are drawn in its box.
+            let t = text(&buf);
+            assert!(t.contains("input") && t.contains("playback"), "{ctx}");
+            assert!(
+                hits.pixels().iter().any(|s| matches!(
+                    s.widget,
+                    PixelWidget::Knob { dimmed: true, .. }
+                ) && mon.contains(s.rect.as_position())),
+                "the Monitor Mix knob: {ctx}"
+            );
+        }
+    }
+
+    // A click on either box focuses it.
+    let (_, hits) = render(&app, &meters, 120, 40);
+    for k in [1, 2] {
+        let r = hits.rect(Hit::Focus(Control::Output(k))).unwrap();
+        let (x, y) = (r.x + 1, r.y + 1);
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_mouse(mouse(kind, x, y, KeyModifiers::NONE), &hits);
+        }
+        assert_eq!(app.focus(), Control::Output(k));
+    }
+}
