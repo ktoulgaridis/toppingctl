@@ -72,7 +72,8 @@ Prebuilt archives for macOS and Linux (x86_64 and arm64) are on the
 
 **Access without sudo.** The E2x2's hidraw node is root-only by default. Install the udev
 rule in [`packaging/linux/`](packaging/linux/70-toppingctl.rules); it gives the device to
-the user at the local seat and nothing else. Steps, and how to undo them:
+the user at the local seat and nothing else. It also covers the E4x4 Pre and E8x8 Pre
+(experimental). Steps, and how to undo them:
 [`packaging/linux/README.md`](packaging/linux/README.md).
 
 **Recording gives only silence.** The E2x2's ALSA control `'Mic',0` (the capture
@@ -178,7 +179,7 @@ toppingctl import E2X2_Live.TPwork  # save an official app workspace as "Live"
 ```
 
 `toppingctl --help` lists every path and value. Exit status: 0 ok, 2 usage error or not
-confirmed, 1 device error.
+confirmed, or an E4x4 Pre / E8x8 Pre found without `--experimental`, 1 device error.
 
 The device can't be read back, so every device command, and the TUI on start, first pushes the
 state toppingctl last set. On the first run there is nothing saved: the TUI asks before
@@ -215,6 +216,11 @@ official app for predictable results.
   toppingctl sets only the PHONE level switch.
 - The device has no full-state read, so toppingctl can only show what it last set (see
   [Command line](#command-line)).
+- **E4x4 Pre and E8x8 Pre: recognised, not controlled.** They use another register map
+  (#74). With `--experimental` (or `TOPPINGCTL_EXPERIMENTAL=1`) toppingctl says it found
+  one and that control is not implemented yet; without it, that the model is experimental
+  and untested (the CLI exits 2). Either way nothing is sent to them. An E4x4 Pre with
+  firmware older than 1.06 is refused, as the official app does.
 
 ## License
 

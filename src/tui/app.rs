@@ -560,6 +560,9 @@ pub struct App {
     rx_stale: bool,
     theme: Theme,
     notice: Option<String>,
+    /// A model was found but not opened (experimental, or firmware too
+    /// old): the splash says why instead of "Connecting". Nothing is sent.
+    refused: Option<String>,
     /// The interface's sample rate (Hz), when the OS tells.
     sample_rate: Option<u32>,
     /// A strip's name being edited, and the text so far.
@@ -637,6 +640,7 @@ impl App {
             rx_stale: false,
             theme,
             notice: None,
+            refused: None,
             sample_rate: None,
             editing: None,
             workspaces: Vec::new(),
@@ -859,6 +863,17 @@ impl App {
 
     pub fn set_notice(&mut self, notice: Option<String>) {
         self.notice = notice;
+    }
+
+    /// Why the found model was not opened, if it wasn't.
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
+    }
+
+    /// Shows `why` on the splash in place of "Connecting" (the TUI then
+    /// waits for the user to quit, sending nothing).
+    pub fn set_refused(&mut self, why: Option<String>) {
+        self.refused = why;
     }
 
     /// Whether mobile applications was changed in this session, so the

@@ -8,7 +8,8 @@
 //! hardware in tests.
 //!
 //! Exit codes: 0 on success, 2 for a usage error (including a confirmation
-//! that was not given), 1 for a device or saved-state error.
+//! that was not given, and an experimental model found without
+//! `--experimental`), 1 for a device or saved-state error.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -16,6 +17,7 @@ use std::io::{BufRead, Write};
 use std::sync::mpsc::Receiver;
 
 use crate::conn::{Connection, Event};
+use crate::error::{self, OpenFailure, Platform};
 use crate::frame::Frame;
 use crate::state::{PbStrip, Source, State, Strip};
 use crate::sync::{self, Store, StoreError, SyncError};
@@ -31,6 +33,7 @@ Usage: toppingctl
        toppingctl store [--yes]
        toppingctl init [--yes]
        toppingctl import <file.TPwork> [name] [--force]
+       toppingctl --experimental [command ...]
 
 Controls the TOPPING E2x2 USB audio interface. With no arguments it starts
 the terminal UI; press ? inside it for the keys. Every command first pushes
@@ -68,13 +71,19 @@ Values:
 Options:
   -y, --yes      don't ask before 48V on, store or init
   -f, --force    import over an existing workspace
+      --experimental
+                 recognise the E4x4 Pre and E8x8 Pre (untested; they
+                 are not controlled yet, so nothing is sent to them)
   -h, --help     show this help
   -V, --version  show the version
 
-Exit status: 0 ok, 2 usage error or not confirmed, 1 device error.
+Exit status: 0 ok, 2 usage error, not confirmed or an experimental model
+found without --experimental, 1 device error.
 
 Environment:
-  NO_COLOR       set to turn the TUI's colours off";
+  NO_COLOR       set to turn the TUI's colours off
+  TOPPINGCTL_EXPERIMENTAL
+                 set to 1 for --experimental";
 
 /// The valid paths, compactly (as in [`USAGE`]).
 const PATHS: &str = "  in1|in2.gain|mute|solo|phase|mon|inst|48v
@@ -94,9 +103,45 @@ pub struct Env<'a> {
     pub stdin: &'a mut dyn BufRead,
     pub stdout: &'a mut dyn Write,
     pub stderr: &'a mut dyn Write,
-    /// Opens the device; the error is a message for the user.
+    /// Opens the device; the error carries a message for the user.
     #[allow(clippy::type_complexity)]
-    pub open: Box<dyn FnMut() -> Result<(Connection, Receiver<Event>), String> + 'a>,
+    pub open: Box<dyn FnMut() -> Result<(Connection, Receiver<Event>), OpenError> + 'a>,
+}
+
+/// Why [`Env::open`] failed: a message for the user, and the exit code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenError {
+    /// Exit 2: the user can fix it with a flag (an experimental model
+    /// found without `--experimental`).
+    Usage(String),
+    /// Exit 1.
+    Device(String),
+}
+
+impl OpenError {
+    /// The message and exit code for `failure` on `platform`.
+    pub fn from_failure(failure: &OpenFailure, platform: Platform) -> Self {
+        let msg = error::message(failure, platform);
+        if failure.is_usage() {
+            OpenError::Usage(msg)
+        } else {
+            OpenError::Device(msg)
+        }
+    }
+}
+
+/// The environment variable that turns `--experimental` on when it is `1`.
+pub const EXPERIMENTAL_ENV: &str = "TOPPINGCTL_EXPERIMENTAL";
+
+/// Takes `--experimental` out of `args` (wherever it is) and says whether
+/// experimental models may be opened: the flag, or `env` (the value of
+/// [`EXPERIMENTAL_ENV`]) being `1`. What is left is the command line for
+/// [`run`]; nothing left starts the TUI.
+pub fn split_experimental(args: Vec<OsString>, env: Option<OsString>) -> (Vec<OsString>, bool) {
+    let before = args.len();
+    let rest: Vec<OsString> = args.into_iter().filter(|a| a != "--experimental").collect();
+    let on = rest.len() != before || env.is_some_and(|v| v == "1");
+    (rest, on)
 }
 
 /// Runs the CLI with `args` (without the program name) and returns the exit
@@ -835,7 +880,10 @@ fn device(e: impl fmt::Display) -> Failure {
 
 fn open(env: &mut Env) -> Result<(Store, Connection, Receiver<Event>), Failure> {
     let store = env.store.as_ref().map_err(device)?.clone();
-    let (conn, events) = (env.open)().map_err(Failure::Device)?;
+    let (conn, events) = (env.open)().map_err(|e| match e {
+        OpenError::Usage(msg) => Failure::Usage(msg),
+        OpenError::Device(msg) => Failure::Device(msg),
+    })?;
     Ok((store, conn, events))
 }
 

@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use toppingctl::model::Model;
 
 const RULE: &str = "packaging/linux/70-toppingctl.rules";
 const README: &str = "packaging/linux/README.md";
@@ -31,27 +32,40 @@ fn tokens(line: &str) -> Vec<&str> {
 fn rule_is_seat_scoped() {
     let text = read(RULE);
     let lines = rule_lines(&text);
+    // One rule per model: E2x2, then the experimental E4x4 Pre and E8x8 Pre.
+    let pids: Vec<String> = Model::ALL
+        .iter()
+        .map(|m| format!("{:04x}", m.product_id()))
+        .collect();
+    assert_eq!(
+        pids,
+        ["8752", "8754", "875b"],
+        "udev matches sysfs's lowercase hex"
+    );
     assert_eq!(
         lines.len(),
-        1,
-        "{RULE}: expected exactly one rule, got {lines:?}"
+        pids.len(),
+        "{RULE}: expected one rule per model, got {lines:?}"
     );
-    let toks = tokens(lines[0]);
-    for want in [
-        r#"SUBSYSTEM=="hidraw""#,
-        r#"ATTRS{idVendor}=="152a""#,
-        r#"ATTRS{idProduct}=="8752""#,
-        r#"TAG+="uaccess""#,
-    ] {
-        assert!(toks.contains(&want), "{RULE}: missing `{want}` in {toks:?}");
-    }
-    // Access comes only from the seat (uaccess): no mode bits, group or owner grant.
-    for tok in &toks {
-        for banned in ["MODE", "GROUP", "OWNER"] {
-            assert!(
-                !tok.starts_with(banned),
-                "{RULE}: `{tok}` grants access beyond the logged-in seat user"
-            );
+    for (line, pid) in lines.iter().zip(&pids) {
+        let toks = tokens(line);
+        let product = format!(r#"ATTRS{{idProduct}}=="{pid}""#);
+        for want in [
+            r#"SUBSYSTEM=="hidraw""#,
+            r#"ATTRS{idVendor}=="152a""#,
+            product.as_str(),
+            r#"TAG+="uaccess""#,
+        ] {
+            assert!(toks.contains(&want), "{RULE}: missing `{want}` in {toks:?}");
+        }
+        // Access comes only from the seat (uaccess): no mode bits, group or owner grant.
+        for tok in &toks {
+            for banned in ["MODE", "GROUP", "OWNER"] {
+                assert!(
+                    !tok.starts_with(banned),
+                    "{RULE}: `{tok}` grants access beyond the logged-in seat user"
+                );
+            }
         }
     }
 }
