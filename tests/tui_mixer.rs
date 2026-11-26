@@ -1633,3 +1633,56 @@ fn flat_layout_rules() {
         }
     }
 }
+
+/// Knobs of one kind are one size in a panel (#86): at every window size
+/// from 100×34 to 250×60, odd and even widths, in text and pixel mode, the
+/// two gain knobs match, the eight pan knobs match, and the Monitor Mix
+/// knob is drawn.
+#[test]
+fn knobs_of_one_kind_are_one_size() {
+    use toppingctl::tui::pixel::PixelWidget as W;
+    let app = app_with(fake_state());
+    let meters = fake_meters();
+    for pixels in [false, true] {
+        let mut layer = kitty_layer();
+        for w in 100u16..=250 {
+            for h in 34u16..=60 {
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                let mut hits = HitMap::default();
+                terminal
+                    .draw(|f| {
+                        hits = if pixels {
+                            ui::draw_with(f, &app, &meters, Some(&mut layer))
+                        } else {
+                            ui::draw(f, &app, &meters)
+                        }
+                    })
+                    .unwrap();
+                let size_of = |want: (bool, bool)| -> Vec<(u16, u16)> {
+                    hits.pixels()
+                        .iter()
+                        .filter_map(|s| match s.widget {
+                            W::Knob {
+                                bipolar, dimmed, ..
+                            } if (bipolar, dimmed) == want => Some((s.rect.width, s.rect.height)),
+                            _ => None,
+                        })
+                        .collect()
+                };
+                let ctx = format!("{w}x{h} pixels={pixels}");
+                for (name, want, n) in [
+                    ("gain", (false, false), 2),
+                    ("pan", (true, false), 8),
+                    ("monitor mix", (true, true), 1),
+                ] {
+                    let sizes = size_of(want);
+                    assert_eq!(sizes.len(), n, "{name} knobs at {ctx}");
+                    assert!(
+                        sizes.iter().all(|s| *s == sizes[0]),
+                        "{name} knobs differ at {ctx}: {sizes:?}"
+                    );
+                }
+            }
+        }
+    }
+}
