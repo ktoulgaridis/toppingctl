@@ -1,7 +1,8 @@
-//! The command line: `toppingctl set|get|dump|store|init`.
+//! The command line: `toppingctl set|get|dump|store|init|import`.
 //!
-//! Each command connects with [`sync::connect`] (which pushes the saved
-//! state), does its one thing and exits. Paths name [`State`] fields
+//! Each device command connects with [`sync::connect`] (which pushes the
+//! saved state), does its one thing and exits; `import` only writes a
+//! workspace file and never opens the device. Paths name [`State`] fields
 //! (`in1.mon`, `mix.b.pb34.pan`, …); see [`USAGE`]. Everything that touches
 //! the outside world comes in through [`Env`], so the CLI runs without
 //! hardware in tests.
@@ -18,6 +19,8 @@ use crate::conn::{Connection, Event};
 use crate::frame::Frame;
 use crate::state::{PbStrip, Source, State, Strip};
 use crate::sync::{self, Store, StoreError, SyncError};
+use crate::tpwork;
+use crate::workspace::Workspaces;
 
 /// `toppingctl --help`.
 pub const USAGE: &str = "\
@@ -27,6 +30,7 @@ Usage: toppingctl
        toppingctl dump [--json]
        toppingctl store [--yes]
        toppingctl init [--yes]
+       toppingctl import <file.TPwork> [name] [--force]
 
 Controls the TOPPING E2x2 USB audio interface. With no arguments it starts
 the terminal UI; press ? inside it for the keys. Every command first pushes
@@ -38,6 +42,9 @@ Commands:
   dump   print every setting (--json: as the saved-state JSON)
   store  store the current settings in the device's own memory (asks first)
   init   first run: push the default settings to the device (asks first)
+  import save a TOPPING app workspace (E2X2_<name>.TPwork) as toppingctl
+         workspace <name> (or [name]); sends nothing to the device and
+         never imports 48V. --force replaces a workspace of that name
 
 Paths:
   in1|in2.gain|mute|solo|phase|mon|inst|48v
@@ -60,6 +67,7 @@ Values:
 
 Options:
   -y, --yes      don't ask before 48V on, store or init
+  -f, --force    import over an existing workspace
   -h, --help     show this help
   -V, --version  show the version
 
@@ -605,11 +613,26 @@ fn show_pan(pan: f64) -> String {
 enum Command {
     Help,
     Version,
-    Set { path: Path, value: Value, yes: bool },
+    Set {
+        path: Path,
+        value: Value,
+        yes: bool,
+    },
     Get(Path),
-    Dump { json: bool },
-    Store { yes: bool },
-    Init { yes: bool },
+    Dump {
+        json: bool,
+    },
+    Store {
+        yes: bool,
+    },
+    Init {
+        yes: bool,
+    },
+    Import {
+        file: String,
+        name: Option<String>,
+        force: bool,
+    },
 }
 
 /// Why a command failed.
@@ -640,11 +663,13 @@ fn parse_args(args: &[OsString]) -> Result<Command, String> {
     // Flags start with "--" (or are -y); "-6" and "-inf" are values.
     let mut yes = false;
     let mut json = false;
+    let mut force = false;
     let mut positional = Vec::new();
     for &a in rest {
         match a {
             "-y" | "--yes" if matches!(cmd, "set" | "store" | "init") => yes = true,
             "--json" if cmd == "dump" => json = true,
+            "-f" | "--force" if cmd == "import" => force = true,
             _ if a.starts_with("--") || a == "-y" => {
                 return Err(format!("unknown option {a:?} for {cmd}"))
             }
@@ -672,6 +697,14 @@ fn parse_args(args: &[OsString]) -> Result<Command, String> {
         "dump" => want(0, "no arguments").map(|()| Command::Dump { json }),
         "store" => want(0, "no arguments").map(|()| Command::Store { yes }),
         "init" => want(0, "no arguments").map(|()| Command::Init { yes }),
+        "import" => match positional[..] {
+            [file] | [file, _] => Ok(Command::Import {
+                file: file.to_string(),
+                name: positional.get(1).map(|n| n.to_string()),
+                force,
+            }),
+            _ => Err("import takes a .TPwork file and an optional name".into()),
+        },
         _ => Err(format!("unknown command {cmd:?}")),
     }
 }
@@ -755,7 +788,37 @@ fn execute(cmd: Command, env: &mut Env) -> Result<(), Failure> {
             finish(s.conn, s.events)
         }
         Command::Init { yes } => init(env, yes),
+        Command::Import { file, name, force } => import(env, &file, name.as_deref(), force),
     }
+}
+
+/// Saves an official app workspace as a toppingctl workspace, beside the
+/// saved state. Never opens the device.
+fn import(env: &mut Env, file: &str, name: Option<&str>, force: bool) -> Result<(), Failure> {
+    let store = env.store.as_ref().map_err(device)?;
+    let dir = store.path().parent().unwrap_or(std::path::Path::new("."));
+    let workspaces = Workspaces::at(dir.to_path_buf());
+    let saved = match tpwork::import(&workspaces, std::path::Path::new(file), name, force) {
+        Ok(saved) => saved,
+        Err(e @ tpwork::ImportError::Exists(_)) => {
+            return Err(Failure::Usage(format!("{e}; pass --force to replace it")))
+        }
+        Err(e @ tpwork::ImportError::Name(_)) => {
+            return Err(Failure::Usage(format!(
+                "{e}; give a name: import <file> <name>"
+            )))
+        }
+        Err(e) => return Err(device(e)),
+    };
+    for n in &saved.notices {
+        let _ = writeln!(env.stderr, "toppingctl: note: {n}");
+    }
+    writeln!(
+        env.stdout,
+        "imported {file} as workspace {:?} (open it with l in the TUI)",
+        saved.name
+    )
+    .map_err(|e| Failure::Device(format!("could not write output: {e}")))
 }
 
 /// A connected device at the saved state.

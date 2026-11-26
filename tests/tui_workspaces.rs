@@ -612,3 +612,65 @@ fn folder_change_click() {
     rig.click(Hit::No);
     assert_eq!(rig.app.modal(), Some(Modal::Settings { sel: FOLDER_ROW }));
 }
+
+/// "Import from TOPPING app…" (#58): hidden when the official app's folder
+/// has no E2x2 workspaces (as on Linux); else it lists them, and Enter (or
+/// a click) saves the chosen one as a toppingctl workspace, without
+/// loading it or sending anything. A name that exists is not replaced.
+#[test]
+fn import_from_the_official_app() {
+    use toppingctl::tpwork::Official;
+    let mut rig = Rig::new("import", &["gig"], None);
+    assert!(!rig.app.combo_items().contains(&ComboItem::Import));
+
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/official/E2X2_New202608221427.TPwork");
+    let other = rig.dir.join("E2X2_gig.TPwork");
+    fs::copy(&fixture, &other).unwrap();
+    let found = vec![
+        Official {
+            name: "New202608221427".into(),
+            path: fixture.clone(),
+        },
+        Official {
+            name: "gig".into(),
+            path: other,
+        },
+    ];
+    rig.app.set_official(found);
+    let items = rig.app.combo_items();
+    assert_eq!(
+        &items[items.len() - 2..],
+        [ComboItem::Import, ComboItem::AutoSave]
+    );
+
+    select(&mut rig, ComboItem::Import);
+    rig.key(key(KeyCode::Enter));
+    assert_eq!(rig.app.modal(), Some(Modal::Import { sel: 0 }));
+    let (buf, _) = render(&rig.app, 120, 40);
+    assert_snapshot("workspaces_import_120x40", &text(&buf));
+    let actions = rig.key(key(KeyCode::Enter));
+    assert_eq!(actions, vec![Action::ImportWorkspace(fixture)]);
+    assert_eq!(rig.app.modal(), None);
+    assert_eq!(rig.app.workspaces(), ["New202608221427", "gig"]);
+    assert_eq!(rig.app.workspace(), None, "imported, not opened");
+    let notice = rig.app.notice().unwrap_or_default().to_string();
+    assert!(notice.contains("imported \"New202608221427\""), "{notice}");
+    let s = rig.saved("New202608221427");
+    assert_eq!((s.inputs[0].gain_db, s.inputs[0].mute), (2, true));
+
+    // "gig" exists: not replaced, and the notice says so. By mouse.
+    select(&mut rig, ComboItem::Import);
+    rig.key(key(KeyCode::Enter));
+    rig.click(Hit::ImportOption(1));
+    let notice = rig.app.notice().unwrap_or_default().to_string();
+    assert!(notice.contains("already exists"), "{notice}");
+    assert_eq!(rig.saved("gig").inputs[0].gain_db, 1, "kept");
+
+    // Esc closes the list.
+    select(&mut rig, ComboItem::Import);
+    rig.key(key(KeyCode::Enter));
+    rig.key(key(KeyCode::Esc));
+    assert_eq!(rig.app.modal(), None);
+    assert!(rig.written().is_empty(), "an import sends nothing");
+}
