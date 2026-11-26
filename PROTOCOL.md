@@ -167,6 +167,24 @@ From a read-only look at the official app V1.09 (class and method names and UI s
 - **Mix B/C pan:** not exercised in the app; assumed to match Mix A.
 - **IN1 48V:** never replayed, by choice.
 
+## Other models (experimental, untested)
+
+From static analysis of the official app (epic #70); nothing here is verified on hardware, and
+toppingctl sends nothing to these models yet.
+
+| Model | USB id | Firmware | Register map |
+|---|---|---|---|
+| E2x2 | `152a:8752` | any | this document |
+| E4x4 Pre | `152a:8754` | bcdDevice ≥ `0x0106` (1.06), as the app gates | different (#74) |
+| E8x8 Pre | `152a:875b` | not gated | different (#74) |
+
+- **HID interface:** unknown for the E4x4 Pre / E8x8 Pre, so toppingctl does not assume the E2x2's
+  interface 4. It takes the one HID interface whose usage page is vendor-defined (`0xFF00..=0xFFFF`),
+  then, if no page is readable, the only entry with an unknown page; a standard page (Consumer
+  `0x0C`, Generic Desktop `0x01`) is never chosen, and two candidate interfaces are ambiguous.
+- **Frame:** the same 16-byte frame on every model; the register map differs, so a frame is never
+  sent to a model whose map it was not built for.
+
 ## Fixtures
 
 `tests/fixtures/frames.tsv` holds up to three distinct frames for every (direction, group, param) seen

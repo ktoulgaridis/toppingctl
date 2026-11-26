@@ -3,9 +3,10 @@
 On Linux, toppingctl talks to the TOPPING E2x2 through its hidraw device node
 (`/dev/hidrawN`), which is root-only by default. The udev rule
 [`70-toppingctl.rules`](70-toppingctl.rules) gives that node to the user logged in
-at the local seat (`TAG+="uaccess"`). It sets no `MODE` and no `GROUP`, so the device
-never becomes world-writable and no group is granted access. Remote (SSH) sessions
-without a seat do not get access.
+at the local seat (`TAG+="uaccess"`). It also covers the E4x4 Pre (`152a:8754`) and
+E8x8 Pre (`152a:875b`), which toppingctl recognises only with `--experimental`.
+It sets no `MODE` and no `GROUP`, so the device never becomes world-writable and no
+group is granted access. Remote (SSH) sessions without a seat do not get access.
 
 Requires systemd-logind (standard on most desktop distributions).
 

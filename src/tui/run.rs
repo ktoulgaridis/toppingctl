@@ -13,17 +13,18 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as Input, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event as Input, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEventKind,
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::Terminal;
 
 use crate::conn::{Connection, Event, HidTransport, SendError};
-use crate::error::{message, Platform};
+use crate::error::{message, OpenFailure, Platform};
 use crate::frame::Frame;
 use crate::official_app::{self, System};
-use crate::open::open_e2x2;
+use crate::open;
 use crate::rate;
 use crate::state::Meters;
 use crate::sync::{connect, Store, SyncError};
@@ -138,10 +139,73 @@ where
     Ok(hits)
 }
 
+/// A model was found but not opened ([`open::admit`]): an experimental
+/// model, or E4x4 Pre firmware that is too old. The TUI shows why on the
+/// splash, sends nothing, and returns this once the user quits.
+#[derive(Debug)]
+pub struct Refused(pub OpenFailure);
+
+impl Refused {
+    /// `failure` as a refusal, if it is one (a model was found).
+    pub fn of(failure: OpenFailure) -> Result<Self, OpenFailure> {
+        match failure {
+            OpenFailure::Experimental { .. }
+            | OpenFailure::NotImplemented { .. }
+            | OpenFailure::Firmware { .. } => Ok(Refused(failure)),
+            other => Err(other),
+        }
+    }
+
+    /// Whether the user can fix it with `--experimental` (exit 2).
+    pub fn is_usage(&self) -> bool {
+        self.0.is_usage()
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&message(&self.0, Platform::current()))
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether `key` leaves the refused splash: q, Esc, Enter or Ctrl-C.
+pub fn quits_refused(key: &KeyEvent) -> bool {
+    if key.kind == KeyEventKind::Release {
+        return false;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    matches!(
+        key.code,
+        KeyCode::Char('q' | 'Q') | KeyCode::Esc | KeyCode::Enter
+    ) || (ctrl && matches!(key.code, KeyCode::Char('c' | 'C')))
+}
+
+/// Shows the refused splash until the user quits. Nothing is sent: the
+/// device was never opened.
+fn wait_for_quit<B: Backend>(terminal: &mut Terminal<B>, app: &App, meters: &Meters) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    loop {
+        terminal.draw(|f| {
+            ui::draw(f, app, meters);
+        })?;
+        if event::poll(TICK)? {
+            if let Input::Key(key) = event::read()? {
+                if quits_refused(&key) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
 /// Runs the TUI until the user quits. Errors (no device, no permission, a
 /// disconnect) come back after the terminal is restored, for the caller to
-/// print.
-pub fn run() -> Result<()> {
+/// print. `experimental` is `--experimental` ([`open::open`]).
+pub fn run(experimental: bool) -> Result<()> {
     let store = Store::from_env()?;
     let workspaces = Workspaces::from_env()?;
     let mut app = App::new(Theme::from_env());
@@ -163,7 +227,17 @@ pub fn run() -> Result<()> {
         ui::draw(f, &app, &meters);
     })?;
 
-    let device = open_e2x2().map_err(|e| anyhow!(message(&e, Platform::current())))?;
+    let device = match open::open(experimental) {
+        Ok((_model, device)) => device,
+        Err(failure) => match Refused::of(failure) {
+            Ok(refused) => {
+                app.set_refused(Some(refused.to_string()));
+                wait_for_quit(&mut terminal, &app, &meters)?;
+                return Err(refused.into());
+            }
+            Err(e) => return Err(anyhow!(message(&e, Platform::current()))),
+        },
+    };
     let (conn, events) = Connection::spawn(HidTransport::new(device));
     match connect(&conn, &events, &store) {
         Ok(state) => app.synced(state),

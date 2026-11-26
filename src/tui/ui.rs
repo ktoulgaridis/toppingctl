@@ -247,7 +247,10 @@ fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
     let mut hits = HitMap::default();
     let t = app.theme();
     match (app.phase(), app.modal()) {
-        (Phase::Connecting, _) => splash(buf, area, t, Some("Connecting to the TOPPING E2x2…")),
+        (Phase::Connecting, _) => match app.refused() {
+            Some(why) => refused(buf, area, t, why),
+            None => splash(buf, area, t, Some("Connecting to the TOPPING E2x2…")),
+        },
         (Phase::Synced, Some(Modal::PushDefaults)) => splash(buf, area, t, None),
         _ if area.width < MIN_WIDTH || area.height < MIN_HEIGHT => too_small(buf, area, t),
         _ => console(buf, area, app, meters, &mut hits),
@@ -386,6 +389,40 @@ fn splash(buf: &mut Buffer, area: Rect, t: Theme, status: Option<&str>) {
     Paragraph::new(lines)
         .centered()
         .render(centered(area, area.width, h), buf);
+}
+
+/// The splash when a model was found but not opened: why, wrapped to the
+/// screen, and how to leave.
+fn refused(buf: &mut Buffer, area: Rect, t: Theme, why: &str) {
+    let width = area.width.clamp(20, 72) as usize;
+    let mut lines = vec![Line::styled("toppingctl", t.focus()), Line::raw("")];
+    lines.extend(
+        wrap(why, width)
+            .into_iter()
+            .map(|l| Line::styled(l, t.heading())),
+    );
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("press q to quit", t.dim()));
+    let h = lines.len() as u16;
+    Paragraph::new(lines)
+        .centered()
+        .render(centered(area, area.width, h), buf);
+}
+
+/// `text` split into lines of at most `width` characters, at spaces (a
+/// longer word gets its own line).
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
 }
 
 fn too_small(buf: &mut Buffer, area: Rect, t: Theme) {
