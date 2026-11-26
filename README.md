@@ -138,6 +138,12 @@ combo. `l` opens the list: pick one to load it, or save, delete, start a new one
 the defaults, or save as a new name. `s` saves the open workspace (on Default it asks
 for a name). An auto-save toggle in the list saves the open workspace on every change.
 
+Coming from the official app? "Import from TOPPING app…" in the list (shown when the
+app's workspace folder has E2x2 workspaces, macOS only) saves one of its workspaces as
+a toppingctl workspace under the same name; `toppingctl import <file.TPwork> [name]`
+does the same from the command line. An import never sends anything and never brings
+48V across: a workspace that had 48V on says so.
+
 Workspaces are JSON files in `<config>/toppingctl/workspaces/` (`<config>` is
 `$XDG_CONFIG_HOME` when set, else `~/.config` on Linux and
 `~/Library/Application Support` on macOS). The Settings dialog (`e`) can point them at
@@ -166,12 +172,13 @@ toppingctl get mix.a.in1.fader      # print one setting
 toppingctl dump                     # every setting (--json: the saved-state JSON)
 toppingctl store                    # store the settings in the device's memory (asks)
 toppingctl init                     # first run: push the defaults (asks)
+toppingctl import E2X2_Live.TPwork  # save an official app workspace as "Live"
 ```
 
 `toppingctl --help` lists every path and value. Exit status: 0 ok, 2 usage error or not
 confirmed, 1 device error.
 
-The device can't be read back, so every command, and the TUI on start, first pushes the
+The device can't be read back, so every device command, and the TUI on start, first pushes the
 state toppingctl last set. On the first run there is nothing saved: the TUI asks before
 pushing the defaults, and the CLI wants `init`.
 

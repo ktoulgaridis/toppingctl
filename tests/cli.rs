@@ -504,3 +504,66 @@ fn store_and_first_run() {
     assert_eq!(r.code, 0, "{}", r.err);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `import` (#58) saves a TOPPING app workspace beside the saved state,
+/// under its own name or the one given, without opening the device; an
+/// existing name needs --force; 48V that was on is dropped with a note.
+#[test]
+fn import_writes_a_workspace_only() {
+    use toppingctl::workspace::Workspaces;
+    let dir = temp_dir("import");
+    let store = Store::at(dir.join("state.json"));
+    let ws = Workspaces::at(dir.clone());
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/official/E2X2_New202608221427.TPwork");
+    let file = fixture.to_str().unwrap();
+
+    let r = run(&["import", file], &store, false, "");
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(!r.opened, "import never opens the device");
+    assert!(r.written.is_empty());
+    assert!(r.out.contains("\"New202608221427\""), "{}", r.out);
+    assert!(r.err.is_empty(), "{}", r.err);
+    let state = ws.load("New202608221427").unwrap();
+    assert_eq!((state.inputs[0].gain_db, state.inputs[0].mute), (2, true));
+    assert_eq!(state.output.source, Source::MixA);
+    assert!(
+        store.load().unwrap().is_none(),
+        "the saved state is untouched"
+    );
+
+    let r = run(&["import", file], &store, false, "");
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("--force"), "{}", r.err);
+    let r = run(&["import", file, "--force"], &store, false, "");
+    assert_eq!(r.code, 0, "{}", r.err);
+    let r = run(&["import", file, "Live"], &store, false, "");
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(ws.list(), vec!["Live", "New202608221427"]);
+
+    // 48V on in the file: a note, and no 48V in the workspace.
+    let mut v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&fixture).unwrap()).unwrap();
+    v["IN1"]["P48VEnable"] = serde_json::json!(true);
+    let hot = dir.join("E2X2_Hot.TPwork");
+    fs::write(&hot, v.to_string()).unwrap();
+    let r = run(&["import", hot.to_str().unwrap()], &store, false, "");
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.err.contains("48V") && r.err.contains("IN1"), "{}", r.err);
+    assert!(!r.opened);
+    assert_eq!(ws.load("Hot").unwrap().inputs[0].phantom, None);
+
+    // Usage and file errors.
+    for (args, code) in [
+        (vec!["import"], 2),
+        (vec!["import", file, "a", "b"], 2),
+        (vec!["import", file, "bad/name"], 2),
+        (vec!["import", "/nonexistent/E2X2_X.TPwork"], 1),
+        (vec!["import", dir.join("state.json").to_str().unwrap()], 1),
+    ] {
+        let r = run(&args, &store, false, "");
+        assert_eq!(r.code, code, "{args:?}: {}", r.err);
+        assert!(!r.opened, "{args:?}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}

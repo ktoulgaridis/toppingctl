@@ -80,6 +80,8 @@ pub enum Hit {
     ComboDelete(usize),
     /// Choice `i` of the Download dialog ([`DOWNLOAD_OPTIONS`]).
     DownloadOption(usize),
+    /// Workspace `i` of the official app's ([`App::official`]).
+    ImportOption(usize),
     /// Setting `row` of the Settings dialog ([`SETTINGS`]) at `value`:
     /// a brightness (0 ..= 2), or a switch off (0) / on (1).
     SettingOption { row: usize, value: u8 },
@@ -306,6 +308,7 @@ fn draw_text(f: &mut Frame, app: &App, meters: &Meters) -> HitMap {
         Some(Modal::Download { sel }) => download(buf, area, t, sel, &mut hits),
         Some(Modal::Settings { sel }) => settings(buf, area, app, sel, false, &mut hits),
         Some(Modal::WorkspaceFolder) => settings(buf, area, app, FOLDER_ROW, true, &mut hits),
+        Some(Modal::Import { sel }) => import_list(buf, area, app, sel, &mut hits),
         None => {}
     }
     hits
@@ -2023,6 +2026,47 @@ fn confirm(
     hits.push(Hit::No, r);
 }
 
+/// The official app's E2x2 workspaces, to import one; `sel` highlighted.
+fn import_list(buf: &mut Buffer, area: Rect, app: &App, sel: usize, hits: &mut HitMap) {
+    let t = app.theme();
+    let found = app.official();
+    let h = found.len() as u16 + 8;
+    let inner = modal_box(buf, area, t, " Import from TOPPING app ", (48, h), hits);
+    let w = usize::from(inner.width.saturating_sub(4));
+    for (i, o) in found.iter().enumerate() {
+        let line = format!(" {:<w$}", o.name, w = w.saturating_sub(1));
+        let y = inner.y + 1 + i as u16;
+        let r = put(buf, inner, inner.x + 2, y, &line, button_style(t, i == sel));
+        hits.push(Hit::ImportOption(i), r);
+    }
+    let note = "saved as a workspace; 48V is never imported";
+    put_centered(
+        buf,
+        inner,
+        inner.bottom().saturating_sub(4),
+        &[Span::styled(note, t.dim())],
+        hits,
+    );
+    put_centered(
+        buf,
+        inner,
+        inner.bottom().saturating_sub(3),
+        &[Span::styled("enter import", t.dim())],
+        hits,
+    );
+    let close = " [Esc] close ";
+    let x = inner.x + inner.width.saturating_sub(close.chars().count() as u16) / 2;
+    let r = put(
+        buf,
+        inner,
+        x,
+        inner.bottom().saturating_sub(2),
+        close,
+        t.dim(),
+    );
+    hits.push(Hit::No, r);
+}
+
 /// The sample-rate list: the E2x2's rates, the current one marked, `sel`
 /// highlighted.
 fn rate_list(
@@ -2210,6 +2254,7 @@ fn combo(buf: &mut Buffer, area: Rect, app: &App, sel: usize, hits: &mut HitMap)
             }
             ComboItem::New => "   New workspace…".to_string(),
             ComboItem::SaveAs => "   Save workspace as…".to_string(),
+            ComboItem::Import => "   Import from TOPPING app…".to_string(),
             ComboItem::AutoSave => {
                 let x = if app.auto_save() { "x" } else { " " };
                 format!(" [{x}] Auto-save")

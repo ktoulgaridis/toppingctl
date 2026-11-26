@@ -26,6 +26,7 @@ use crate::open::open_e2x2;
 use crate::rate;
 use crate::state::Meters;
 use crate::sync::{connect, Store, SyncError};
+use crate::tpwork;
 use crate::tui::app::{Action, App};
 use crate::tui::kitty;
 use crate::tui::pixel::PixelLayer;
@@ -132,6 +133,11 @@ pub fn run() -> Result<()> {
     let mut app = App::new(Theme::from_env());
     app.set_workspaces(workspaces.list(), workspaces.settings());
     app.set_workspaces_folder(workspaces.folder_shown());
+    app.set_official(
+        tpwork::folder_from_env()
+            .map(|f| tpwork::list(&f))
+            .unwrap_or_default(),
+    );
     app.set_notice(official_app::warning(&System).map(String::from));
     let _guard = Guard::enter()?;
     // Before any event is read: does the terminal take kitty images?
@@ -281,6 +287,27 @@ pub fn carry_out(
                     app.set_notice(Some(format!("could not remove workspace {name:?}: {e}")));
                 }
                 sync_workspaces(app, workspaces);
+            }
+            Action::ImportWorkspace(path) => {
+                let notice = match tpwork::import(workspaces, &path, None, false) {
+                    Ok(saved) => {
+                        let mut n = format!(
+                            "imported {:?} from the TOPPING app; pick it with l to load it",
+                            saved.name
+                        );
+                        for note in &saved.notices {
+                            n.push_str("; ");
+                            n.push_str(note);
+                        }
+                        n
+                    }
+                    Err(e @ tpwork::ImportError::Exists(_)) => format!(
+                        "{e}; not imported (remove or rename it, or use toppingctl import --force)"
+                    ),
+                    Err(e) => format!("could not import: {e}"),
+                };
+                sync_workspaces(app, workspaces);
+                app.set_notice(Some(notice));
             }
             Action::SaveWorkspaceSettings => sync_workspaces(app, workspaces),
             Action::SetWorkspaceFolder(typed) => set_folder(app, workspaces, &typed),

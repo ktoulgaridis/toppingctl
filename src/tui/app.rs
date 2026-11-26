@@ -23,6 +23,7 @@ use ratatui::text::Span;
 use crate::frame::Frame;
 use crate::rate::RATES;
 use crate::state::{Meters, Mix, Source, State};
+use crate::tpwork::Official;
 use crate::tui::theme::Theme;
 use crate::tui::ui::{Hit, HitMap};
 use crate::tui::widgets::fader::db_at_frac;
@@ -113,6 +114,9 @@ pub enum ComboItem {
     New,
     /// "Save workspace as…".
     SaveAs,
+    /// "Import from TOPPING app…": only when the official app's folder has
+    /// E2x2 workspaces ([`App::set_official`]).
+    Import,
     /// The auto-save toggle.
     AutoSave,
 }
@@ -134,6 +138,9 @@ pub enum Action {
     LoadWorkspace(String),
     /// Remove the named workspace's file.
     DeleteWorkspace(String),
+    /// Save the official app's workspace at this path as a toppingctl
+    /// workspace ([`crate::tpwork::import`]); nothing is sent.
+    ImportWorkspace(PathBuf),
     /// Save the open workspace and auto-save ([`App::settings`]).
     SaveWorkspaceSettings,
     /// Make the typed folder the workspaces folder (`~` expanded, created
@@ -431,6 +438,9 @@ pub enum Modal {
     /// The Settings dialog with the workspaces folder being typed
     /// ([`App::prompt`]).
     WorkspaceFolder,
+    /// The official app's workspaces ([`App::official`]), `sel`
+    /// highlighted.
+    Import { sel: usize },
 }
 
 /// Where the session is.
@@ -581,6 +591,8 @@ pub struct App {
     /// Mobile applications was changed here: it takes effect only after
     /// the device restarts.
     restart_required: bool,
+    /// The official app's E2x2 workspaces, to import.
+    official: Vec<Official>,
 }
 
 /// A strip the arrows move within.
@@ -636,6 +648,7 @@ impl App {
             prompt: String::new(),
             switches_stacked: false,
             restart_required: false,
+            official: Vec::new(),
         }
     }
 
@@ -664,6 +677,16 @@ impl App {
     /// The workspaces folder, as shown; empty when not known.
     pub fn workspaces_folder(&self) -> &str {
         &self.folder_shown
+    }
+
+    /// The official app's E2x2 workspaces found on disk; none hides
+    /// "Import from TOPPING app…".
+    pub fn set_official(&mut self, found: Vec<Official>) {
+        self.official = found;
+    }
+
+    pub fn official(&self) -> &[Official] {
+        &self.official
     }
 
     /// The saved workspaces' names, sorted.
@@ -698,7 +721,11 @@ impl App {
     pub fn combo_items(&self) -> Vec<ComboItem> {
         let mut items = vec![ComboItem::Default];
         items.extend((0..self.workspaces.len()).map(ComboItem::Named));
-        items.extend([ComboItem::New, ComboItem::SaveAs, ComboItem::AutoSave]);
+        items.extend([ComboItem::New, ComboItem::SaveAs]);
+        if !self.official.is_empty() {
+            items.push(ComboItem::Import);
+        }
+        items.push(ComboItem::AutoSave);
         items
     }
 
@@ -883,6 +910,19 @@ impl App {
                     KeyCode::Enter | KeyCode::Char(' ') => return self.pick_combo(sel),
                     KeyCode::Char('s') => self.ask_overwrite(sel),
                     KeyCode::Char('d') | KeyCode::Delete => self.ask_remove(sel),
+                    KeyCode::Esc | KeyCode::Char('l') => self.modal = None,
+                    KeyCode::Char('q') => return vec![Action::Quit],
+                    _ => {}
+                }
+                return Vec::new();
+            }
+            Some(Modal::Import { sel }) => {
+                let last = self.official.len().saturating_sub(1);
+                let to = |sel| Some(Modal::Import { sel });
+                match key.code {
+                    KeyCode::Up => self.modal = to(sel.saturating_sub(1)),
+                    KeyCode::Down => self.modal = to((sel + 1).min(last)),
+                    KeyCode::Enter | KeyCode::Char(' ') => return self.pick_import(sel),
                     KeyCode::Esc | KeyCode::Char('l') => self.modal = None,
                     KeyCode::Char('q') => return vec![Action::Quit],
                     _ => {}
@@ -1174,6 +1214,11 @@ impl App {
                     Vec::new()
                 }
                 (Modal::Source { bus, .. }, Some(Hit::SourceOption(i))) => self.pick_source(bus, i),
+                (Modal::Import { .. }, Some(Hit::ImportOption(i))) => self.pick_import(i),
+                (Modal::Import { .. }, Some(Hit::No)) => {
+                    self.modal = None;
+                    Vec::new()
+                }
                 _ => Vec::new(),
             };
         }
@@ -1758,12 +1803,26 @@ impl App {
                 self.ask_name(NameThen::SaveAs);
                 Vec::new()
             }
+            Some(ComboItem::Import) => {
+                self.modal = Some(Modal::Import { sel: 0 });
+                Vec::new()
+            }
             Some(ComboItem::AutoSave) => {
                 self.auto_save = !self.auto_save;
                 vec![Action::SaveWorkspaceSettings]
             }
             None => Vec::new(),
         }
+    }
+
+    /// Imports official workspace `i`: saved as a toppingctl workspace,
+    /// not loaded.
+    fn pick_import(&mut self, i: usize) -> Vec<Action> {
+        self.modal = None;
+        self.official
+            .get(i)
+            .map(|o| vec![Action::ImportWorkspace(o.path.clone())])
+            .unwrap_or_default()
     }
 
     /// The named workspace at combo entry `i`, if it is one.

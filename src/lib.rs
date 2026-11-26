@@ -11,6 +11,7 @@ pub mod open;
 pub mod rate;
 pub mod state;
 pub mod sync;
+pub mod tpwork;
 pub mod tui;
 pub mod value;
 pub mod workspace;
