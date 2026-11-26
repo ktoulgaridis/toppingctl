@@ -8,6 +8,17 @@ scripts.
 
 ![toppingctl running with music playing: live meters, switching mixes A/B/C, a fader dip on Playback 1/2, the settings dialog and the sample rate list](docs/assets/demo.gif)
 
+| | toppingctl 0.2.2 | TOPPING Professional Control Center V1.09 |
+|---|---|---|
+| Download | 0.8 MB | 80.9 MB |
+| Installed | 2.0 MB, one binary | 151 MB |
+| Memory (physical footprint) | 7.4 MB | 343.5 MB |
+| CPU, meters moving | 7.5 %, plus about 10 % in the terminal that draws it | 15.6 % |
+
+Measured on one Apple-silicon Mac with an E2x2 and music playing: macOS downloads, a 30 s
+`top` average for CPU, `vmmap` for memory. The terminal share is the terminal's own CPU
+with toppingctl running in pixel mode, minus the same without it.
+
 The TUI shows the official app's four panels side by side: **Input** (gain knobs and
 switches per channel), **Mixer** (one strip per source, for mix A, B or C), **Loopback**
 and **Output** (faders, sources and levels). Meters run before and after the faders, with
