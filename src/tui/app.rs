@@ -441,6 +441,9 @@ pub enum Modal {
     /// The official app's workspaces ([`App::official`]), `sel`
     /// highlighted.
     Import { sel: usize },
+    /// "Load it now?" for the workspace just imported, named in
+    /// [`App::prompt`] ([`App::offer_load`]); Yes is the default.
+    LoadImported,
 }
 
 /// Where the session is.
@@ -593,6 +596,9 @@ pub struct App {
     restart_required: bool,
     /// The official app's E2x2 workspaces, to import.
     official: Vec<Official>,
+    /// The notes of the import [`Modal::LoadImported`] is about, for the
+    /// load's notice ([`App::take_import_notes`]).
+    import_notes: Vec<String>,
 }
 
 /// A strip the arrows move within.
@@ -649,6 +655,7 @@ impl App {
             switches_stacked: false,
             restart_required: false,
             official: Vec::new(),
+            import_notes: Vec::new(),
         }
     }
 
@@ -727,6 +734,21 @@ impl App {
         }
         items.push(ComboItem::AutoSave);
         items
+    }
+
+    /// Workspace `name` was just imported, with `notes`: asks whether to
+    /// load it now ([`Modal::LoadImported`]). Yes is
+    /// [`Action::LoadWorkspace`], as picking it from the combo.
+    pub fn offer_load(&mut self, name: String, notes: Vec<String>) {
+        self.prompt = name;
+        self.import_notes = notes;
+        self.open_modal(Modal::LoadImported);
+    }
+
+    /// The notes of the import whose "Load it now?" was answered Yes, for
+    /// the load's notice; empty for any other load.
+    pub fn take_import_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.import_notes)
     }
 
     /// Workspace `name` was read as `loaded`: moves the device there with
@@ -890,6 +912,10 @@ impl App {
                 return self.finish_name(then, name);
             }
             Some(Modal::RemoveWorkspace) if yes => return self.remove_workspace(),
+            Some(Modal::LoadImported) if yes || key.code == KeyCode::Enter => {
+                return self.load_imported()
+            }
+            Some(Modal::LoadImported) if no => return self.skip_imported(),
             Some(Modal::Overwrite { .. } | Modal::RemoveWorkspace) if no => {
                 self.modal = None;
                 return Vec::new();
@@ -1184,6 +1210,8 @@ impl App {
                     self.finish_name(then, name)
                 }
                 (Modal::RemoveWorkspace, Some(Hit::Yes)) => self.remove_workspace(),
+                (Modal::LoadImported, Some(Hit::Yes)) => self.load_imported(),
+                (Modal::LoadImported, Some(Hit::No)) => self.skip_imported(),
                 (Modal::Download { .. }, Some(Hit::DownloadOption(i))) => {
                     self.modal = Some(Modal::Download { sel: i });
                     Vec::new()
@@ -1815,14 +1843,28 @@ impl App {
         }
     }
 
-    /// Imports official workspace `i`: saved as a toppingctl workspace,
-    /// not loaded.
+    /// Imports official workspace `i`: saved as a toppingctl workspace;
+    /// once saved, [`App::offer_load`] asks whether to load it.
     fn pick_import(&mut self, i: usize) -> Vec<Action> {
         self.modal = None;
         self.official
             .get(i)
             .map(|o| vec![Action::ImportWorkspace(o.path.clone())])
             .unwrap_or_default()
+    }
+
+    /// "Load it now?" Yes: loads the imported workspace as the combo does.
+    fn load_imported(&mut self) -> Vec<Action> {
+        self.modal = None;
+        vec![Action::LoadWorkspace(std::mem::take(&mut self.prompt))]
+    }
+
+    /// "Load it now?" No: nothing changes.
+    fn skip_imported(&mut self) -> Vec<Action> {
+        self.modal = None;
+        self.prompt.clear();
+        self.import_notes.clear();
+        Vec::new()
     }
 
     /// The named workspace at combo entry `i`, if it is one.

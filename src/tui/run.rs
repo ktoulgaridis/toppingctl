@@ -270,12 +270,18 @@ pub fn carry_out(
             }
             Action::LoadWorkspace(name) => match workspaces.load(&name) {
                 Ok(state) => {
+                    let notes = app.take_import_notes();
                     app.set_notice(None);
                     let more = app.load_workspace(name.clone(), state);
                     left.extend(carry_out(conn, app, store, workspaces, more)?);
                     sync_workspaces(app, workspaces);
                     if app.notice().is_none() {
-                        app.set_notice(Some(format!("loaded workspace {name:?}")));
+                        let mut n = format!("loaded workspace {name:?}");
+                        for note in &notes {
+                            n.push_str("; ");
+                            n.push_str(note);
+                        }
+                        app.set_notice(Some(n));
                     }
                 }
                 Err(e) => app.set_notice(Some(format!(
@@ -288,7 +294,9 @@ pub fn carry_out(
                 }
                 sync_workspaces(app, workspaces);
             }
+            // A saved import asks whether to load it ([`App::offer_load`]).
             Action::ImportWorkspace(path) => {
+                let mut offer = None;
                 let notice = match tpwork::import(workspaces, &path, None, false) {
                     Ok(saved) => {
                         let mut n = format!(
@@ -299,6 +307,7 @@ pub fn carry_out(
                             n.push_str("; ");
                             n.push_str(note);
                         }
+                        offer = Some(saved);
                         n
                     }
                     Err(e @ tpwork::ImportError::Exists(_)) => format!(
@@ -308,6 +317,9 @@ pub fn carry_out(
                 };
                 sync_workspaces(app, workspaces);
                 app.set_notice(Some(notice));
+                if let Some(saved) = offer {
+                    app.offer_load(saved.name, saved.notices);
+                }
             }
             Action::SaveWorkspaceSettings => sync_workspaces(app, workspaces),
             Action::SetWorkspaceFolder(typed) => set_folder(app, workspaces, &typed),

@@ -651,11 +651,21 @@ fn import_from_the_official_app() {
     assert_snapshot("workspaces_import_120x40", &text(&buf));
     let actions = rig.key(key(KeyCode::Enter));
     assert_eq!(actions, vec![Action::ImportWorkspace(fixture)]);
-    assert_eq!(rig.app.modal(), None);
+    assert_eq!(
+        rig.app.modal(),
+        Some(Modal::LoadImported),
+        "asks to load it"
+    );
+    assert_eq!(rig.app.prompt(), "New202608221427");
     assert_eq!(rig.app.workspaces(), ["New202608221427", "gig"]);
     assert_eq!(rig.app.workspace(), None, "imported, not opened");
     let notice = rig.app.notice().unwrap_or_default().to_string();
     assert!(notice.contains("imported \"New202608221427\""), "{notice}");
+    // No: things stay as they are, with the import's notice.
+    assert_eq!(rig.key(ch('n')), vec![]);
+    assert_eq!(rig.app.modal(), None);
+    assert_eq!(rig.app.workspace(), None);
+    assert_eq!(rig.app.notice(), Some(notice.as_str()));
     let s = rig.saved("New202608221427");
     assert_eq!((s.inputs[0].gain_db, s.inputs[0].mute), (2, true));
 
@@ -665,6 +675,7 @@ fn import_from_the_official_app() {
     rig.click(Hit::ImportOption(1));
     let notice = rig.app.notice().unwrap_or_default().to_string();
     assert!(notice.contains("already exists"), "{notice}");
+    assert_eq!(rig.app.modal(), None, "a refused import doesn't ask");
     assert_eq!(rig.saved("gig").inputs[0].gain_db, 1, "kept");
 
     // Esc closes the list.
@@ -673,4 +684,122 @@ fn import_from_the_official_app() {
     rig.key(key(KeyCode::Esc));
     assert_eq!(rig.app.modal(), None);
     assert!(rig.written().is_empty(), "an import sends nothing");
+}
+
+/// The import of `fixture` as "New202608221427", through the list: the
+/// "Load it now?" question is open.
+fn import_fixture(rig: &mut Rig) {
+    use toppingctl::tpwork::Official;
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/official/E2X2_New202608221427.TPwork");
+    rig.app.set_official(vec![Official {
+        name: "New202608221427".into(),
+        path: fixture,
+    }]);
+    select(rig, ComboItem::Import);
+    rig.key(key(KeyCode::Enter));
+    rig.key(key(KeyCode::Enter));
+    assert_eq!(rig.app.modal(), Some(Modal::LoadImported));
+}
+
+/// What loading "New202608221427" from the device's state sends: the
+/// diff, 48V kept as the device has it.
+fn load_frames(rig: &Rig) -> Vec<Frame> {
+    let mut loaded = rig.saved("New202608221427");
+    loaded.inputs[0].phantom = Some(false);
+    loaded.inputs[1].phantom = Some(false);
+    device_state().diff(&loaded)
+}
+
+/// After an import (#66), "Load it now?" (Yes focused): Yes loads it as
+/// picking it from `l` does, the same action, the same frames, 48V kept;
+/// the import's notes stay in the notice. Enter, `y` and a click all say
+/// Yes; `n`, Esc and a click on No leave the device alone.
+#[test]
+fn load_after_import() {
+    // Enter: Yes.
+    let mut rig = Rig::new("loadimport-enter", &["gig"], None);
+    import_fixture(&mut rig);
+    let (buf, _) = render(&rig.app, 120, 40);
+    assert_snapshot("workspaces_import_load_120x40", &text(&buf));
+    let actions = rig.key(key(KeyCode::Enter));
+    assert_eq!(
+        actions,
+        vec![Action::LoadWorkspace("New202608221427".into())]
+    );
+    assert_eq!(rig.app.modal(), None);
+    assert_eq!(rig.app.workspace(), Some("New202608221427"));
+    assert_eq!(
+        rig.ws.settings().current.as_deref(),
+        Some("New202608221427")
+    );
+    assert_eq!(
+        rig.app.notice(),
+        Some("loaded workspace \"New202608221427\"")
+    );
+    assert_eq!(rig.app.state().inputs[0].phantom, Some(false), "48V kept");
+    assert_eq!(rig.app.state().inputs[1].phantom, Some(false), "48V kept");
+    let frames = load_frames(&rig);
+    assert!(!frames.is_empty());
+    assert_eq!(rig.written(), frames);
+
+    // `y` and a click on Yes: the same.
+    let mut rig = Rig::new("loadimport-y", &["gig"], None);
+    import_fixture(&mut rig);
+    rig.key(ch('y'));
+    assert_eq!(rig.app.workspace(), Some("New202608221427"));
+    let frames = load_frames(&rig);
+    assert_eq!(rig.written(), frames);
+
+    let mut rig = Rig::new("loadimport-click", &["gig"], None);
+    import_fixture(&mut rig);
+    let actions = rig.click(Hit::Yes);
+    assert_eq!(
+        actions,
+        vec![Action::LoadWorkspace("New202608221427".into())]
+    );
+    assert_eq!(rig.app.workspace(), Some("New202608221427"));
+    let frames = load_frames(&rig);
+    assert_eq!(rig.written(), frames);
+
+    let mut rig = Rig::new("loadimport-notes", &["gig"], None);
+    import_fixture(&mut rig);
+    rig.key(key(KeyCode::Esc));
+    // The import's notes (48V dropped, …) stay in the load's notice; No,
+    // or a later load from `l`, has none.
+    let note = || vec!["IN1 48V was on; not imported".to_string()];
+    rig.app.offer_load("gig".into(), note());
+    rig.key(ch('n'));
+    select(&mut rig, ComboItem::Named(0));
+    rig.key(key(KeyCode::Enter));
+    assert_eq!(
+        rig.app.notice(),
+        Some("loaded workspace \"New202608221427\"")
+    );
+    rig.app.offer_load("gig".into(), note());
+    rig.key(ch('y'));
+    assert_eq!(
+        rig.app.notice(),
+        Some("loaded workspace \"gig\"; IN1 48V was on; not imported")
+    );
+    select(&mut rig, ComboItem::Named(0));
+    rig.key(key(KeyCode::Enter));
+    assert_eq!(
+        rig.app.notice(),
+        Some("loaded workspace \"New202608221427\"")
+    );
+
+    // Esc and a click on No: nothing sent, nothing opened.
+    let mut rig = Rig::new("loadimport-no", &["gig"], None);
+    import_fixture(&mut rig);
+    assert_eq!(rig.key(key(KeyCode::Esc)), vec![]);
+    assert_eq!(rig.app.modal(), None);
+    rig.ws.delete("New202608221427").unwrap();
+    rig.app.set_workspaces(rig.ws.list(), rig.ws.settings());
+    import_fixture(&mut rig);
+    assert_eq!(rig.click(Hit::No), vec![]);
+    assert_eq!(rig.app.modal(), None);
+    assert_eq!(rig.app.workspace(), None);
+    assert_eq!(rig.app.state(), &device_state());
+    assert!(rig.written().is_empty(), "No sends nothing");
 }

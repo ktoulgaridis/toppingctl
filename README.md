@@ -142,7 +142,9 @@ Coming from the official app? "Import from TOPPING app…" in the list (shown wh
 app's workspace folder has E2x2 workspaces, macOS only) saves one of its workspaces as
 a toppingctl workspace under the same name; `toppingctl import <file.TPwork> [name]`
 does the same from the command line. An import never sends anything and never brings
-48V across: a workspace that had 48V on says so.
+48V across: a workspace that had 48V on says so. In the TUI it then asks "Load it now?"
+(Yes loads it as picking it from the list does, keeping the device's 48V); the CLI
+import never touches the device.
 
 Workspaces are JSON files in `<config>/toppingctl/workspaces/` (`<config>` is
 `$XDG_CONFIG_HOME` when set, else `~/.config` on Linux and
